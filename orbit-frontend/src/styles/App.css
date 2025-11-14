@@ -1,3 +1,186 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* ORBIT color scheme - light mode with off-white background */
+  --background: oklch(0.98 0.002 264); /* Off-white, not pure white */
+  --foreground: oklch(0.2 0.01 264);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.2 0.01 264);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.2 0.01 264);
+
+  /* Primary: Blue from color palette */
+  --primary: oklch(0.55 0.22 250); /* Vibrant blue */
+  --primary-foreground: oklch(1 0 0);
+
+  /* Secondary: Coral/salmon brand color */
+  --secondary: oklch(0.7 0.15 25); /* Coral/salmon */
+  --secondary-foreground: oklch(0.98 0.002 264);
+
+  --muted: oklch(0.95 0.005 264);
+  --muted-foreground: oklch(0.5 0.01 264);
+
+  /* Accent: Hot pink from palette */
+  --accent: oklch(0.65 0.28 340); /* Hot pink/magenta */
+  --accent-foreground: oklch(1 0 0);
+
+  /* Warning: Yellow from palette */
+  --warning: oklch(0.85 0.18 85); /* Yellow */
+  --warning-foreground: oklch(0.2 0.01 264);
+
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(1 0 0);
+
+  --border: oklch(0.9 0.005 264);
+  --input: oklch(0.9 0.005 264);
+  --ring: oklch(0.55 0.22 250);
+
+  --chart-1: oklch(0.55 0.22 250); /* Blue */
+  --chart-2: oklch(0.65 0.28 340); /* Pink */
+  --chart-3: oklch(0.85 0.18 85); /* Yellow */
+  --chart-4: oklch(0.7 0.15 25); /* Coral */
+  --chart-5: oklch(0.45 0.15 270); /* Purple */
+
+  --radius: 0.5rem;
+
+  /* Sidebar tokens */
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.2 0.01 264);
+  --sidebar-primary: oklch(0.55 0.22 250);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.96 0.005 264);
+  --sidebar-accent-foreground: oklch(0.2 0.01 264);
+  --sidebar-border: oklch(0.92 0.005 264);
+  --sidebar-ring: oklch(0.55 0.22 250);
+}
+
+.dark {
+  /* ORBIT dark mode - navy/purple gradient background */
+  --background: oklch(0.15 0.04 270); /* Dark navy/purple */
+  --foreground: oklch(0.95 0.01 264);
+  --card: oklch(0.18 0.04 270);
+  --card-foreground: oklch(0.95 0.01 264);
+  --popover: oklch(0.18 0.04 270);
+  --popover-foreground: oklch(0.95 0.01 264);
+
+  /* Primary: Brighter blue for dark mode */
+  --primary: oklch(0.65 0.25 250);
+  --primary-foreground: oklch(0.98 0.002 264);
+
+  /* Secondary: Coral/salmon */
+  --secondary: oklch(0.7 0.15 25);
+  --secondary-foreground: oklch(0.15 0.04 270);
+
+  --muted: oklch(0.22 0.04 270);
+  --muted-foreground: oklch(0.65 0.02 264);
+
+  /* Accent: Hot pink */
+  --accent: #ca2ca5; /* rgb(202, 44, 165) */
+  --accent-foreground: oklch(0.98 0.002 264);
+
+  /* Warning: Yellow */
+  --warning: oklch(0.85 0.18 85);
+  --warning-foreground: oklch(0.15 0.04 270);
+
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.95 0.01 264);
+
+  --border: oklch(0.35 0.04 270);
+  --input: oklch(0.35 0.04 270);
+  --ring: oklch(0.65 0.25 250);
+
+  --chart-1: oklch(0.65 0.25 250); /* Blue */
+  --chart-2: #c92ca5; /* Pink */
+  --chart-3: oklch(0.85 0.18 85); /* Yellow */
+  --chart-4: oklch(0.7 0.15 25); /* Coral */
+  --chart-5: oklch(0.55 0.18 270); /* Purple */
+
+  /* Sidebar tokens for dark mode */
+  --sidebar: oklch(0.12 0.04 270);
+  --sidebar-foreground: oklch(0.95 0.01 264);
+  --sidebar-primary: oklch(0.65 0.25 250);
+  --sidebar-primary-foreground: oklch(0.98 0.002 264);
+  --sidebar-accent: oklch(0.2 0.04 270);
+  --sidebar-accent-foreground: oklch(0.95 0.01 264);
+  --sidebar-border: oklch(0.2 0.04 270);
+  --sidebar-ring: oklch(0.65 0.25 250);
+}
+
+/* Base styles */
+* {
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  background: radial-gradient(
+    circle at 50% 40%,
+    oklch(0.25 0.08 270) 0%,
+    oklch(0.15 0.04 270) 50%,
+    oklch(0.12 0.04 265) 100%
+  );
+  background-attachment: fixed;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Custom utility classes for the ORBIT color scheme */
+.bg-primary {
+  background-color: var(--primary);
+}
+
+.text-primary {
+  color: var(--primary);
+}
+
+.bg-secondary {
+  background-color: var(--secondary);
+}
+
+.text-secondary {
+  color: var(--secondary);
+}
+
+.bg-coral {
+  background: linear-gradient(135deg, var(--secondary) 0%, var(--accent) 100%);
+}
+
+.text-coral {
+  color: var(--secondary);
+}
+
+.bg-card {
+  background-color: var(--card);
+}
+
+.text-card-foreground {
+  color: var(--card-foreground);
+}
+
+.bg-accent {
+  background-color: var(--accent);
+}
+
+.text-accent {
+  color: var(--accent);
+}
+
+.border-border {
+  border-color: var(--border);
+}
+
+/* Dark card styles */
+.bg-slate-800 {
+  background-color: rgb(30 41 59);
+  border-color: rgb(51 65 85);
+}
+
+.text-gray-400 {
+  color: rgb(156 163 175);
+}
+
+.bg-gray-700 {
+  background-color: rgb(55 65 81);
+}

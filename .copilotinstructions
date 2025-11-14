@@ -1,0 +1,153 @@
+# ORBIT Frontend Project Instructions
+
+## Project Overview
+- **Project Name**: ORBIT (Organizational Request and Budget Intelligence Tool)
+- **Frontend Stack**: React 19.1.1 + Vite 7.1.7 + Tailwind CSS v3.4.18
+- **Location**: `orbit-frontend/` directory
+- **Repository**: ORBIT-Thesis (Owner: nopi0416, Branch: main)
+
+## Technology Stack
+- **React**: v19.1.1 (functional components only)
+- **Tailwind CSS**: v3.4.18 (NOT v4 - use v3 syntax and classes)
+- **Vite**: v7.1.7 for build tooling
+- **Router**: react-router-dom v7.9.4
+- **Additional**: axios, framer-motion, recharts
+- **Icons**: Custom SVG icons in `src/components/icons.jsx` (can be replaced with lucide-react)
+
+## File Structure Standards
+Follow this established structure when referencing or creating files:
+
+### Core Directories:
+- `src/api/` - API call logic and backend communication (one file per feature/module)
+- `src/assets/` - Static files (images, icons, logos, fonts)
+- `src/components/` - Reusable UI components (buttons, modals, tables, smaller building blocks)
+  - `src/components/ui/` - Base UI components (Button, Card, Badge, Progress)
+  - `src/components/` - Feature-specific components (PageHeader, etc.)
+- `src/context/` - React Contexts for global state management (AuthContext, ThemeContext, etc.)
+- `src/hooks/` - Custom React hooks for reusable logic
+- `src/layouts/` - Layout components defining page structure (sidebar, header)
+- `src/pages/` - Main application pages (one component per route)
+- `src/routes/` - React Router configurations and protected routes
+- `src/services/` - Helper services (auth tokens, role-based access, local storage utilities)
+- `src/styles/` - Global and modular styles
+  - `src/styles/App.css` - Tailwind directives and custom global styles
+  - `src/styles/index.css` - Additional global styles
+- `src/utils/` - Utility functions used across multiple modules
+
+### Existing Components:
+- `src/components/ui/button.jsx` - Button component with variants (default, outline, ghost, etc.)
+- `src/components/ui/card.jsx` - Card components (Card, CardHeader, CardTitle, CardContent)
+- `src/components/ui/badge.jsx` - Badge component with status variants
+- `src/components/ui/progress.jsx` - Progress bar component
+- `src/components/PageHeader.jsx` - Page header with title, description, and actions
+- `src/components/icons.jsx` - Custom SVG icon components
+- `src/context/AuthContext.jsx` - Authentication context with useAuth hook
+- `src/utils/cn.js` - Utility for combining CSS classes
+- `src/pages/Dashboard.jsx` - Main dashboard component with role-based content
+- `src/routes/AppRouter.jsx` - Router configuration with AuthProvider
+
+## Code Standards & Patterns
+
+### React Patterns:
+- Use functional components with hooks (no class components)
+- Use React.forwardRef for UI components that need ref forwarding
+- Export components using named exports for utilities, default exports for pages
+- Use destructuring for props with default values
+- Import React explicitly when using JSX
+
+### Styling Guidelines:
+- **Use Tailwind CSS v3 classes exclusively** - no custom CSS unless absolutely necessary
+- Import Tailwind directives in `src/styles/App.css`:
+  ```css
+  @tailwind base;
+  @tailwind components;
+  @tailwind utilities;
+  ```
+- Use the `cn()` utility from `src/utils/cn.js` for conditional class names
+- Follow responsive design patterns: `md:`, `lg:`, `xl:` prefixes
+- Use semantic color classes: `text-primary`, `bg-secondary`, etc.
+
+### Component Architecture:
+- Keep components focused and single-responsibility
+- Use composition over inheritance
+- Create reusable UI components in `src/components/ui/`
+- Feature-specific components go in `src/components/`
+- Pages should be container components that compose smaller components
+
+### Import Patterns:
+```javascript
+// React and hooks
+import React from 'react';
+import { useState, useEffect } from 'react';
+
+// Router
+import { Link, useNavigate } from 'react-router-dom';
+
+// Internal components (use relative paths)
+import { Button } from '../components/ui/button';
+import { PageHeader } from '../components/PageHeader';
+
+// Context and utilities
+import { useAuth } from '../context/AuthContext';
+import { cn } from '../utils/cn';
+```
+
+### User Roles & Permissions:
+The application supports multiple user roles:
+- `requestor` - Can submit budget requests
+- `l1`, `l2`, `l3` - Different levels of approvers
+- `payroll` - Can process payments
+
+Use the `useAuth()` hook to access user information and role-based logic.
+
+## Development Guidelines
+
+### File Naming:
+- Components: PascalCase (e.g., `PageHeader.jsx`)
+- Pages: PascalCase (e.g., `Dashboard.jsx`)
+- Utilities: camelCase (e.g., `cn.js`)
+- Constants: UPPER_SNAKE_CASE
+
+### Routing:
+- Use React Router v7 patterns
+- Configure routes in `src/routes/AppRouter.jsx`
+- Wrap routes with `AuthProvider` for authentication context
+- Use `<Link to="/path">` instead of `<a href="/path">`
+
+### State Management:
+- Use React Context for global state (auth, theme, etc.)
+- Use useState and useReducer for local component state
+- Keep state close to where it's used
+
+### Error Handling:
+- Implement proper error boundaries
+- Use try-catch for async operations
+- Provide user-friendly error messages
+
+## Build & Development
+
+### Available Scripts:
+- `npm run dev` - Start development server
+- `npm run build` - Build for production
+- `npm run lint` - Run ESLint
+- `npm run preview` - Preview production build
+
+### Environment:
+- Uses Vite for fast development and building
+- Hot module replacement enabled
+- PostCSS with Autoprefixer for CSS processing
+
+## Future Conversation Rules
+
+1. **Always reference files using proper workspace paths**
+2. **When suggesting new components, place them in appropriate directories**
+3. **Use Tailwind CSS v3 syntax and classes exclusively**
+4. **Maintain consistency with existing file naming and import patterns**
+5. **Consider the modular architecture when suggesting code organization**
+6. **Reference existing dependencies from package.json when possible**
+7. **Follow the established component patterns and props structure**
+8. **Use the AuthContext for user authentication and role-based features**
+9. **Implement responsive design with Tailwind's responsive prefixes**
+10. **Keep components reusable and well-documented**
+
+This structure ensures maintainable, scalable code organization for the ORBIT application with proper separation of concerns and consistent patterns throughout the codebase.
