@@ -1,6 +1,7 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState, useEffect } from 'react';
 
-const AuthContext = createContext();
+export const AuthContext = createContext();
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -10,25 +11,34 @@ export const useAuth = () => {
   return context;
 };
 
-export const AuthProvider = ({ children }) => {
+export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Mock user data - replace with actual API calls
+  // Check for existing session/token on mount
   useEffect(() => {
-    // Simulate loading user data
-    const mockUser = {
-      id: '1',
-      name: 'John Doe',
-      email: 'john.doe@example.com',
-      role: 'requestor', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll'
+    // Simulate checking for existing auth token
+    const checkAuth = async () => {
+      try {
+        const token = localStorage.getItem('authToken');
+        if (token) {
+          // Mock: Replace with actual API call to verify token
+          const mockUser = {
+            id: '1',
+            name: 'John Doe',
+            email: 'john.doe@example.com',
+            role: 'requestor', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll'
+          };
+          setUser(mockUser);
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+      } finally {
+        setLoading(false);
+      }
     };
-    
-    // Simulate API delay
-    setTimeout(() => {
-      setUser(mockUser);
-      setLoading(false);
-    }, 1000);
+
+    checkAuth();
   }, []);
 
   const login = async (credentials) => {
@@ -36,11 +46,14 @@ export const AuthProvider = ({ children }) => {
     setLoading(true);
     try {
       // Mock login - replace with actual API call
+      const mockToken = 'mock-token-' + Date.now();
+      localStorage.setItem('authToken', mockToken);
+      
       const mockUser = {
         id: '1',
         name: credentials.email.split('@')[0],
         email: credentials.email,
-        role: 'requestor',
+        role: 'requestor', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll'
       };
       setUser(mockUser);
       return { success: true };
@@ -70,4 +83,4 @@ export const AuthProvider = ({ children }) => {
       {children}
     </AuthContext.Provider>
   );
-};
+}

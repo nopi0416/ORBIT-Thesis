@@ -3,39 +3,39 @@
 @tailwind utilities;
 
 :root {
-  /* ORBIT color scheme - light mode with off-white background */
-  --background: oklch(0.98 0.002 264); /* Off-white, not pure white */
-  --foreground: oklch(0.2 0.01 264);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.01 264);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0.01 264);
+  /* ORBIT color scheme - dark mode */
+  --background: oklch(0.12 0.04 270); /* Dark background */
+  --foreground: oklch(0.95 0.01 280); /* Nearly white text */
+  --card: oklch(0.18 0.05 280); /* Dark card background */
+  --card-foreground: oklch(0.95 0.01 280); /* Light text on cards */
+  --popover: oklch(0.18 0.05 280);
+  --popover-foreground: oklch(0.95 0.01 280);
 
   /* Primary: Blue from color palette */
   --primary: oklch(0.55 0.22 250); /* Vibrant blue */
-  --primary-foreground: oklch(1 0 0);
+  --primary-foreground: oklch(0.98 0.002 264); /* Light text on primary */
 
   /* Secondary: Coral/salmon brand color */
   --secondary: oklch(0.7 0.15 25); /* Coral/salmon */
-  --secondary-foreground: oklch(0.98 0.002 264);
+  --secondary-foreground: oklch(0.15 0.02 280); /* Dark text on secondary */
 
-  --muted: oklch(0.95 0.005 264);
-  --muted-foreground: oklch(0.5 0.01 264);
+  --muted: oklch(0.4 0.04 280); /* Muted color for dark mode */
+  --muted-foreground: oklch(0.65 0.03 280); /* Muted text */
 
   /* Accent: Hot pink from palette */
   --accent: oklch(0.65 0.28 340); /* Hot pink/magenta */
-  --accent-foreground: oklch(1 0 0);
+  --accent-foreground: oklch(0.15 0.02 280); /* Dark text on accent */
 
   /* Warning: Yellow from palette */
   --warning: oklch(0.85 0.18 85); /* Yellow */
-  --warning-foreground: oklch(0.2 0.01 264);
+  --warning-foreground: oklch(0.15 0.02 280); /* Dark text on warning */
 
-  --destructive: oklch(0.55 0.22 25);
-  --destructive-foreground: oklch(1 0 0);
+  --destructive: oklch(0.55 0.22 25); /* Red */
+  --destructive-foreground: oklch(0.98 0.002 264); /* Light text on destructive */
 
-  --border: oklch(0.9 0.005 264);
-  --input: oklch(0.9 0.005 264);
-  --ring: oklch(0.55 0.22 250);
+  --border: oklch(0.3 0.05 280); /* Dark border */
+  --input: oklch(0.18 0.05 280); /* Dark input background */
+  --ring: oklch(0.55 0.22 250); /* Blue ring */
 
   --chart-1: oklch(0.55 0.22 250); /* Blue */
   --chart-2: oklch(0.65 0.28 340); /* Pink */
@@ -45,14 +45,14 @@
 
   --radius: 0.5rem;
 
-  /* Sidebar tokens */
-  --sidebar: oklch(1 0 0);
-  --sidebar-foreground: oklch(0.2 0.01 264);
+  /* Sidebar tokens - dark mode */
+  --sidebar: oklch(0.18 0.05 280);
+  --sidebar-foreground: oklch(0.95 0.01 280);
   --sidebar-primary: oklch(0.55 0.22 250);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.96 0.005 264);
-  --sidebar-accent-foreground: oklch(0.2 0.01 264);
-  --sidebar-border: oklch(0.92 0.005 264);
+  --sidebar-primary-foreground: oklch(0.98 0.002 264);
+  --sidebar-accent: oklch(0.65 0.28 340);
+  --sidebar-accent-foreground: oklch(0.15 0.02 280);
+  --sidebar-border: oklch(0.3 0.05 280);
   --sidebar-ring: oklch(0.55 0.22 250);
 }
 

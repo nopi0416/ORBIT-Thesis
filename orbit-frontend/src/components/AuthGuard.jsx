@@ -15,7 +15,7 @@ export const AuthGuard = ({ children, requireAuth = true }) => {
       </div>
     );
   }
-
+  // If auth is required but user is not authenticated
   // If auth is required but user is not authenticated
   if (requireAuth && !user) {
     return (
@@ -33,7 +33,6 @@ export const AuthGuard = ({ children, requireAuth = true }) => {
       </div>
     );
   }
-
   // If no auth required or user is authenticated
   return children;
 };
