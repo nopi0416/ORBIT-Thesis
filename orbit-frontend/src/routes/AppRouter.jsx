@@ -6,6 +6,11 @@ import BudgetRequest from '../pages/BudgetRequest';
 import Approval from '../pages/Approval';
 import Organization from '../pages/Organization';
 import Profile from '../pages/Profile';
+import AdminDashboard from '../pages/AdminDashboard';
+import AdminLogs from '../pages/admin/AdminLogs';
+import AdminUserManagement from '../pages/admin/AdminUserManagement';
+import AdminOUManagement from '../pages/admin/AdminOUManagement';
+import AdminProfile from '../pages/admin/AdminProfile';
 
 // Main App Router Component
 export const AppRouter = () => {
@@ -48,6 +53,38 @@ export const AppRouter = () => {
       <Route path="/profile" element={
         <DashboardLayout>
           <Profile />
+        </DashboardLayout>
+      } />
+
+      {/* Admin Routes */}
+      <Route path="/admin" element={
+        <DashboardLayout>
+          <AdminDashboard />
+        </DashboardLayout>
+      } />
+      <Route path="/admin/dashboard" element={
+        <DashboardLayout>
+          <AdminDashboard />
+        </DashboardLayout>
+      } />
+      <Route path="/admin/logs" element={
+        <DashboardLayout>
+          <AdminLogs />
+        </DashboardLayout>
+      } />
+      <Route path="/admin/users" element={
+        <DashboardLayout>
+          <AdminUserManagement />
+        </DashboardLayout>
+      } />
+      <Route path="/admin/organizations" element={
+        <DashboardLayout>
+          <AdminOUManagement />
+        </DashboardLayout>
+      } />
+      <Route path="/admin/settings" element={
+        <DashboardLayout>
+          <AdminProfile />
         </DashboardLayout>
       } />
       
