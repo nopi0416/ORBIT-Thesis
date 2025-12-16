@@ -44,6 +44,34 @@ export function Sidebar({ userRole }) {
     },
   ];
 
+  const adminNavigation = [
+    {
+      name: "Admin Dashboard",
+      href: "/admin",
+      icon: LayoutDashboard,
+    },
+    {
+      name: "Admin Users",
+      href: "/admin/users",
+      icon: FileText,
+    },
+    {
+      name: "Admin Organizations",
+      href: "/admin/organizations",
+      icon: Building2,
+    },
+    {
+      name: "Admin Logs",
+      href: "/admin/logs",
+      icon: FileText,
+    },
+    {
+      name: "Admin Settings",
+      href: "/admin/settings",
+      icon: User,
+    },
+  ];
+
   return (
     <div
       onMouseEnter={() => setIsHovered(true)}
@@ -78,6 +106,7 @@ export function Sidebar({ userRole }) {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 p-3">
+        {/* Regular Navigation */}
         {navigation.map((item) => {
           const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
           return (
@@ -87,6 +116,31 @@ export function Sidebar({ userRole }) {
               className={cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                 isActive ? "bg-primary/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white",
+              )}
+              title={!isHovered ? item.name : undefined}
+            >
+              <item.icon className="h-5 w-5 shrink-0" />
+              {isHovered && <span>{item.name}</span>}
+            </Link>
+          );
+        })}
+
+        {/* Admin Navigation Section */}
+        {isHovered && (
+          <>
+            <div className="my-2 border-t border-white/10"></div>
+            <p className="px-3 py-2 text-xs font-semibold uppercase text-white/50">Admin</p>
+          </>
+        )}
+        {adminNavigation.map((item) => {
+          const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
+          return (
+            <Link
+              key={item.name}
+              to={item.href}
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                isActive ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-white/70 hover:bg-white/10 hover:text-white",
               )}
               title={!isHovered ? item.name : undefined}
             >
