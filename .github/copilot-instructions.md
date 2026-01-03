@@ -1,63 +1,73 @@
 # ORBIT Thesis - Copilot Instructions
 
 ## Project Overview
-**ORBIT** (Organizational Request and Budget Intelligence Tool) is a React-based budget management and approval workflow application. The frontend is a Vite + React SPA with role-based access control (requestor, l1, l2, l3, payroll).
+**ORBIT** (Organizational Request and Budget Intelligence Tool) is a full-stack budget management and approval workflow system with:
+- **Frontend**: React 19 + Vite SPA with role-based access control (requestor, l1, l2, l3, payroll)
+- **Backend**: Express.js API with Supabase PostgreSQL database
+- **Core Domain**: Budget configuration, request submission, multi-level approval workflows
 
 ## Architecture & Data Flow
 
-### App Structure
-- **Framework**: React 19 + Vite (HMR enabled) + React Router v7
-- **Styling**: Tailwind CSS + OKLCh color system (stored in `src/styles/App.css`)
-- **UI Library**: Custom Radix UI-based components in `src/components/ui/`
-- **State Management**: React Context (`AuthContext` in `src/context/AuthContext.jsx`)
+### Frontend Architecture (orbit-frontend)
+- **Framework**: React 19 + Vite (HMR) + React Router v7
+- **Styling**: Tailwind CSS + OKLCh color system (CSS variables in [src/styles/App.css](src/styles/App.css))
+- **UI Components**: Radix UI-based primitives in [src/components/ui/](src/components/ui/)
+- **State**: React Context (`useAuth()` hook) - mock auth; replace with backend API
+- **Layout**: [DashboardLayout.jsx](src/layouts/DashboardLayout.jsx) wraps all protected routes with sidebar + role-aware navigation
 
-### Core Component Hierarchy
+### Backend Architecture (orbit-backend)
+- **Framework**: Express.js (ES modules, port 3001)
+- **Database**: Supabase PostgreSQL (via `@supabase/supabase-js`)
+- **Routing**: Centralized in [src/routes/index.js](src/routes/index.js)
+- **MVC Pattern**: Controllers → Services → Database queries
+  - **Controllers** [src/controllers/](src/controllers/) - HTTP request handling, validation
+  - **Services** [src/services/](src/services/) - Business logic, database operations
+  - **Config** [src/config/](src/config/) - Database client, CORS setup
+  - **Middleware** [src/middleware/](src/middleware/) - Auth (JWT stub), error handling
+  - **Utils** [src/utils/](src/utils/) - Response helpers, validators
+
+### Data Flow
 ```
-App.jsx (BrowserRouter wrapper)
-  └─ AuthProvider (context wraps all routes)
-      └─ AppRouter (defines all routes)
-          └─ DashboardLayout (protected routes)
-              ├─ Sidebar (collapsible, role-aware navigation)
-              ├─ DemoUserSwitcher (dev-only role switcher)
-              └─ Page Component (Dashboard, Approval, BudgetRequest, Organization, Profile)
+Frontend (React) ─axios→ Backend (Express) ─Supabase→ PostgreSQL
+  Approval.jsx         POST /api/budget-configurations    tblbudgetconfiguration
+  BudgetRequest.jsx    GET  /api/budget-configurations    
 ```
 
-### Authentication & Authorization
-- **Context**: `useAuth()` hook provides `{ user, setUser, login, logout, loading }`
-- **Current**: Mock user system with hardcoded roles - replace with API when ready
-- **Protection**: `AuthGuard` component blocks unauthenticated access; wraps all protected routes
-- **Roles**: `'requestor'`, `'l1'`, `'l2'`, `'l3'`, `'payroll'` - passed to `Sidebar` for conditional nav items
-- **Storage**: Auth token cleared via `localStorage.removeItem('authToken')` on logout
-
-### Color System (OKLCh)
-All colors defined as CSS variables in `src/styles/App.css` using oklch() notation:
-- **Primary**: Vibrant blue (`oklch(0.55 0.22 250)`)
-- **Secondary**: Coral/salmon (`oklch(0.7 0.15 25)`)
-- **Accent**: Hot pink (`oklch(0.65 0.28 340)`)
-- **Warning**: Yellow (`oklch(0.85 0.18 85)`)
-- **Background**: Off-white (`oklch(0.98 0.002 264)`)
-
-Background uses gradient overlays with blur effects in `DashboardLayout` for visual depth.
+### API Routes (Backend)
+- **Health Check**: `GET /api/health` → `{ status, message, timestamp }`
+- **Budget Configs**: `GET/POST/PUT/DELETE /api/budget-configurations` (filtered by name, period, geo, department)
+- **Response Format**: All endpoints use `sendSuccess()` / `sendError()` utilities for consistency
+  - Success: `{ success: true, data, message, statusCode }`
+  - Error: `{ success: false, error, statusCode }`
 
 ## Development Workflow
 
-### Build & Run
+### Frontend Build & Run (orbit-frontend/)
 ```bash
-# Install dependencies
 npm install
-
-# Development server with HMR
-npm run dev       # Runs on http://localhost:5173
-
-# Production build
-npm build
-
-# Lint code
-npm lint          # ESLint with React plugin rules
-
-# Preview production build
-npm preview
+npm run dev       # Vite HMR server on http://localhost:5173
+npm build         # Production bundle
+npm lint          # ESLint
+npm preview       # Preview production build
 ```
+
+### Backend Build & Run (orbit-backend/)
+```bash
+npm install
+npm start         # Node.js on port 3001 (default)
+npm run dev       # Nodemon auto-reload on file changes
+# PORT=3002 npm run dev  # Custom port via ENV
+```
+
+### Environment Setup (Backend)
+Create `orbit-backend/.env`:
+```
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_anon_key
+PORT=3001
+```
+- Never commit `.env`; use `.env.example` template
+- Database client initialized in [src/config/database.js](src/config/database.js)
 
 ### Project Structure
 ```
@@ -65,36 +75,50 @@ orbit-frontend/
   src/
     components/
       ui/              # Radix-based UI primitives (Button, Card, Dialog, etc.)
-      AuthGuard.jsx    # Protects routes; shows loading/access denied states
-      Sidebar.jsx      # Role-aware collapsible navigation
-      DemoUserSwitcher.jsx  # Dev tool to switch roles
-      PageHeader.jsx   # Reusable page title component
-      icons.jsx        # Lucide icon re-exports
+      AuthGuard.jsx    # Route protection; loading/access denied states
+      Sidebar.jsx      # Role-aware navigation
+      DemoUserSwitcher.jsx  # Dev-only role switcher
+      PageHeader.jsx   # Page title component
     context/
-      AuthContext.jsx  # Global auth state + mock login/logout
+      AuthContext.jsx  # Auth state + mock login (replace with API)
     layouts/
-      DashboardLayout.jsx  # Main layout wrapping protected pages
+      DashboardLayout.jsx  # Main layout with sidebar + gradient background
     pages/
-      Dashboard.jsx    # Home page with widgets/overview
-      Approval.jsx     # Approval workflow (3200+ lines, centralized budget configs)
+      Dashboard.jsx    # Home with widgets
+      Approval.jsx     # Approval workflow + budget configs (3200+ lines)
       BudgetRequest.jsx  # Budget configuration form
-      Organization.jsx # Org structure management
-      Profile.jsx      # User profile & settings
+      Organization.jsx # Org structure
+      Profile.jsx      # User settings
     routes/
-      AppRouter.jsx    # Route definitions with layout wrapping
+      AppRouter.jsx    # Route definitions
     styles/
-      App.css          # Tailwind directives + CSS variables (OKLCh)
+      App.css          # Tailwind + OKLCh color system
       index.css        # Global styles
+
+orbit-backend/
+  src/
+    config/
+      database.js      # Supabase client initialization
+      cors.js          # CORS configuration
+    controllers/
+      budgetConfigController.js  # HTTP handlers for budget CRUD
+    services/
+      budgetConfigService.js     # Database queries + business logic
+    middleware/
+      auth.js          # JWT token validation (stub)
+      errorHandler.js  # Centralized error handling
+    routes/
+      index.js         # Router setup
+      budgetConfigRoutes.js  # Budget endpoints
     utils/
-      cn.js            # classname utility (clsx-style)
-      types.js         # Type constants/definitions
-    context/
-      AuthContext.jsx  # Auth state & mock data
+      response.js      # sendSuccess/sendError helpers
+      validators.js    # Input validation schemas
+    index.js           # Express app setup + middleware
 ```
 
 ## Key Patterns & Conventions
 
-### Component Pattern
+### Frontend Component Pattern
 - Use `.jsx` extension for all React components
 - Import UI components from `../components/ui` (centralized in `index.js`)
 - Example:
@@ -103,81 +127,89 @@ orbit-frontend/
   import { useAuth } from '../context/AuthContext';
   ```
 
-### Data & State
-- **Mock Data**: In `Approval.jsx`, budget configs hardcoded in `budgetConfigurations` object (lines ~40+)
+### Data & State (Frontend)
 - **Auth State**: Always check `useAuth()` for current user role before rendering role-specific content
+- **Protected Routes**: Use `AuthGuard` wrapper automatically applied in `DashboardLayout`
+- **Mock Data**: Budget configs currently hardcoded in `Approval.jsx` (to be replaced with API calls)
 - **Loading**: `AuthGuard` handles loading spinner; pages don't need separate loading logic
 
 ### UI Component Usage
-- All UI components are in `src/components/ui/` and re-exported by `index.js`
-- Components use Tailwind utility classes + CSS variables
-- Dialog/Modal pattern: Use `Dialog`, `DialogContent`, `DialogHeader`, `DialogTitle`, `DialogDescription` from `dialog.jsx`
-- Forms: Use `Input`, `Label`, `Select`, `Textarea` - all styled consistently
+- All UI components in `src/components/ui/` and re-exported by `index.js`
+- Components use Tailwind utility classes + CSS variables (OKLCh color tokens)
+- Dialog/Modal pattern: `Dialog`, `DialogContent`, `DialogHeader`, `DialogTitle`, `DialogDescription`
+- Forms: `Input`, `Label`, `Select`, `Textarea` - all styled consistently
+- Styling: Tailwind-first with `cn()` utility for class combinations
 
-### Styling Approach
-- Tailwind-first: Use utility classes (`flex`, `gap-4`, `text-lg`, etc.)
-- Color tokens: Reference CSS variables (`text-primary`, `bg-secondary`, `border-border`)
-- Custom styles via `cn()` utility when combining classes: `cn("base-class", isActive && "active-class")`
-- Gradient backgrounds: Use inline `style` prop with oklch gradient strings
+### Backend Service Pattern (MVC)
+- **Controllers** receive HTTP requests, validate input, delegate to services
+- **Services** contain business logic and all database operations
+- **Validators** in `utils/validators.js` - check required fields and data types before DB writes
+- **Response Utility**: Always use `sendSuccess()` or `sendError()` helpers for consistent API responses
+  - Example: `sendSuccess(res, data, 'Budget created', 201)`
+  - Example: `sendError(res, 'Missing budget_name', 400)`
+
+### Database Conventions (Supabase PostgreSQL)
+- Table names: `tbl{EntityName}` (e.g., `tblbudgetconfiguration`)
+- Budget config columns: `budget_name`, `min_limit`, `max_limit`, `period_type`, `geo_scope`, `department_scope`, `created_by`, `created_at`
+- All timestamps in ISO format via `new Date().toISOString()`
+- Queries use Supabase JS client: `await supabase.from('table').select('*')`
+- Filters via `ilike()` (case-insensitive), `eq()`, and chainable query builders
 
 ### Routing
-- Routes defined in `AppRouter.jsx` with DashboardLayout wrapping
-- Protected routes automatically wrapped with `AuthGuard` inside `DashboardLayout`
-- Navigation via React Router `useNavigate()` or `<Link>` components
-- Demo role switcher in top-right for testing different role permissions
+- Frontend routes in `AppRouter.jsx` with `DashboardLayout` wrapping protected pages
+- Backend routes in `src/routes/index.js` - all under `/api` prefix
+- Budget config endpoints: `GET/POST/PUT/DELETE /api/budget-configurations` with query filters
 
 ## Critical Files
-- `src/context/AuthContext.jsx` - Auth state; replace mock `setUser` with real API
-- `src/layouts/DashboardLayout.jsx` - Layout structure; background gradients configured here
-- `src/components/Sidebar.jsx` - Navigation logic; add/remove items per role
-- `src/styles/App.css` - Color theme; update oklch values to change brand colors
-- `src/pages/Approval.jsx` - Largest page; contains budget workflow logic
+- **Frontend Auth**: [src/context/AuthContext.jsx](src/context/AuthContext.jsx) - Replace mock `setUser` with real API calls
+- **Frontend Layout**: [src/layouts/DashboardLayout.jsx](src/layouts/DashboardLayout.jsx) - Background gradients, sidebar integration
+- **Frontend Nav**: [src/components/Sidebar.jsx](src/components/Sidebar.jsx) - Role-aware navigation logic
+- **Frontend Colors**: [src/styles/App.css](src/styles/App.css) - OKLCh CSS variables (brand colors)
+- **Backend Routes**: [orbit-backend/src/routes/index.js](orbit-backend/src/routes/index.js) - API endpoint setup
+- **Backend Controller**: [orbit-backend/src/controllers/budgetConfigController.js](orbit-backend/src/controllers/budgetConfigController.js) - CRUD handlers
+- **Backend Service**: [orbit-backend/src/services/budgetConfigService.js](orbit-backend/src/services/budgetConfigService.js) - Database logic
+- **Backend DB Config**: [orbit-backend/src/config/database.js](orbit-backend/src/config/database.js) - Supabase client
 
 ## External Dependencies
-- **React Router**: Navigation & route protection
-- **Axios**: HTTP client (imported but may not be actively used yet)
-- **Lucide React**: Icon library (imported as `components/icons.jsx`)
-- **Recharts**: Charts/graphs (available for dashboard)
-- **Framer Motion**: Animations (available, minimal usage)
-- **Radix UI**: Headless UI primitives (Dialog, Select, Dropdown)
-- **Tailwind CSS**: Utility CSS framework
+- **Frontend**: React 19, Vite, React Router v7, Tailwind CSS, Radix UI, Axios, Lucide Icons, Recharts, Framer Motion
+- **Backend**: Express.js, Supabase JS, dotenv, CORS, Helmet
+- **DevTools**: ESLint (frontend), Nodemon (backend auto-reload)
 
 ## Common Tasks
 
-### Add a New Page
-1. Create component in `src/pages/YourPage.jsx`
-2. Import UI components from `../components/ui/`
-3. Use `useAuth()` to access user role
-4. Add route in `AppRouter.jsx` wrapped with `DashboardLayout`
-5. Add navigation item in `Sidebar.jsx` if visible to certain roles
+### Add a New Budget Endpoint
+1. Define route in [orbit-backend/src/routes/budgetConfigRoutes.js](orbit-backend/src/routes/budgetConfigRoutes.js)
+2. Create controller method in [orbit-backend/src/controllers/budgetConfigController.js](orbit-backend/src/controllers/budgetConfigController.js)
+3. Add service method in [orbit-backend/src/services/budgetConfigService.js](orbit-backend/src/services/budgetConfigService.js) with Supabase query
+4. Add validator function in [orbit-backend/src/utils/validators.js](orbit-backend/src/utils/validators.js)
+5. Return responses using `sendSuccess()` or `sendError()` utilities
 
-### Update Auth System
-1. Replace mock user in `AuthContext.jsx` `useEffect` with API call
-2. Update `login()` function to call backend endpoint
-3. Store token in `localStorage` or secure cookie
-4. Update `AuthGuard` if needed for new loading/error states
+### Connect Frontend to Backend API
+1. Replace mock data in `Approval.jsx` with API calls using axios
+2. Ensure backend `.env` has `SUPABASE_URL`, `SUPABASE_KEY`, `PORT`
+3. Update `AuthContext.jsx` to fetch auth via `/api/auth` endpoint (stub: `authenticateToken`)
+4. Frontend runs on `http://localhost:5173`, backend on `http://localhost:3001` - CORS already configured
 
-### Add UI Component
-1. Create in `src/components/ui/ComponentName.jsx` based on Radix UI pattern
-2. Export from `src/components/ui/index.js`
-3. Use Tailwind + CSS variables for styling
-4. Import in pages via `../components/ui/component-name`
+### Add a New Frontend Page
+1. Create component in [src/pages/YourPage.jsx](src/pages/YourPage.jsx)
+2. Import UI components: `import { Button, Card } from '../components/ui'`
+3. Use `useAuth()` to check user role
+4. Add route in [src/routes/AppRouter.jsx](src/routes/AppRouter.jsx) wrapped with `DashboardLayout`
+5. Add nav item in [src/components/Sidebar.jsx](src/components/Sidebar.jsx) with role guard
 
 ### Change Brand Colors
-1. Update oklch values in `src/styles/App.css` (`:root` section)
-2. Ensure sufficient contrast for accessibility
-3. Test with different role/theme states
+1. Edit OKLCh values in [src/styles/App.css](src/styles/App.css) `:root` section
+2. Color tokens: `--color-primary`, `--color-secondary`, `--color-accent`, etc.
+3. Test contrast and role-specific themes
 
 ## Testing & Debugging
-- ESLint configured: `npm run lint`
-- React DevTools browser extension recommended
-- Vite HMR updates components instantly on save
-- Demo user switcher in top-right for quick role testing
-- Check browser console for mock API warnings
+- **Frontend**: `npm run lint` (ESLint), React DevTools browser extension, Vite HMR auto-reload, demo role switcher in top-right
+- **Backend**: `npm run dev` (Nodemon), test endpoints via curl/Postman, check `.env` is present before starting
+- **Full Stack**: Frontend http://localhost:5173, Backend http://localhost:3001, Health check: `GET /api/health`
 
 ## Notes for AI Agents
-- Mock auth system in place—real API integration needed before production
-- Budget configs in `Approval.jsx` are centralized; consider moving to a data file if scaling
-- Large Approval page (3200 lines) may need refactoring into sub-components
-- No database integration yet; all data in-memory
-- No tests configured—Jest/Vitest setup recommended for reliability
+- **Auth System**: Mock in place - real JWT/Supabase auth integration needed before production (see `auth.js` stub)
+- **Database**: Schema already in Supabase - ensure `tblbudgetconfiguration` table exists with correct columns
+- **Frontend Integration**: Budget configs in `Approval.jsx` hardcoded - migrate to API calls to `/api/budget-configurations`
+- **Large Components**: `Approval.jsx` is 3200+ lines - consider splitting into sub-components when refactoring
+- **No Tests**: Jest/Vitest setup recommended for both frontend and backend reliability

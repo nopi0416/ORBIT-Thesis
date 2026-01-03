@@ -1,5 +1,8 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import axios from 'axios';
+
+const API_URL = 'http://localhost:3001/api';
 
 export const AuthContext = createContext();
 
@@ -17,22 +20,21 @@ export function AuthProvider({ children }) {
 
   // Check for existing session/token on mount
   useEffect(() => {
-    // Simulate checking for existing auth token
     const checkAuth = async () => {
       try {
         const token = localStorage.getItem('authToken');
         if (token) {
-          // Mock: Replace with actual API call to verify token
-          const mockUser = {
-            id: '1',
-            name: 'John Doe',
-            email: 'john.doe@example.com',
-            role: 'requestor', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll'
-          };
-          setUser(mockUser);
+          // TODO: Call backend to verify token validity
+          // For now, parse the token and extract user info
+          const userStr = localStorage.getItem('authUser');
+          if (userStr) {
+            setUser(JSON.parse(userStr));
+          }
         }
       } catch (error) {
         console.error('Auth check failed:', error);
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('authUser');
       } finally {
         setLoading(false);
       }
@@ -42,23 +44,39 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = async (credentials) => {
-    // Implement login logic
     setLoading(true);
     try {
-      // Mock login - replace with actual API call
-      const mockToken = 'mock-token-' + Date.now();
-      localStorage.setItem('authToken', mockToken);
-      
-      const mockUser = {
-        id: '1',
-        name: credentials.email.split('@')[0],
+      const response = await axios.post(`${API_URL}/auth/login`, {
         email: credentials.email,
-        role: 'requestor', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll'
-      };
-      setUser(mockUser);
-      return { success: true };
+        password: credentials.password,
+      });
+
+      if (response.data.success) {
+        const { token, userId, email, firstName, lastName, role } = response.data.data;
+        
+        // Store token and user info
+        localStorage.setItem('authToken', token);
+        const userData = { 
+          id: userId, 
+          name: `${firstName} ${lastName}`,
+          email,
+          firstName,
+          lastName,
+          role 
+        };
+        localStorage.setItem('authUser', JSON.stringify(userData));
+        setUser(userData);
+        
+        return { success: true };
+      } else {
+        return { success: false, error: response.data.error };
+      }
     } catch (error) {
-      return { success: false, error: error.message };
+      console.error('Login error:', error);
+      return { 
+        success: false, 
+        error: error.response?.data?.error || error.message || 'Login failed' 
+      };
     } finally {
       setLoading(false);
     }
@@ -66,8 +84,8 @@ export function AuthProvider({ children }) {
 
   const logout = () => {
     setUser(null);
-    // Clear any stored tokens
     localStorage.removeItem('authToken');
+    localStorage.removeItem('authUser');
   };
 
   const value = {
