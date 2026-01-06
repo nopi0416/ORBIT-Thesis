@@ -4,6 +4,7 @@
  */
 
 import supabase from '../config/database.js';
+import { sendOTPEmail, sendPasswordResetEmail } from '../config/email.js';
 import { validatePassword } from '../utils/authValidators.js';
 
 export class AuthService {
@@ -75,10 +76,13 @@ export class AuthService {
   }
 
   /**
-   * Login user - checks both tbladminusers and tblusers
+   * Login user - validates credentials and generates OTP
+   * Requires OTP verification to complete login
    */
   static async loginUser(email, password) {
     try {
+      console.log(`[LOGIN] Attempting login for: ${email}`);
+      
       // First, try to find admin user
       const { data: adminUser } = await supabase
         .from('tbladminusers')
@@ -88,15 +92,117 @@ export class AuthService {
         .single();
 
       if (adminUser) {
+        console.log(`[LOGIN] Found admin user: ${email}`);
         // Verify admin password (password_hash field)
         // In production, use bcrypt.compare(password, adminUser.password_hash)
         if (adminUser.password_hash !== password) {
+          console.log(`[LOGIN] Admin password mismatch for: ${email}`);
           return {
             success: false,
             error: 'Invalid email or password',
           };
         }
 
+        // Generate OTP for admin login
+        const otpResult = await this.generateOTP(email, 'login');
+        if (!otpResult.success) {
+          return {
+            success: false,
+            error: 'Failed to generate OTP',
+          };
+        }
+
+        return {
+          success: true,
+          requiresOTP: true,
+          data: {
+            email: adminUser.email,
+            userType: 'admin',
+          },
+          message: 'OTP has been sent to your email. Please verify to complete login.',
+        };
+      }
+
+      // If not admin, try regular user
+      console.log(`[LOGIN] No admin found, checking regular users for: ${email}`);
+      const { data: user, error } = await supabase
+        .from('tblusers')
+        .select('*')
+        .eq('email', email)
+        .single();
+
+      if (error || !user) {
+        console.log(`[LOGIN] User not found or error: ${email}`, error);
+        return {
+          success: false,
+          error: 'Invalid email or password',
+        };
+      }
+
+      console.log(`[LOGIN] Found user: ${email}`);
+
+      // Verify password (check password_hash first, fall back to password column)
+      const passwordToCheck = user.password_hash || user.password;
+      if (passwordToCheck !== password) {
+        console.log(`[LOGIN] Password mismatch for: ${email}`);
+        return {
+          success: false,
+          error: 'Invalid email or password',
+        };
+      }
+
+      console.log(`[LOGIN] Password verified for: ${email}, generating OTP`);
+
+      // Generate OTP for user login
+      const otpResult = await this.generateOTP(email, 'login');
+      if (!otpResult.success) {
+        return {
+          success: false,
+          error: 'Failed to generate OTP',
+        };
+      }
+
+      return {
+        success: true,
+        requiresOTP: true,
+        data: {
+          email: user.email,
+          userType: 'user',
+        },
+        message: 'OTP has been sent to your email. Please verify to complete login.',
+      };
+    } catch (error) {
+      console.error('Error logging in:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Complete login - verify OTP and return authentication token
+   */
+  static async completeLogin(email, otp) {
+    try {
+      // Verify OTP
+      const otpVerification = await this.verifyOTP(email, otp, 'login');
+      if (!otpVerification.success) {
+        return {
+          success: false,
+          error: otpVerification.error || 'Invalid or expired OTP',
+        };
+      }
+
+      // First, try to find admin user
+      const { data: adminUser } = await supabase
+        .from('tbladminusers')
+        .select('*')
+        .eq('email', email)
+        .eq('is_active', true)
+        .single();
+
+      if (adminUser) {
         // Generate JWT token
         const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role);
 
@@ -126,25 +232,16 @@ export class AuthService {
       }
 
       // If not admin, try regular user
-      const { data: user, error } = await supabase
+      const { data: user } = await supabase
         .from('tblusers')
         .select('*')
         .eq('email', email)
-        .eq('is_active', true)
         .single();
 
-      if (error || !user) {
+      if (!user) {
         return {
           success: false,
-          error: 'Invalid email or password',
-        };
-      }
-
-      // Verify password (in production, use bcrypt.compare)
-      if (user.password !== password) {
-        return {
-          success: false,
-          error: 'Invalid email or password',
+          error: 'User not found',
         };
       }
 
@@ -166,10 +263,14 @@ export class AuthService {
       const token = this.generateToken(user.user_id || user.id, user.email, user.role);
 
       // Update last login
-      await supabase
-        .from('tblusers')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('user_id', user.user_id || user.id);
+      try {
+        await supabase
+          .from('tblusers')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('user_id', user.user_id || user.id);
+      } catch (e) {
+        // Silently fail if update not supported
+      }
 
       return {
         success: true,
@@ -185,7 +286,7 @@ export class AuthService {
         message: 'Login successful',
       };
     } catch (error) {
-      console.error('Error logging in:', error);
+      console.error('Error completing login:', error);
       return {
         success: false,
         error: error.message,
@@ -198,14 +299,22 @@ export class AuthService {
    */
   static async generateOTP(email, type = 'reset') {
     try {
-      // Verify user exists
-      const { data: user } = await supabase
+      console.log(`[OTP] Starting OTP generation for: ${email}, type: ${type}`);
+      
+      // Verify user exists - try without .single() first
+      const { data: users, error: queryError } = await supabase
         .from('tblusers')
-        .select('id')
-        .eq('email', email)
-        .single();
+        .select('user_id')
+        .eq('email', email);
 
-      if (!user) {
+      console.log(`[OTP] Query result - error:`, queryError, `users:`, users);
+
+      if (queryError) {
+        console.log(`[OTP] Query error:`, queryError);
+      }
+
+      if (!users || users.length === 0) {
+        console.log(`[OTP] No users found for: ${email}`);
         // Return success for security (don't reveal if email exists)
         return {
           success: true,
@@ -213,9 +322,14 @@ export class AuthService {
         };
       }
 
+      console.log(`[OTP] User found: ${email}, generating OTP`);
+
       // Generate 6-digit OTP
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes, with Z
+
+      console.log(`[OTP] Generated OTP: ${otp}`);
+      console.log(`[OTP] Expires at: ${expiresAt}`);
 
       // Store OTP in database
       const { error } = await supabase
@@ -231,10 +345,21 @@ export class AuthService {
           },
         ]);
 
-      if (error) throw error;
+      if (error) {
+        console.log(`[OTP] Error inserting OTP: `, error);
+        throw error;
+      }
+
+      console.log(`[OTP] OTP stored successfully`);
+
+      // Send OTP via email
+      const emailResult = await sendOTPEmail(email, otp);
+      if (!emailResult.success) {
+        console.log(`[OTP] Warning: Failed to send email but OTP stored`);
+      }
 
       // TODO: Send OTP via email using email service
-      console.log(`OTP for ${email}: ${otp}`); // Temporary debug log
+      console.log(`Generated OTP for ${email}: ${otp}`); // Temporary debug log
 
       return {
         success: true,
@@ -254,6 +379,8 @@ export class AuthService {
    */
   static async verifyOTP(email, otp, type = 'reset') {
     try {
+      console.log(`[VERIFY OTP] Checking OTP for ${email}, type: ${type}`);
+      
       const { data: otpRecord, error } = await supabase
         .from('tblotp')
         .select('*')
@@ -266,19 +393,36 @@ export class AuthService {
         .single();
 
       if (error || !otpRecord) {
+        console.log(`[VERIFY OTP] OTP not found or error:`, error);
         return {
           success: false,
           error: 'Invalid or expired OTP',
         };
       }
 
+      console.log(`[VERIFY OTP] OTP found. Expires at: ${otpRecord.expires_at}, Current time: ${new Date().toISOString()}`);
+
       // Check if OTP has expired
-      if (new Date(otpRecord.expires_at) < new Date()) {
+      // Ensure the timestamp is treated as UTC by adding Z if missing
+      let expiresAtStr = otpRecord.expires_at;
+      if (!expiresAtStr.endsWith('Z')) {
+        expiresAtStr += 'Z';
+      }
+      
+      const expiresAt = new Date(expiresAtStr);
+      const now = new Date();
+      
+      console.log(`[VERIFY OTP] Expires: ${expiresAt.getTime()}, Now: ${now.getTime()}`);
+      
+      if (expiresAt < now) {
+        console.log(`[VERIFY OTP] OTP has expired!`);
         return {
           success: false,
           error: 'OTP has expired',
         };
       }
+
+      console.log(`[VERIFY OTP] OTP is valid, marking as used`);
 
       // Mark OTP as used
       await supabase
@@ -300,7 +444,60 @@ export class AuthService {
   }
 
   /**
-   * Change password
+   * Reset password after OTP verification (no current password needed)
+   */
+  static async resetPasswordAfterOTP(email, newPassword) {
+    try {
+      console.log(`[RESET PASSWORD] Starting for: ${email}`);
+      
+      // Validate new password
+      const validation = validatePassword(newPassword);
+      if (!validation.isValid) {
+        console.log(`[RESET PASSWORD] Validation failed:`, validation.errors);
+        return {
+          success: false,
+          error: validation.errors,
+        };
+      }
+
+      console.log(`[RESET PASSWORD] Validation passed, updating database`);
+
+      // Update password_hash only (most reliable column)
+      const { data, error } = await supabase
+        .from('tblusers')
+        .update({
+          password_hash: newPassword, // TODO: Hash with bcrypt before storing
+        })
+        .eq('email', email)
+        .select();
+
+      if (error) {
+        console.error(`[RESET PASSWORD] Error updating password for ${email}:`, error);
+        // Don't expose database details to frontend
+        return {
+          success: false,
+          error: 'Failed to update password. Please try again.',
+        };
+      }
+
+      console.log(`[RESET PASSWORD] Password reset successfully for ${email}`);
+
+      return {
+        success: true,
+        message: 'Password reset successfully',
+      };
+    } catch (error) {
+      console.error(`[RESET PASSWORD] Catch error for ${email}:`, error);
+      // Don't expose internal error details
+      return {
+        success: false,
+        error: 'An error occurred while resetting your password. Please try again.',
+      };
+    }
+  }
+
+  /**
+   * Change password (requires current password verification)
    */
   static async changePassword(email, newPassword, currentPassword = null) {
     try {
@@ -317,11 +514,11 @@ export class AuthService {
       if (currentPassword) {
         const { data: user } = await supabase
           .from('tblusers')
-          .select('password')
+          .select('password_hash')
           .eq('email', email)
           .single();
 
-        if (!user || user.password !== currentPassword) {
+        if (!user || user.password_hash !== currentPassword) {
           return {
             success: false,
             error: 'Current password is incorrect',
@@ -329,19 +526,23 @@ export class AuthService {
         }
       }
 
-      // Update password
+      // Update password_hash only (most reliable column)
       const { data, error } = await supabase
         .from('tblusers')
         .update({
-          password: newPassword, // TODO: Hash before storing
-          password_change_required: false,
-          password_changed_at: new Date().toISOString(),
-          password_expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+          password_hash: newPassword, // TODO: Hash with bcrypt before storing
         })
         .eq('email', email)
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error updating password:', error);
+        // Don't expose database details to frontend
+        return {
+          success: false,
+          error: 'Failed to update password. Please try again.',
+        };
+      }
 
       return {
         success: true,
@@ -349,9 +550,10 @@ export class AuthService {
       };
     } catch (error) {
       console.error('Error changing password:', error);
+      // Don't expose internal error details
       return {
         success: false,
-        error: error.message,
+        error: 'An error occurred while changing your password. Please try again.',
       };
     }
   }

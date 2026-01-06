@@ -8,35 +8,26 @@ import AuthController from '../controllers/authController.js';
 
 const router = Router();
 
-/**
- * User Registration & Login
- */
+// User Registration & Login Routes
 router.post('/register', AuthController.register);
 router.post('/login', AuthController.login);
+router.post('/complete-login', AuthController.completeLogin);
 
-/**
- * Password Management
- */
+// Password Management Routes
 router.post('/forgot-password', AuthController.forgotPassword);
 router.post('/reset-password', AuthController.resetPassword);
 router.post('/change-password', AuthController.changePassword);
 router.post('/first-time-password', AuthController.firstTimePassword);
 
-/**
- * OTP Management
- */
+// OTP Management Routes
 router.post('/verify-otp', AuthController.verifyOTP);
 router.post('/resend-otp', AuthController.resendOTP);
 
-/**
- * Security Questions
- */
+// Security Questions Routes
 router.post('/security-questions', AuthController.saveSecurityQuestions);
 router.post('/verify-security-answers', AuthController.verifySecurityAnswers);
 
-/**
- * Support & Agreement
- */
+// Support & Agreement Routes
 router.post('/support-ticket', AuthController.createSupportTicket);
 router.post('/user-agreement', AuthController.acceptUserAgreement);
 

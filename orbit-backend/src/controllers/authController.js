@@ -55,7 +55,7 @@ export class AuthController {
 
   /**
    * POST /api/auth/login
-   * Login user with email and password
+   * Login user with email and password - generates OTP
    */
   static async login(req, res) {
     try {
@@ -73,9 +73,45 @@ export class AuthController {
         return sendError(res, result.error, 401);
       }
 
-      sendSuccess(res, result.data, result.message);
+      // Include requiresOTP flag in response
+      const responseData = {
+        ...result.data,
+        requiresOTP: result.requiresOTP,
+      };
+
+      sendSuccess(res, responseData, result.message);
     } catch (error) {
       console.error('Error in login:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * POST /api/auth/complete-login
+   * Verify OTP and complete login - returns authentication token
+   */
+  static async completeLogin(req, res) {
+    try {
+      const { email, otp } = req.body;
+
+      if (!email || !otp) {
+        return sendError(res, 'Email and OTP are required', 400);
+      }
+
+      const validation = validateOTP(otp);
+      if (!validation.isValid) {
+        return sendError(res, validation.error, 400);
+      }
+
+      const result = await AuthService.completeLogin(email, otp);
+
+      if (!result.success) {
+        return sendError(res, result.error, 401);
+      }
+
+      sendSuccess(res, result.data, result.message);
+    } catch (error) {
+      console.error('Error in completeLogin:', error);
       sendError(res, error.message, 500);
     }
   }
@@ -212,16 +248,18 @@ export class AuthController {
         return sendError(res, passwordValidation.errors.join('; '), 400);
       }
 
-      const result = await AuthService.changePassword(email, newPassword);
+      const result = await AuthService.resetPasswordAfterOTP(email, newPassword);
 
       if (!result.success) {
-        return sendError(res, Array.isArray(result.error) ? result.error.join('; ') : result.error, 400);
+        // Don't expose internal errors to frontend
+        return sendError(res, typeof result.error === 'string' ? result.error : 'Failed to reset password', 400);
       }
 
       sendSuccess(res, {}, result.message);
     } catch (error) {
       console.error('Error in resetPassword:', error);
-      sendError(res, error.message, 500);
+      // Don't expose internal error details
+      sendError(res, 'An error occurred while resetting your password', 500);
     }
   }
 

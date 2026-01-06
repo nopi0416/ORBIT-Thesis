@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { authAPI } from '../utils/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -17,6 +18,7 @@ export default function SupportTicket() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [ticketId, setTicketId] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -39,11 +41,23 @@ export default function SupportTicket() {
 
     setIsLoading(true);
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const result = await authAPI.createSupportTicket({
+      name,
+      email,
+      issueType,
+      description,
+    });
 
-    setIsSubmitted(true);
     setIsLoading(false);
+
+    if (!result.success) {
+      setError(result.error);
+      return;
+    }
+
+    const id = result.data?.ticketId || result.data?.id || 'TKT-' + Math.random().toString(36).substr(2, 9).toUpperCase();
+    setTicketId(id);
+    setIsSubmitted(true);
   };
 
   if (isSubmitted) {
@@ -83,7 +97,7 @@ export default function SupportTicket() {
                   <span className="font-medium" style={{ color: 'oklch(0.95 0.02 280)' }}>{email}</span> within 24-48 hours.
                 </p>
                 <p className="text-sm pt-2" style={{ color: 'oklch(0.65 0.03 280)' }}>
-                  Ticket ID: #{Math.random().toString(36).substr(2, 9).toUpperCase()}
+                  Ticket ID: #{ticketId}
                 </p>
               </div>
               <Button

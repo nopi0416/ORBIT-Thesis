@@ -5,6 +5,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { User, AlertCircle, Loader2, ArrowLeft } from '../components/icons';
+import { authAPI } from '../utils/api';
 
 export default function ForgotPassword() {
   const navigate = useNavigate();
@@ -28,11 +29,21 @@ export default function ForgotPassword() {
 
     setIsLoading(true);
 
-    // Simulate processing
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    try {
+      const result = await authAPI.forgotPassword(email);
 
-    // Redirect to OTP verification page with email
-    navigate(`/verify-otp?email=${encodeURIComponent(email)}&type=reset`);
+      if (result.success) {
+        // Redirect to OTP verification page with email
+        navigate(`/verify-otp?email=${encodeURIComponent(email)}&type=reset`);
+      } else {
+        setError(result.error || 'Failed to send reset instructions');
+      }
+    } catch (err) {
+      setError('An unexpected error occurred. Please try again later.');
+      console.error('Forgot password error:', err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

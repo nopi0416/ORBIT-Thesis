@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { authAPI } from '../utils/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -39,11 +40,6 @@ export default function FirstTimePassword() {
     e.preventDefault();
     setError('');
 
-    if (currentPassword !== 'demo123') {
-      setError('Current password is incorrect');
-      return;
-    }
-
     if (!isPasswordValid) {
       setError('Please ensure all password requirements are met');
       return;
@@ -51,11 +47,18 @@ export default function FirstTimePassword() {
 
     setIsLoading(true);
 
-    // Simulate password setup
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const result = await authAPI.firstTimePassword(email, currentPassword, newPassword);
 
-    // Redirect to dashboard or user agreement depending on setup flow
-    navigate('/user-agreement?email=' + encodeURIComponent(email) + '&role=' + role);
+    setIsLoading(false);
+
+    if (!result.success) {
+      setError(result.error);
+      return;
+    }
+
+    // Navigate to security questions with userId from response
+    const userId = result.data?.userId || result.data?.id;
+    navigate(`/security-questions?userId=${userId}`);
   };
 
   return (

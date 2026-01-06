@@ -4,6 +4,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { AlertCircle, Loader2, ArrowLeft } from '../components/icons';
+import { authAPI } from '../utils/api';
 
 export default function VerifyOTP() {
   const navigate = useNavigate();
@@ -99,21 +100,29 @@ export default function VerifyOTP() {
 
     setIsLoading(true);
 
-    // Simulate OTP verification
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const result = await authAPI.verifyOTP(email, otpCode, type || 'reset');
 
-    if (type === 'reset') {
-      // Password reset flow
-      navigate(`/reset-password?email=${encodeURIComponent(email)}`);
-    } else if (type === 'login') {
-      // First-time login flow - start with user agreement
-      navigate(`/user-agreement?email=${encodeURIComponent(email)}&role=requestor`);
-    } else {
-      // Regular login flow - go to dashboard
-      navigate('/dashboard');
+      if (result.success) {
+        if (type === 'reset') {
+          // Password reset flow
+          navigate(`/reset-password?email=${encodeURIComponent(email)}`);
+        } else if (type === 'login') {
+          // First-time login flow - start with user agreement
+          navigate(`/user-agreement?email=${encodeURIComponent(email)}&role=requestor`);
+        } else {
+          // Regular login flow - go to dashboard
+          navigate('/dashboard');
+        }
+      } else {
+        setError(result.error || 'OTP verification failed. Please try again.');
+      }
+    } catch (err) {
+      setError('An unexpected error occurred. Please try again later.');
+      console.error('OTP verification error:', err);
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   const handleResend = async () => {
@@ -123,8 +132,16 @@ export default function VerifyOTP() {
     setResendCooldown(60);
     setTimeRemaining(300);
 
-    // Simulate sending OTP
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const result = await authAPI.resendOTP(email, type || 'reset');
+
+      if (!result.success) {
+        setError(result.error || 'Failed to resend OTP');
+      }
+    } catch (err) {
+      setError('Failed to resend OTP. Please try again.');
+      console.error('Resend OTP error:', err);
+    }
 
     const interval = setInterval(() => {
       setResendCooldown((prev) => {

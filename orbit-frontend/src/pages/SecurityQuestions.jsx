@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { authAPI } from '../utils/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -59,13 +60,27 @@ export default function SecurityQuestions() {
 
     setIsLoading(true);
 
-    // Simulate saving security questions
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Get userId from URL params or from previous flow
+    const userId = searchParams.get('userId') || searchParams.get('email');
+    
+    const result = await authAPI.saveSecurityQuestions(userId, {
+      question1,
+      answer1,
+      question2,
+      answer2,
+      question3,
+      answer3,
+    });
 
-    // Navigate to first-time password setup
-    navigate(
-      `/first-time-password?email=${encodeURIComponent(email)}&role=${role}`
-    );
+    setIsLoading(false);
+
+    if (!result.success) {
+      setError(result.error);
+      return;
+    }
+
+    // Navigate to user agreement
+    navigate(`/user-agreement?userId=${userId}`);
   };
 
   return (

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { authAPI } from '../utils/api';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -29,8 +30,15 @@ export default function UserAgreement() {
     setIsLoading(true);
     setError('');
 
-    // Simulate saving agreement
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const userId = searchParams.get('userId') || searchParams.get('email');
+    const result = await authAPI.acceptUserAgreement(userId, '1.0');
+
+    setIsLoading(false);
+
+    if (!result.success) {
+      setError(result.error);
+      return;
+    }
 
     // Navigate to dashboard
     navigate('/dashboard');

@@ -52,6 +52,12 @@ export function AuthProvider({ children }) {
       });
 
       if (response.data.success) {
+        // Check if OTP is required (2-step login)
+        if (response.data.data?.requiresOTP) {
+          return { success: true, requiresOTP: true, email: response.data.data.email };
+        }
+        
+        // Direct login (fallback, in case backend doesn't require OTP)
         const { token, userId, email, firstName, lastName, role } = response.data.data;
         
         // Store token and user info
@@ -82,6 +88,68 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const completeLogin = async (email, otp) => {
+    setLoading(true);
+    try {
+      const response = await axios.post(`${API_URL}/auth/complete-login`, {
+        email,
+        otp,
+      });
+
+      console.log('Complete login response:', response.data);
+
+      if (response.data.success) {
+        // Check if password change is required
+        if (response.data.requiresPasswordChange) {
+          console.log('Password change required, storing temp data');
+          return { 
+            success: true, 
+            requiresPasswordChange: true,
+            userId: response.data.data?.userId,
+            email: response.data.data?.email
+          };
+        }
+
+        const { token, userId, firstName, lastName, role, email: respEmail } = response.data.data;
+        
+        console.log('Token:', token);
+        console.log('UserId:', userId);
+        console.log('FirstName:', firstName);
+        console.log('LastName:', lastName);
+        
+        // Store token and user info
+        if (!token) {
+          return { success: false, error: 'No token received from server' };
+        }
+
+        localStorage.setItem('authToken', token);
+        const userData = { 
+          id: userId, 
+          name: `${firstName || ''} ${lastName || ''}`.trim(),
+          email: respEmail || email,
+          firstName: firstName || '',
+          lastName: lastName || '',
+          role: role || 'user'
+        };
+        console.log('Storing user data:', userData);
+        localStorage.setItem('authUser', JSON.stringify(userData));
+        setUser(userData);
+        
+        return { success: true };
+      } else {
+        return { success: false, error: response.data.error };
+      }
+    } catch (error) {
+      console.error('Complete login error:', error);
+      return { 
+        success: false, 
+        error: error.response?.data?.error || error.message || 'OTP verification failed' 
+      };
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const logout = () => {
     setUser(null);
     localStorage.removeItem('authToken');
@@ -92,6 +160,7 @@ export function AuthProvider({ children }) {
     user,
     setUser,
     login,
+    completeLogin,
     logout,
     loading,
   };
