@@ -1,7 +1,9 @@
 # Testing Setup Complete - Quick Start Guide
 
 **Status**: Ready for API Testing  
-**Date**: January 2, 2025
+**Focus**: Employee Rewards & Incentives (Bonuses, Sign-In Bonuses, Incentives)  
+**NOT Included**: Salaries, deductions, or corrections  
+**Date**: January 3, 2026
 
 ---
 
@@ -15,8 +17,8 @@ curl -X POST http://localhost:3001/api/budget-configurations \
   -H "Authorization: Bearer test-token-requestor" \
   -H "Content-Type: application/json" \
   -d '{
-    "budget_name": "Q1 2025 Performance Incentives",
-    "budget_description": "Test budget for approval testing",
+    "budget_name": "Q1 2025 Employee Rewards & Incentives",
+    "budget_description": "Quarterly rewards distribution including performance bonuses, sign-in bonuses, and incentives for Q1 2025",
     "total_budget": 500000,
     "budget_currency": "PHP",
     "fiscal_year": 2025,
@@ -34,8 +36,8 @@ curl -X POST http://localhost:3001/api/approval-requests \
   -H "Content-Type: application/json" \
   -d '{
     "budget_id": "YOUR_BUDGET_ID_HERE",
-    "title": "Q1 Performance Bonus",
-    "description": "Test approval request",
+    "title": "Q1 2025 Employee Rewards Distribution",
+    "description": "Q1 2025 employee rewards including performance bonuses, sign-in bonuses, and special incentives for high performers.",
     "total_request_amount": 142500
   }'
 ```
@@ -55,44 +57,49 @@ curl -X POST http://localhost:3001/api/approval-requests/YOUR_REQUEST_ID_HERE/li
         "department": "Engineering",
         "position": "Senior Engineer",
         "item_type": "bonus",
+        "item_description": "Q1 Performance Bonus - Excellent performance on critical projects",
         "amount": 50000,
-        "notes": "Q1 Performance"
+        "notes": "Led major system architecture redesign"
       },
       {
         "employee_id": "EMP002",
         "employee_name": "Bob Smith",
-        "department": "Marketing",
-        "position": "Manager",
-        "item_type": "bonus",
-        "amount": 30000,
-        "notes": "Q1 Performance"
+        "department": "Engineering",
+        "position": "Software Engineer",
+        "item_type": "sign_in_bonus",
+        "item_description": "Q1 Sign-In Bonus - New hire retention incentive",
+        "amount": 25000,
+        "notes": "New hire sign-in bonus to encourage retention"
       },
       {
         "employee_id": "EMP003",
         "employee_name": "Carol Davis",
-        "department": "Sales",
-        "position": "Rep",
-        "item_type": "incentive",
-        "amount": 25000,
-        "notes": "Q1 Sales"
+        "department": "Marketing",
+        "position": "Manager",
+        "item_type": "bonus",
+        "item_description": "Q1 Performance Bonus - Campaign success reward",
+        "amount": 30000,
+        "notes": "Increased marketing engagement by 40%"
       },
       {
         "employee_id": "EMP004",
         "employee_name": "David Lee",
-        "department": "Operations",
-        "position": "Coordinator",
-        "item_type": "bonus",
+        "department": "Sales",
+        "position": "Representative",
+        "item_type": "incentive",
+        "item_description": "Sales Performance Incentive - Quota achievement reward",
         "amount": 20000,
-        "notes": "Q1 Performance"
+        "notes": "Exceeded quarterly sales target by 25%"
       },
       {
         "employee_id": "EMP005",
         "employee_name": "Eva Martinez",
-        "department": "Finance",
-        "position": "Analyst",
-        "item_type": "bonus",
+        "department": "Operations",
+        "position": "Coordinator",
+        "item_type": "special_award",
+        "item_description": "Q1 Special Recognition Bonus - Process improvement initiative",
         "amount": 17500,
-        "notes": "Q1 Performance"
+        "notes": "Implemented process automation, improved efficiency by 20%"
       }
     ]
   }'
@@ -167,7 +174,7 @@ curl -X GET http://localhost:3001/api/approval-requests/YOUR_REQUEST_ID_HERE \
 
 ### Option 2: Direct Database Insert (Faster)
 
-See [APPROVAL_REQUEST_DATABASE_SETUP.md](./APPROVAL_REQUEST_DATABASE_SETUP.md) for SQL commands to insert test data directly.
+See [APPROVAL_REQUEST_DATABASE_SETUP_REWARDS_ONLY.md](./APPROVAL_REQUEST_DATABASE_SETUP_REWARDS_ONLY.md) for SQL commands to insert test data directly.
 
 ---
 
@@ -303,8 +310,9 @@ For detailed information:
 
 ## Test Data Summary
 
-**Budget**: Q1 2025 Performance Incentives (500,000 PHP)  
-**Request**: 142,500 PHP for 5 employees  
+**Budget**: Q1 2025 Employee Rewards & Incentives (500,000 PHP)  
+**Request**: 142,500 PHP for 5 employees with different reward types  
+**Reward Types**: Performance Bonus, Sign-In Bonus, Sales Incentive, Special Award  
 **Approvers**: L1 (Manager), L2 (Director), L3 (VP), L4 (Payroll)  
 **Expected Duration**: ~10 minutes for complete workflow
 

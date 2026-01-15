@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS public.tblbudgetapprovalrequests_line_items (
   CONSTRAINT tblbudgetapprovalrequests_line_items_pkey PRIMARY KEY (line_item_id),
   CONSTRAINT tblbudgetapprovalrequests_line_items_request_id_fkey FOREIGN KEY (request_id) 
     REFERENCES public.tblbudgetapprovalrequests(request_id) ON DELETE CASCADE,
-  CONSTRAINT chk_item_type CHECK (item_type IN ('bonus', 'incentive', 'salary_adjustment', 'deduction', 'correction', 'other')),
+  CONSTRAINT chk_item_type CHECK (item_type IN ('bonus', 'incentive', 'sign_in_bonus', 'special_award', 'referral_reward', 'other_reward')),
   CONSTRAINT chk_line_item_status CHECK (status IN ('pending', 'flagged', 'approved', 'rejected'))
 ) TABLESPACE pg_default;
 

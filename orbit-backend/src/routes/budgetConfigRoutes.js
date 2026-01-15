@@ -8,6 +8,27 @@ const router = Router();
  * Base path: /api/budget-configurations
  */
 
+// ==================== Organizations Endpoints (MUST BE FIRST) ====================
+
+// GET - Get all organizations
+router.get('/organizations/list/all', BudgetConfigController.getOrganizations);
+
+// GET - Get organizations by hierarchy level
+router.get('/organizations/by-level/list', BudgetConfigController.getOrganizationsByLevel);
+
+// ==================== Approvers Lookup Endpoints (MUST BE BEFORE :id) ====================
+
+// GET - Get all approvers grouped by level
+router.get('/approvers/list/all', BudgetConfigController.getAllApprovers);
+
+// GET - Get approvers for a specific level
+router.get('/approvers/level/:level', BudgetConfigController.getApproversByLevel);
+
+// ==================== User Lookup Endpoints (MUST BE BEFORE :id) ====================
+
+// GET - Get user by ID
+router.get('/users/get/:userId', BudgetConfigController.getUserById);
+
 // ==================== Main Budget Configuration Endpoints ====================
 
 // POST - Create a new budget configuration
@@ -38,6 +59,36 @@ router.post('/:budgetId/tenure-groups', BudgetConfigController.addTenureGroups);
 
 // DELETE - Remove a tenure group
 router.delete('/tenure-groups/:tenureGroupId', BudgetConfigController.removeTenureGroup);
+
+// ==================== Approvers Endpoints ====================
+
+// GET - Get approvers for a budget
+router.get('/:budgetId/approvers', BudgetConfigController.getApprovers);
+
+// POST - Set an approver for a budget
+router.post('/:budgetId/approvers', BudgetConfigController.setApprover);
+
+// DELETE - Remove an approver
+router.delete('/approvers/:approverId', BudgetConfigController.removeApprover);
+
+// ==================== Access Scopes Endpoints ====================
+
+// GET - Get access scopes for a budget
+router.get('/:budgetId/access-scopes', BudgetConfigController.getAccessScopes);
+
+// POST - Add an access scope to a budget
+router.post('/:budgetId/access-scopes', BudgetConfigController.addAccessScope);
+
+// DELETE - Remove an access scope
+router.delete('/access-scopes/:scopeId', BudgetConfigController.removeAccessScope);
+
+// ==================== History & Logs Endpoints ====================
+
+// GET - Get budget history and tracking
+router.get('/:id/history', BudgetConfigController.getBudgetHistory);
+
+// GET - Get request logs and approval history
+router.get('/:id/logs', BudgetConfigController.getRequestLogs);
 
 // ==================== Approvers Endpoints ====================
 

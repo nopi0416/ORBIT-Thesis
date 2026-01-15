@@ -1,13 +1,14 @@
 /**
  * Test Configuration & Mock Data
  * For testing Approval Request API endpoints
+ * FOCUSED ON: Rewards (bonuses, incentives, sign-in bonuses, etc.) - NOT Salaries
  */
 
 // Test Budget Configuration (matches tblbudgetconfiguration table)
 export const testBudgetConfig = {
   budget_id: '550e8400-e29b-41d4-a716-446655440000',
-  budget_name: 'Q1 2025 Performance Incentives',
-  budget_description: 'Quarterly performance bonus distribution for Q1 2025',
+  budget_name: 'Q1 2025 Employee Rewards & Incentives',
+  budget_description: 'Quarterly rewards distribution including performance bonuses, sign-in bonuses, and incentives for Q1 2025',
   budget_owner: 'user-budget-owner-uuid',
   total_budget: 500000,
   budget_currency: 'PHP',
@@ -112,47 +113,42 @@ export const sampleEmployees = [
     employee_name: 'Alice Johnson',
     department: 'Engineering',
     position: 'Senior Software Engineer',
-    base_salary: 150000,
   },
   {
     employee_id: 'EMP002',
     employee_name: 'Bob Smith',
     department: 'Engineering',
     position: 'Software Engineer',
-    base_salary: 120000,
   },
   {
     employee_id: 'EMP003',
     employee_name: 'Carol Davis',
     department: 'Marketing',
     position: 'Marketing Manager',
-    base_salary: 100000,
   },
   {
     employee_id: 'EMP004',
     employee_name: 'David Wilson',
     department: 'Sales',
     position: 'Sales Representative',
-    base_salary: 80000,
   },
   {
     employee_id: 'EMP005',
     employee_name: 'Eva Martinez',
     department: 'Operations',
     position: 'Operations Coordinator',
-    base_salary: 70000,
   },
 ];
 
 // Test Approval Request (Draft state)
 export const testApprovalRequestDraft = {
   budget_id: '550e8400-e29b-41d4-a716-446655440000',
-  title: 'Q1 2025 Performance Bonus Distribution',
-  description: 'Annual performance bonus distribution for top performers in Q1 2025. Based on quarterly review scores and departmental goals.',
+  title: 'Q1 2025 Employee Rewards Distribution',
+  description: 'Q1 2025 employee rewards including performance bonuses, sign-in bonuses, and special incentives for high performers.',
   total_request_amount: 142500,
 };
 
-// Test Line Items for Approval Request
+// Test Line Items for Approval Request (REWARDS ONLY - NO SALARIES)
 export const testLineItems = [
   {
     employee_id: 'EMP001',
@@ -160,21 +156,21 @@ export const testLineItems = [
     department: 'Engineering',
     position: 'Senior Software Engineer',
     item_type: 'bonus',
-    item_description: 'Q1 Performance Bonus - Excellent',
+    item_description: 'Q1 Performance Bonus - Excellent performance on critical projects',
     amount: 50000,
     is_deduction: false,
-    notes: 'Led major system architecture redesign',
+    notes: 'Led major system architecture redesign, exceeded expectations',
   },
   {
     employee_id: 'EMP002',
     employee_name: 'Bob Smith',
     department: 'Engineering',
     position: 'Software Engineer',
-    item_type: 'bonus',
-    item_description: 'Q1 Performance Bonus - Good',
+    item_type: 'incentive',
+    item_description: 'Q1 Sign-In Bonus - New hire retention incentive',
     amount: 25000,
     is_deduction: false,
-    notes: 'Completed critical bug fixes and feature implementation',
+    notes: 'New hire sign-in bonus to encourage retention through year-end',
   },
   {
     employee_id: 'EMP003',
@@ -182,10 +178,10 @@ export const testLineItems = [
     department: 'Marketing',
     position: 'Marketing Manager',
     item_type: 'bonus',
-    item_description: 'Q1 Performance Bonus - Excellent',
+    item_description: 'Q1 Performance Bonus - Campaign success reward',
     amount: 30000,
     is_deduction: false,
-    notes: 'Increased marketing engagement by 40%',
+    notes: 'Increased marketing engagement by 40%, exceeded KPIs',
   },
   {
     employee_id: 'EMP004',
@@ -193,10 +189,10 @@ export const testLineItems = [
     department: 'Sales',
     position: 'Sales Representative',
     item_type: 'incentive',
-    item_description: 'Sales Performance Incentive',
+    item_description: 'Sales Performance Incentive - Quota achievement reward',
     amount: 20000,
     is_deduction: false,
-    notes: 'Exceeded quarterly sales target by 25%',
+    notes: 'Exceeded quarterly sales target by 25%, top performer this quarter',
   },
   {
     employee_id: 'EMP005',
@@ -204,10 +200,10 @@ export const testLineItems = [
     department: 'Operations',
     position: 'Operations Coordinator',
     item_type: 'bonus',
-    item_description: 'Q1 Performance Bonus - Good',
+    item_description: 'Q1 Special Recognition Bonus - Process improvement initiative',
     amount: 17500,
     is_deduction: false,
-    notes: 'Improved process efficiency by 20%',
+    notes: 'Implemented process automation, improved efficiency by 20%',
   },
 ];
 

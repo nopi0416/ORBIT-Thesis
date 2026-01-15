@@ -1,5 +1,5 @@
 import ApprovalRequestService from '../services/approvalRequestService.js';
-import { handleResponse, handleError } from '../utils/response.js';
+import { sendSuccess, sendError } from '../utils/response.js';
 
 /**
  * Approval Request Controller
@@ -18,7 +18,7 @@ export class ApprovalRequestController {
 
       // Validate required fields
       if (!budget_id || !title || !total_request_amount) {
-        return handleResponse(res, 400, false, 'Missing required fields: budget_id, title, total_request_amount');
+        return sendSuccess(res, 400, false, 'Missing required fields: budget_id, title, total_request_amount');
       }
 
       const result = await ApprovalRequestService.createApprovalRequest({
@@ -31,13 +31,13 @@ export class ApprovalRequestController {
       });
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 201, true, result.message, result.data);
+      sendSuccess(res, 201, true, result.message, result.data);
     } catch (error) {
       console.error('Error in createApprovalRequest:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -52,13 +52,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getApprovalRequestById(id);
 
       if (!result.success) {
-        return handleError(res, 404, result.error);
+        return sendError(res, 404, result.error);
       }
 
-      handleResponse(res, 200, true, 'Approval request retrieved', result.data);
+      sendSuccess(res, 200, true, 'Approval request retrieved', result.data);
     } catch (error) {
       console.error('Error in getApprovalRequest:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -80,13 +80,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getAllApprovalRequests(filters);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, 'Approval requests retrieved', result.data);
+      sendSuccess(res, 200, true, 'Approval requests retrieved', result.data);
     } catch (error) {
       console.error('Error in getAllApprovalRequests:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -103,13 +103,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.updateApprovalRequest(id, updateData);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, result.message, result.data);
+      sendSuccess(res, 200, true, result.message, result.data);
     } catch (error) {
       console.error('Error in updateApprovalRequest:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -125,13 +125,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.submitApprovalRequest(id, userId);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, result.message, result.data);
+      sendSuccess(res, 200, true, result.message, result.data);
     } catch (error) {
       console.error('Error in submitApprovalRequest:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -148,13 +148,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.addLineItem(id, lineItemData);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 201, true, result.message, result.data);
+      sendSuccess(res, 201, true, result.message, result.data);
     } catch (error) {
       console.error('Error in addLineItem:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -169,19 +169,19 @@ export class ApprovalRequestController {
       const { line_items } = req.body;
 
       if (!Array.isArray(line_items) || line_items.length === 0) {
-        return handleResponse(res, 400, false, 'line_items must be a non-empty array');
+        return sendSuccess(res, 400, false, 'line_items must be a non-empty array');
       }
 
       const result = await ApprovalRequestService.addLineItemsBulk(id, line_items, userId);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 201, true, result.message, result.data);
+      sendSuccess(res, 201, true, result.message, result.data);
     } catch (error) {
       console.error('Error in addLineItemsBulk:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -196,13 +196,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getLineItemsByRequestId(id);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, 'Line items retrieved', result.data);
+      sendSuccess(res, 200, true, 'Line items retrieved', result.data);
     } catch (error) {
       console.error('Error in getLineItems:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -217,7 +217,7 @@ export class ApprovalRequestController {
       const { approval_level, approver_name, approver_title, approval_notes, conditions_applied } = req.body;
 
       if (!approval_level) {
-        return handleResponse(res, 400, false, 'approval_level is required');
+        return sendSuccess(res, 400, false, 'approval_level is required');
       }
 
       const result = await ApprovalRequestService.approveRequestAtLevel(id, approval_level, {
@@ -229,13 +229,13 @@ export class ApprovalRequestController {
       });
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, result.message, result.data);
+      sendSuccess(res, 200, true, result.message, result.data);
     } catch (error) {
       console.error('Error in approveRequest:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -250,7 +250,7 @@ export class ApprovalRequestController {
       const { approval_level, approver_name, rejection_reason } = req.body;
 
       if (!approval_level || !rejection_reason) {
-        return handleResponse(res, 400, false, 'approval_level and rejection_reason are required');
+        return sendSuccess(res, 400, false, 'approval_level and rejection_reason are required');
       }
 
       const result = await ApprovalRequestService.rejectRequestAtLevel(id, approval_level, {
@@ -260,13 +260,13 @@ export class ApprovalRequestController {
       });
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, result.message, result.data);
+      sendSuccess(res, 200, true, result.message, result.data);
     } catch (error) {
       console.error('Error in rejectRequest:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -281,13 +281,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getApprovalsByRequestId(id);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, 'Approvals retrieved', result.data);
+      sendSuccess(res, 200, true, 'Approvals retrieved', result.data);
     } catch (error) {
       console.error('Error in getApprovals:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -302,7 +302,7 @@ export class ApprovalRequestController {
       const { file_name, file_type, file_size_bytes, storage_path, storage_provider, file_purpose } = req.body;
 
       if (!file_name || !storage_path) {
-        return handleResponse(res, 400, false, 'file_name and storage_path are required');
+        return sendSuccess(res, 400, false, 'file_name and storage_path are required');
       }
 
       const result = await ApprovalRequestService.addAttachment(id, {
@@ -316,13 +316,13 @@ export class ApprovalRequestController {
       });
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 201, true, result.message, result.data);
+      sendSuccess(res, 201, true, result.message, result.data);
     } catch (error) {
       console.error('Error in addAttachment:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -337,13 +337,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getAttachmentsByRequestId(id);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, 'Attachments retrieved', result.data);
+      sendSuccess(res, 200, true, 'Attachments retrieved', result.data);
     } catch (error) {
       console.error('Error in getAttachments:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -358,13 +358,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getActivityLogByRequestId(id);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, 'Activity log retrieved', result.data);
+      sendSuccess(res, 200, true, 'Activity log retrieved', result.data);
     } catch (error) {
       console.error('Error in getActivityLog:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -379,13 +379,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getPendingApprovalsForUser(userId);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, 'Pending approvals retrieved', result.data);
+      sendSuccess(res, 200, true, 'Pending approvals retrieved', result.data);
     } catch (error) {
       console.error('Error in getPendingApprovals:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 
@@ -400,13 +400,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.deleteApprovalRequest(id);
 
       if (!result.success) {
-        return handleError(res, 500, result.error);
+        return sendError(res, 500, result.error);
       }
 
-      handleResponse(res, 200, true, result.message);
+      sendSuccess(res, 200, true, result.message);
     } catch (error) {
       console.error('Error in deleteApprovalRequest:', error);
-      handleError(res, 500, error.message);
+      sendError(res, 500, error.message);
     }
   }
 }

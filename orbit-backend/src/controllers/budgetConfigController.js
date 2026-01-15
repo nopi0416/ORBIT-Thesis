@@ -15,6 +15,20 @@ export class BudgetConfigController {
   static async createBudgetConfig(req, res) {
     try {
       const configData = req.body;
+      
+      console.log('=== FULL Budget Config Request Data ===');
+      console.log(JSON.stringify(configData, null, 2));
+      console.log('=== Individual Fields ===');
+      console.log('Budget Name:', configData.budgetName);
+      console.log('Countries:', configData.countries);
+      console.log('Site Location:', configData.siteLocation);
+      console.log('Affected OU Paths:', configData.affectedOUPaths);
+      console.log('Accessible OU Paths:', configData.accessibleOUPaths);
+      console.log('Clients:', configData.clients);
+      console.log('Client Sponsored:', configData.clientSponsored);
+      console.log('Selected Tenure Groups:', configData.selectedTenureGroups);
+      console.log('Approver L1:', configData.approverL1);
+      console.log('========================================');
 
       // Validate required fields
       const validation = validateBudgetConfig(configData);
@@ -28,8 +42,54 @@ export class BudgetConfigController {
         return sendError(res, scopeValidation.errors, 400);
       }
 
+      // Build scope arrays from front end data
+      const geoScopeArray = configData.countries && Array.isArray(configData.countries) 
+        ? configData.countries 
+        : [];
+      
+      const locationScopeArray = configData.siteLocation && Array.isArray(configData.siteLocation)
+        ? configData.siteLocation
+        : [];
+
+      console.log('=== Scope Arrays Built ===');
+      console.log('Geo Scope Array:', geoScopeArray);
+      console.log('Location Scope Array:', locationScopeArray);
+      console.log('Affected OU Paths (Multi-Root):', configData.affectedOUPaths);
+      console.log('Accessible OU Paths (Multi-Root):', configData.accessibleOUPaths);
+      console.log('=========================');
+
+      const dbData = {
+        budget_name: configData.budgetName,
+        min_limit: configData.minLimit || null,
+        max_limit: configData.maxLimit || null,
+        budget_control: configData.budgetControlEnabled || false,
+        budget_control_limit: configData.budgetControlLimit || null,
+        carryover_enabled: configData.budgetCarryoverEnabled || false,
+        carryover_percentage: configData.carryoverPercentage || 100,
+        client_sponsored: configData.clientSponsored || false,
+        period_type: configData.period,
+        budget_description: configData.budget_description || null,
+        created_by: configData.createdBy || '00000000-0000-0000-0000-000000000000',
+        
+        // Related data for normalized tables
+        tenure_groups: configData.selectedTenureGroups || [],
+        approvers: configData.approvers || BudgetConfigService.buildApproversFromConfig(configData),
+        
+        // Pass multi-path hierarchical OU data to helper
+        access_scopes: BudgetConfigService.buildAccessScopesFromConfig(
+          geoScopeArray, 
+          locationScopeArray, 
+          {
+            ...configData,
+            affectedOUPaths: configData.affectedOUPaths || [],
+            accessibleOUPaths: configData.accessibleOUPaths || [],
+            clients: configData.clients || [],
+          }
+        ),
+      };
+
       // Create budget configuration
-      const result = await BudgetConfigService.createBudgetConfig(configData);
+      const result = await BudgetConfigService.createBudgetConfig(dbData);
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -423,6 +483,163 @@ export class BudgetConfigController {
       sendSuccess(res, {}, result.message);
     } catch (error) {
       console.error('Error in removeAccessScope:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/budget-configurations/:id/history
+   * Get budget history and tracking for a configuration
+   */
+  static async getBudgetHistory(req, res) {
+    try {
+      const { id } = req.params;
+
+      if (!id) {
+        return sendError(res, 'Budget ID is required', 400);
+      }
+
+      const result = await BudgetConfigService.getBudgetTrackingByBudgetId(id);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Budget history retrieved successfully');
+    } catch (error) {
+      console.error('Error in getBudgetHistory:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/budget-configurations/:id/logs
+   * Get request logs and approval history for a configuration
+   */
+  static async getRequestLogs(req, res) {
+    try {
+      const { id } = req.params;
+
+      if (!id) {
+        return sendError(res, 'Budget ID is required', 400);
+      }
+
+      const result = await BudgetConfigService.getRequestLogsByBudgetId(id);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Request logs retrieved successfully');
+    } catch (error) {
+      console.error('Error in getRequestLogs:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/organizations
+   * Get all organizations
+   */
+  static async getOrganizations(req, res) {
+    try {
+      const result = await BudgetConfigService.getAllOrganizations();
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Organizations retrieved successfully');
+    } catch (error) {
+      console.error('Error in getOrganizations:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/organizations/by-level
+   * Get organizations grouped by hierarchy level
+   */
+  static async getOrganizationsByLevel(req, res) {
+    try {
+      const result = await BudgetConfigService.getOrganizationsByLevel();
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Organizations by level retrieved successfully');
+    } catch (error) {
+      console.error('Error in getOrganizationsByLevel:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/approvers
+   * Get all approvers grouped by level
+   */
+  static async getAllApprovers(req, res) {
+    try {
+      const result = await BudgetConfigService.getAllApprovers();
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Approvers retrieved successfully');
+    } catch (error) {
+      console.error('Error in getAllApprovers:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/approvers/:level
+   * Get approvers for a specific level (L1, L2, L3)
+   */
+  static async getApproversByLevel(req, res) {
+    try {
+      const { level } = req.params;
+
+      if (!level) {
+        return sendError(res, 'Approval level is required', 400);
+      }
+
+      const result = await BudgetConfigService.getApproversByLevel(level);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, `${level} approvers retrieved successfully`);
+    } catch (error) {
+      console.error('Error in getApproversByLevel:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/users/:userId
+   * Get user details with their roles
+   */
+  static async getUserById(req, res) {
+    try {
+      const { userId } = req.params;
+
+      if (!userId) {
+        return sendError(res, 'User ID is required', 400);
+      }
+
+      const result = await BudgetConfigService.getUserById(userId);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'User retrieved successfully');
+    } catch (error) {
+      console.error('Error in getUserById:', error);
       sendError(res, error.message, 500);
     }
   }

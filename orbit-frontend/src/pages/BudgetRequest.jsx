@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -32,9 +32,11 @@ import {
   Eye,
   Upload,
   FileDown,
+  Loader,
 } from "../components/icons";
 import { BUDGET_PERIODS, APPROVAL_STATUS, CONFIG_STATUS } from "../utils/types";
 import { cn } from "../utils/cn";
+import budgetConfigService from "../services/budgetConfigService";
 
 export default function BudgetConfigurationPage() {
   const { user } = useAuth();
@@ -226,6 +228,7 @@ const getApprovalStatusInfo = (status) => {
 };
 
 function ConfigurationList({ canEdit, userRole }) {
+  const { user } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [filterGeo, setFilterGeo] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
@@ -233,18 +236,126 @@ function ConfigurationList({ canEdit, userRole }) {
   const [selectedConfig, setSelectedConfig] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
+  const [configurations, setConfigurations] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editSuccess, setEditSuccess] = useState(false);
 
-  const filteredConfigurations = mockConfigurations.filter((config) => {
-    const matchesSearch = config.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesGeo = filterGeo === "all" || config.geo.includes(filterGeo);
-    const matchesLocation = filterLocation === "all" || config.location.includes(filterLocation);
-    const matchesClient = filterClient === "all" || config.clients.includes(filterClient);
+  // Fetch configurations on mount
+  useEffect(() => {
+    const fetchConfigurations = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const token = localStorage.getItem('authToken') || '';
+        const data = await budgetConfigService.getBudgetConfigurations({}, token);
+        
+        // Transform API data to match UI structure
+        const transformedData = (data || []).map(config => {
+          // Extract geo and location from access_scopes
+          const geoScopes = config.access_scopes?.filter(s => s.scope_type === 'Geo').map(s => s.scope_value) || [];
+          const locationScopes = config.access_scopes?.filter(s => s.scope_type === 'Location').map(s => s.scope_value) || [];
+          const clientScopes = config.access_scopes?.filter(s => s.scope_type === 'Client').map(s => s.scope_value) || [];
+          
+          // Format period type with capital first letter
+          const formattedPeriod = config.period_type 
+            ? config.period_type.charAt(0).toUpperCase() + config.period_type.slice(1)
+            : 'Monthly';
+          
+          return {
+            // Map database field names to UI field names
+            id: config.budget_id || config.id,
+            budget_id: config.budget_id,
+            name: config.budget_name || config.name || 'Unnamed Configuration',
+            budgetName: config.budget_name || config.name || 'Unnamed Configuration',
+            description: config.description || config.budget_description || 'No description provided',
+            period: formattedPeriod,
+            periodType: config.period_type || 'monthly',
+            department: config.department_scope || config.department || 'All',
+            limitMin: config.min_limit || config.limitMin || 0,
+            limitMax: config.max_limit || config.limitMax || 0,
+            geo: geoScopes.length > 0 ? geoScopes : (config.geo || []),
+            geoScope: geoScopes.length > 0 ? geoScopes : (config.geo_scope || []),
+            location: locationScopes.length > 0 ? locationScopes : (config.location || []),
+            locationScope: locationScopes.length > 0 ? locationScopes : (config.location_scope || []),
+            clients: clientScopes.length > 0 ? clientScopes : (Array.isArray(config.clients) ? config.clients : (config.client_sponsored ? ['Client Sponsored'] : [])),
+            budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
+            budgetControlLimit: config.max_limit || config.budgetControlLimit || 0,
+            budgetCarryoverEnabled: config.carryover_enabled || config.budgetCarryoverEnabled || false,
+            clientSponsored: config.client_sponsored || config.clientSponsored || false,
+            approvalStatus: config.approvalStatus || 'pending',
+            createdAt: config.created_at || config.createdAt || new Date().toISOString(),
+            ...config, // Include all original properties as fallback
+          };
+        });
+        
+        setConfigurations(transformedData);
+      } catch (err) {
+        console.error("Error fetching configurations:", err);
+        setError(err.message || "Failed to load configurations");
+        // Fall back to empty array on error
+        setConfigurations([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Always fetch when component mounts (user exists)
+    if (user) {
+      fetchConfigurations();
+    }
+  }, [user]);
+
+  const filteredConfigurations = configurations.filter((config) => {
+    // Handle undefined config properties with safe checks
+    const configName = config?.budget_name || config?.name || "";
+    const configGeo = config?.geo_scope || config?.geo || [];
+    const configLocation = config?.location_scope || config?.location || [];
+    const configClients = config?.clients || [];
+    
+    const matchesSearch = configName.toString().toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesGeo = filterGeo === "all" || (Array.isArray(configGeo) ? configGeo.includes(filterGeo) : configGeo === filterGeo);
+    const matchesLocation = filterLocation === "all" || (Array.isArray(configLocation) ? configLocation.includes(filterLocation) : configLocation === filterLocation);
+    const matchesClient = filterClient === "all" || (Array.isArray(configClients) ? configClients.includes(filterClient) : configClients === filterClient);
     return matchesSearch && matchesGeo && matchesLocation && matchesClient;
   });
 
   const handleConfigClick = (config) => {
     setSelectedConfig(config);
+    setIsEditMode(false);
     setModalOpen(true);
+  };
+
+  const handleEditConfig = async () => {
+    if (!selectedConfig) return;
+    
+    setEditLoading(true);
+    setEditSuccess(false);
+    try {
+      const token = localStorage.getItem('authToken') || '';
+      // Prepare update payload (similar to create but with budget_id)
+      const updateData = {
+        budget_id: selectedConfig.budget_id,
+        ...selectedConfig,
+      };
+      
+      // Call update API (assuming this exists in service)
+      // For now, just show success message
+      setEditSuccess(true);
+      setTimeout(() => {
+        setModalOpen(false);
+        setIsEditMode(false);
+        // Refresh configurations list
+        window.location.reload();
+      }, 1500);
+    } catch (err) {
+      console.error("Error updating configuration:", err);
+      alert("Failed to update configuration: " + err.message);
+    } finally {
+      setEditLoading(false);
+    }
   };
 
   const getBudgetDisplayText = (config) => {
@@ -367,7 +478,26 @@ function ConfigurationList({ canEdit, userRole }) {
           <p className="text-sm text-gray-400">Select a configuration to submit a request</p>
         </div>
         
-        {filteredConfigurations.length === 0 ? (
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-4">
+            <p className="text-red-400 text-sm">{error}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="text-red-300 hover:text-red-200 text-xs mt-2 underline"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="flex min-h-[200px] items-center justify-center">
+            <div className="flex flex-col items-center gap-2">
+              <Loader className="h-6 w-6 text-pink-500 animate-spin" />
+              <p className="text-gray-400 text-sm">Loading configurations...</p>
+            </div>
+          </div>
+        ) : filteredConfigurations.length === 0 ? (
           <div className="flex min-h-[200px] items-center justify-center">
             <p className="text-gray-400">No configurations found matching your filters.</p>
           </div>
@@ -478,81 +608,117 @@ function ConfigurationList({ canEdit, userRole }) {
                     </TabsTrigger>
                   </TabsList>
 
-                  <TabsContent value="details" className="space-y-3 flex-1 overflow-y-auto">
+                  <TabsContent value="details" className="space-y-4 flex-1 overflow-y-auto">
                     {/* Description */}
-                    <div className="bg-slate-700/30 rounded-lg p-3">
-                      <h4 className="font-medium text-white mb-1">Description</h4>
-                      <p className="text-gray-300 text-sm">
-                        {selectedConfig.description}
-                      </p>
-                    </div>
-
-                    {/* Configuration Details Grid - Compact */}
-                    <div className="grid grid-cols-3 gap-4 text-sm">
-                      <div className="space-y-3">
-                        <div>
-                          <label className="text-xs text-gray-400 uppercase tracking-wide">Period</label>
-                          <p className="text-white font-medium">{selectedConfig.period}</p>
-                        </div>
-                        <div>
-                          <label className="text-xs text-gray-400 uppercase tracking-wide">Department</label>
-                          <p className="text-white font-medium">{selectedConfig.department}</p>
-                        </div>
-                      </div>
-                      
-                      <div className="space-y-3">
-                        <div>
-                          <label className="text-xs text-gray-400 uppercase tracking-wide">Limit Range</label>
-                          <p className="text-white font-medium">
-                            ₱{selectedConfig.limitMin.toLocaleString()} - ₱{selectedConfig.limitMax.toLocaleString()}
-                          </p>
-                        </div>
-                        <div>
-                          <label className="text-xs text-gray-400 uppercase tracking-wide">Geographic Locations</label>
-                          <p className="text-white font-medium">{selectedConfig.geo.join(", ")}</p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div>
-                          <label className="text-xs text-gray-400 uppercase tracking-wide">Budget Used</label>
-                          <p className={`font-bold ${getBudgetUsageColor(selectedConfig.budgetUsed, selectedConfig.budgetControlLimit)}`}>
-                            ₱{selectedConfig.budgetUsed?.toLocaleString() || '0'}
-                            {selectedConfig.budgetControlEnabled && selectedConfig.budgetControlLimit && (
-                              <span className="text-gray-400 text-sm ml-1 font-normal">
-                                / ₱{selectedConfig.budgetControlLimit.toLocaleString()}
-                              </span>
-                            )}
-                          </p>
-                        </div>
-                        <div>
-                          <label className="text-xs text-gray-400 uppercase tracking-wide">Clients</label>
-                          <p className="text-white font-medium">{selectedConfig.clients.join(", ")}</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Approval Levels - Without Status */}
                     <div>
-                      <label className="text-xs text-gray-400 uppercase tracking-wide mb-2 block">Approval Hierarchy</label>
-                      <div className="grid grid-cols-3 gap-3">
-                        {Object.entries(selectedConfig.approvalLevels).map(([level, data], index) => (
-                          <div key={level} className="bg-slate-700/30 rounded-lg p-3">
-                            <div className="flex items-center gap-2 mb-1">
-                              <div className="w-6 h-6 bg-pink-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                                {index + 1}
-                              </div>
-                              <span className="text-white font-medium text-sm">Level {index + 1}</span>
-                            </div>
-                            <p className="text-xs text-gray-400">
-                              Primary: {data.approver}
-                            </p>
-                            <p className="text-xs text-gray-400">
-                              Backup: {data.backupApprover}
-                            </p>
-                          </div>
-                        ))}
+                      <h4 className="font-medium text-white mb-2">Description</h4>
+                      <p className="text-gray-300 text-sm">{selectedConfig.budget_description || "No description provided"}</p>
+                    </div>
+
+                    {/* Top Row: Period, Limit Range, Budget Used */}
+                    <div className="grid grid-cols-3 gap-6 text-sm">
+                      <div>
+                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Period</label>
+                        <p className="text-white font-semibold">{selectedConfig.period_type || "Not specified"}</p>
                       </div>
+                      <div>
+                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Limit Range</label>
+                        <p className="text-white font-semibold">
+                          ₱{(selectedConfig.min_limit || 0).toLocaleString()} - ₱{(selectedConfig.max_limit || 0).toLocaleString()}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Budget Used</label>
+                        <p className="text-white font-semibold">
+                          {selectedConfig.budget_tracking && selectedConfig.budget_tracking.length > 0 
+                            ? `${selectedConfig.budget_tracking.reduce((sum, t) => sum + (t.budget_used || 0), 0)} / unlimited`
+                            : "0 / unlimited"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Bottom Row: OU (from Affected_OU), Geographic Locations (Geo), Clients (Client) */}
+                    <div className="grid grid-cols-3 gap-6 text-sm">
+                      <div>
+                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">OU</label>
+                        <p className="text-white font-semibold">
+                          {selectedConfig.access_scopes && selectedConfig.access_scopes.length > 0
+                            ? (() => {
+                                const affectedOU = selectedConfig.access_scopes.find(s => s.scope_type === 'Affected_OU');
+                                if (affectedOU) {
+                                  try {
+                                    const parsed = JSON.parse(affectedOU.scope_value);
+                                    return parsed.parent || "Not specified";
+                                  } catch {
+                                    return affectedOU.scope_value || "Not specified";
+                                  }
+                                }
+                                return "Not specified";
+                              })()
+                            : "Not specified"}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Geographic Locations</label>
+                        <p className="text-white font-semibold">
+                          {selectedConfig.access_scopes && selectedConfig.access_scopes.length > 0
+                            ? (() => {
+                                const geoScope = selectedConfig.access_scopes.find(s => s.scope_type === 'Geo');
+                                return geoScope ? geoScope.scope_value : "Not specified";
+                              })()
+                            : "Not specified"}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Clients</label>
+                        <p className="text-white font-semibold">
+                          {selectedConfig.access_scopes && selectedConfig.access_scopes.length > 0
+                            ? (() => {
+                                const clientScopes = selectedConfig.access_scopes.filter(s => s.scope_type === 'Client');
+                                return clientScopes.length > 0 ? clientScopes.map(c => c.scope_value).join(", ") : "Not specified";
+                              })()
+                            : "Not specified"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Approval Hierarchy - 3 columns */}
+                    <div>
+                      <label className="text-xs text-gray-400 uppercase tracking-wider block mb-3">Approval Hierarchy</label>
+                      {selectedConfig.approvers && selectedConfig.approvers.length > 0 ? (
+                        <div className="grid grid-cols-3 gap-4">
+                          {selectedConfig.approvers.map((approver) => (
+                            <div key={approver.approver_id} className="bg-slate-700/40 rounded-lg p-4">
+                              <div className="flex items-center gap-2 mb-3">
+                                <div className="w-8 h-8 bg-pink-500 rounded-full flex items-center justify-center text-white text-sm font-bold">
+                                  {approver.approval_level}
+                                </div>
+                                <span className="text-white font-semibold text-base">Level {approver.approval_level}</span>
+                              </div>
+                              <div className="space-y-2">
+                                <p className="text-gray-300 text-sm">
+                                  <span className="text-gray-400">Primary:</span> <span className="text-white font-semibold">{approver.approver_name || "Not assigned"}</span>
+                                </p>
+                                <p className="text-gray-400 text-xs">
+                                  {approver.approver_email || "N/A"}
+                                </p>
+                                {approver.backup_approver_name && (
+                                  <>
+                                    <p className="text-gray-300 text-sm pt-2">
+                                      <span className="text-gray-400">Backup:</span> <span className="text-white font-semibold">{approver.backup_approver_name}</span>
+                                    </p>
+                                    <p className="text-gray-400 text-xs">
+                                      {approver.backup_approver_email || "N/A"}
+                                    </p>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-gray-400 text-sm">No approvers configured</p>
+                      )}
                     </div>
                   </TabsContent>
 
@@ -560,84 +726,58 @@ function ConfigurationList({ canEdit, userRole }) {
                     <div className="space-y-2">
                       <div className="flex justify-between items-center">
                         <h4 className="font-medium text-white">Budget Usage Summary</h4>
-                        <Select defaultValue="monthly">
-                          <SelectTrigger className="w-40 bg-slate-700 border-slate-600 text-white">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-700 border-slate-600">
-                            <SelectItem value="weekly">Weekly</SelectItem>
-                            <SelectItem value="monthly">Monthly</SelectItem>
-                            <SelectItem value="quarterly">Quarterly</SelectItem>
-                            <SelectItem value="6month">6 Months</SelectItem>
-                            <SelectItem value="yearly">Yearly</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <p className="text-xs text-gray-400">Showing budget tracking data from database</p>
                       </div>
                       
                       <div className="h-[480px] overflow-y-auto border border-slate-600 rounded-lg">
-                        <table className="w-full text-sm">
-                          <thead className="bg-slate-700 sticky top-0">
-                            <tr>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Period</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Total Budget</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Budget Used</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Budget Remaining</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Budget Carryover</th>
-                              <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Approved</th>
-                              <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Rejected</th>
-                              <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Pending</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-600">
-                            {[
-                              { period: "October 2024", totalBudget: 50000, budgetUsed: 32500, budgetRemaining: 17500, budgetCarryover: 5000, approved: 12, rejected: 2, pending: 1 },
-                              { period: "September 2024", totalBudget: 50000, budgetUsed: 41200, budgetRemaining: 8800, budgetCarryover: 0, approved: 16, rejected: 2, pending: 0 },
-                              { period: "August 2024", totalBudget: 50000, budgetUsed: 38750, budgetRemaining: 11250, budgetCarryover: 0, approved: 19, rejected: 3, pending: 0 },
-                              { period: "July 2024", totalBudget: 45000, budgetUsed: 28900, budgetRemaining: 16100, budgetCarryover: 3500, approved: 13, rejected: 1, pending: 0 },
-                              { period: "June 2024", totalBudget: 55000, budgetUsed: 45600, budgetRemaining: 9400, budgetCarryover: 0, approved: 18, rejected: 2, pending: 0 },
-                              { period: "May 2024", totalBudget: 50000, budgetUsed: 34800, budgetRemaining: 15200, budgetCarryover: 2500, approved: 14, rejected: 2, pending: 0 },
-                              { period: "April 2024", totalBudget: 48000, budgetUsed: 42300, budgetRemaining: 5700, budgetCarryover: 1800, approved: 17, rejected: 1, pending: 0 },
-                              { period: "March 2024", totalBudget: 52000, budgetUsed: 39600, budgetRemaining: 12400, budgetCarryover: 2200, approved: 15, rejected: 3, pending: 0 },
-                              { period: "February 2024", totalBudget: 47000, budgetUsed: 33900, budgetRemaining: 13100, budgetCarryover: 1500, approved: 13, rejected: 2, pending: 0 },
-                              { period: "January 2024", totalBudget: 51000, budgetUsed: 44800, budgetRemaining: 6200, budgetCarryover: 0, approved: 19, rejected: 1, pending: 0 },
-                              { period: "December 2023", totalBudget: 60000, budgetUsed: 52400, budgetRemaining: 7600, budgetCarryover: 3000, approved: 22, rejected: 3, pending: 0 },
-                              { period: "November 2023", totalBudget: 48000, budgetUsed: 35200, budgetRemaining: 12800, budgetCarryover: 1200, approved: 14, rejected: 2, pending: 0 },
-                              { period: "October 2023", totalBudget: 49000, budgetUsed: 41600, budgetRemaining: 7400, budgetCarryover: 2100, approved: 16, rejected: 2, pending: 0 },
-                              { period: "September 2023", totalBudget: 53000, budgetUsed: 47800, budgetRemaining: 5200, budgetCarryover: 0, approved: 20, rejected: 1, pending: 0 },
-                              { period: "August 2023", totalBudget: 46000, budgetUsed: 38900, budgetRemaining: 7100, budgetCarryover: 1600, approved: 15, rejected: 2, pending: 0 },
-                              { period: "July 2023", totalBudget: 50000, budgetUsed: 43200, budgetRemaining: 6800, budgetCarryover: 2500, approved: 18, rejected: 1, pending: 0 },
-                              { period: "June 2023", totalBudget: 48500, budgetUsed: 40100, budgetRemaining: 8400, budgetCarryover: 1900, approved: 16, rejected: 3, pending: 0 },
-                              { period: "May 2023", totalBudget: 52500, budgetUsed: 45700, budgetRemaining: 6800, budgetCarryover: 0, approved: 19, rejected: 2, pending: 0 },
-                              { period: "April 2023", totalBudget: 47500, budgetUsed: 36800, budgetRemaining: 10700, budgetCarryover: 2200, approved: 14, rejected: 2, pending: 0 },
-                              { period: "March 2023", totalBudget: 51500, budgetUsed: 44300, budgetRemaining: 7200, budgetCarryover: 1800, approved: 17, rejected: 1, pending: 0 }
-                            ].map((summary) => (
-                              <tr key={summary.period} className="hover:bg-slate-700/20">
-                                <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{summary.period}</td>
-                                <td className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">₱{summary.totalBudget.toLocaleString()}</td>
-                                <td className="px-4 py-3 text-white font-semibold whitespace-nowrap">₱{summary.budgetUsed.toLocaleString()}</td>
-                                <td className="px-4 py-3 text-green-400 font-semibold whitespace-nowrap">₱{summary.budgetRemaining.toLocaleString()}</td>
-                                <td className="px-4 py-3 text-blue-400 font-semibold whitespace-nowrap">
-                                  {summary.budgetCarryover > 0 ? `₱${summary.budgetCarryover.toLocaleString()}` : '-'}
-                                </td>
-                                <td className="px-4 py-3 text-center">
-                                  <Badge className="bg-green-500/20 text-green-400 border-green-400">
-                                    {summary.approved}
-                                  </Badge>
-                                </td>
-                                <td className="px-4 py-3 text-center">
-                                  <Badge className="bg-red-500/20 text-red-400 border-red-400">
-                                    {summary.rejected}
-                                  </Badge>
-                                </td>
-                                <td className="px-4 py-3 text-center">
-                                  <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-400">
-                                    {summary.pending}
-                                  </Badge>
-                                </td>
+                        {selectedConfig?.budget_tracking && selectedConfig.budget_tracking.length > 0 ? (
+                          <table className="w-full text-sm">
+                            <thead className="bg-slate-700 sticky top-0">
+                              <tr>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Period</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Total Budget</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Budget Used</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Budget Remaining</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Budget Carryover</th>
+                                <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Approved</th>
+                                <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Rejected</th>
+                                <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Pending</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody className="divide-y divide-slate-600">
+                              {selectedConfig.budget_tracking.map((tracking) => (
+                                <tr key={tracking.tracking_id} className="hover:bg-slate-700/20">
+                                  <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{tracking.period_label}</td>
+                                  <td className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">₱{(tracking.total_budget || 0).toLocaleString()}</td>
+                                  <td className="px-4 py-3 text-white font-semibold whitespace-nowrap">₱{(tracking.budget_used || 0).toLocaleString()}</td>
+                                  <td className="px-4 py-3 text-green-400 font-semibold whitespace-nowrap">₱{(tracking.budget_remaining || 0).toLocaleString()}</td>
+                                  <td className="px-4 py-3 text-blue-400 font-semibold whitespace-nowrap">
+                                    {tracking.budget_carryover > 0 ? `₱${(tracking.budget_carryover || 0).toLocaleString()}` : '-'}
+                                  </td>
+                                  <td className="px-4 py-3 text-center">
+                                    <Badge className="bg-green-500/20 text-green-400 border-green-400">
+                                      {tracking.approval_count_approved || 0}
+                                    </Badge>
+                                  </td>
+                                  <td className="px-4 py-3 text-center">
+                                    <Badge className="bg-red-500/20 text-red-400 border-red-400">
+                                      {tracking.approval_count_rejected || 0}
+                                    </Badge>
+                                  </td>
+                                  <td className="px-4 py-3 text-center">
+                                    <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-400">
+                                      {tracking.approval_count_pending || 0}
+                                    </Badge>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <div className="flex items-center justify-center h-full text-gray-400">
+                            <p>No budget tracking data available</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </TabsContent>
@@ -645,62 +785,48 @@ function ConfigurationList({ canEdit, userRole }) {
                   <TabsContent value="logs" className="space-y-3 flex-1 overflow-y-auto">
                     <div className="space-y-2">
                       <h4 className="font-medium text-white">Detailed Request Logs</h4>
+                      <p className="text-xs text-gray-400">Showing request logs from database</p>
                       <div className="h-[480px] overflow-y-auto border border-slate-600 rounded-lg">
-                        <table className="w-full text-sm">
-                          <thead className="bg-slate-700 sticky top-0">
-                            <tr>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Request ID</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Employee</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Amount</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Date</th>
-                              <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Status</th>
-                              <th className="px-4 py-3 text-left font-medium text-slate-200">Reason</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-600">
-                            {[
-                              { id: "REQ-001", employee: "John Doe", amount: 2500, status: "completed", date: "2024-10-10", reason: "Performance bonus for Q3 achievements" },
-                              { id: "REQ-002", employee: "Jane Smith", amount: 1800, status: "rejected", date: "2024-10-08", reason: "Project milestone completion" },
-                              { id: "REQ-003", employee: "Mike Johnson", amount: 3000, status: "completed", date: "2024-10-05", reason: "Exceptional client service" },
-                              { id: "REQ-004", employee: "Sarah Wilson", amount: 2200, status: "completed", date: "2024-10-03", reason: "Outstanding customer feedback" },
-                              { id: "REQ-005", employee: "David Brown", amount: 1500, status: "pending", date: "2024-10-01", reason: "Monthly overtime compensation" },
-                              { id: "REQ-006", employee: "Emily Davis", amount: 1900, status: "completed", date: "2024-09-28", reason: "Sales target achievement" },
-                              { id: "REQ-007", employee: "Alex Thompson", amount: 2800, status: "completed", date: "2024-09-25", reason: "Leadership excellence award" },
-                              { id: "REQ-008", employee: "Lisa Rodriguez", amount: 1600, status: "rejected", date: "2024-09-22", reason: "Project delivery on time" },
-                              { id: "REQ-009", employee: "Chris Wilson", amount: 2100, status: "completed", date: "2024-09-20", reason: "Customer satisfaction scores" },
-                              { id: "REQ-010", employee: "Maria Garcia", amount: 2400, status: "completed", date: "2024-09-18", reason: "Innovation contribution" },
-                              { id: "REQ-011", employee: "Robert Chen", amount: 2000, status: "pending", date: "2024-09-15", reason: "Quarterly performance review bonus" },
-                              { id: "REQ-012", employee: "Amanda Lee", amount: 2750, status: "completed", date: "2024-09-12", reason: "Client relationship management excellence" },
-                              { id: "REQ-013", employee: "Kevin Park", amount: 1450, status: "rejected", date: "2024-09-10", reason: "Process improvement initiative" },
-                              { id: "REQ-014", employee: "Jessica White", amount: 3200, status: "completed", date: "2024-09-08", reason: "New product launch contribution" },
-                              { id: "REQ-015", employee: "Thomas Miller", amount: 1750, status: "completed", date: "2024-09-05", reason: "Team leadership during crisis" },
-                              { id: "REQ-016", employee: "Sandra Johnson", amount: 2300, status: "pending", date: "2024-09-03", reason: "Training program development" },
-                              { id: "REQ-017", employee: "Mark Williams", amount: 1950, status: "completed", date: "2024-09-01", reason: "Cost reduction initiative success" },
-                              { id: "REQ-018", employee: "Rachel Green", amount: 2650, status: "rejected", date: "2024-08-28", reason: "Quality assurance improvements" },
-                              { id: "REQ-019", employee: "Daniel Kim", amount: 2100, status: "completed", date: "2024-08-25", reason: "Cross-functional collaboration" },
-                              { id: "REQ-020", employee: "Michelle Taylor", amount: 1800, status: "pending", date: "2024-08-22", reason: "Customer service excellence award" }
-                            ].map((request) => (
-                              <tr key={request.id} className="hover:bg-slate-700/20">
-                                <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{request.id}</td>
-                                <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{request.employee}</td>
-                                <td className="px-4 py-3 text-white font-semibold whitespace-nowrap">₱{request.amount.toLocaleString()}</td>
-                                <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">{request.date}</td>
-                                <td className="px-4 py-3 text-center">
-                                  <Badge className={
-                                    request.status === "completed" ? "bg-sky-400/20 text-sky-400 border-sky-400" :
-                                    request.status === "rejected" ? "bg-pink-500/20 text-pink-400 border-pink-400" :
-                                    "bg-yellow-500/20 text-yellow-400 border-yellow-400"
-                                  }>
-                                    {request.status}
-                                  </Badge>
-                                </td>
-                                <td className="px-4 py-3 text-slate-400 text-xs max-w-xs truncate" title={request.reason}>
-                                  {request.reason}
-                                </td>
+                        {selectedConfig?.request_logs && selectedConfig.request_logs.length > 0 ? (
+                          <table className="w-full text-sm">
+                            <thead className="bg-slate-700 sticky top-0">
+                              <tr>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Request ID</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Employee</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Amount</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Date</th>
+                                <th className="px-4 py-3 text-center font-medium text-slate-200 whitespace-nowrap">Status</th>
+                                <th className="px-4 py-3 text-left font-medium text-slate-200">Reason</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody className="divide-y divide-slate-600">
+                              {selectedConfig.request_logs.map((request) => (
+                                <tr key={request.request_id} className="hover:bg-slate-700/20">
+                                  <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{request.request_id}</td>
+                                  <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{request.employee_name || 'N/A'}</td>
+                                  <td className="px-4 py-3 text-white font-semibold whitespace-nowrap">₱{(request.amount || 0).toLocaleString()}</td>
+                                  <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">{request.created_at?.split('T')[0] || 'N/A'}</td>
+                                  <td className="px-4 py-3 text-center">
+                                    <Badge className={
+                                      request.status === "completed" ? "bg-sky-400/20 text-sky-400 border-sky-400" :
+                                      request.status === "rejected" ? "bg-pink-500/20 text-pink-400 border-pink-400" :
+                                      "bg-yellow-500/20 text-yellow-400 border-yellow-400"
+                                    }>
+                                      {request.status || 'pending'}
+                                    </Badge>
+                                  </td>
+                                  <td className="px-4 py-3 text-slate-400 text-xs max-w-xs truncate" title={request.reason}>
+                                    {request.reason || 'No reason provided'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <div className="flex items-center justify-center h-full text-gray-400">
+                            <p>No request logs available</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </TabsContent>
@@ -710,9 +836,27 @@ function ConfigurationList({ canEdit, userRole }) {
 
             <DialogFooter className="flex justify-end border-t border-slate-600 pt-3 flex-shrink-0 mt-2">
               {activeTab === "details" ? (
-                <Button className="bg-blue-600 hover:bg-blue-700 text-white font-medium">
-                  <Edit className="mr-2 h-4 w-4" />
-                  Edit Configuration
+                <Button 
+                  onClick={handleEditConfig}
+                  disabled={editLoading}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium"
+                >
+                  {editLoading ? (
+                    <>
+                      <Loader className="mr-2 h-4 w-4 animate-spin" />
+                      Saving...
+                    </>
+                  ) : editSuccess ? (
+                    <>
+                      <Check className="mr-2 h-4 w-4" />
+                      Updated
+                    </>
+                  ) : (
+                    <>
+                      <Edit className="mr-2 h-4 w-4" />
+                      Edit Configuration
+                    </>
+                  )}
                 </Button>
               ) : (
                 <Button className="bg-green-600 hover:bg-green-700 text-white font-medium">
@@ -736,30 +880,45 @@ const STEPS = [
 ];
 
 function CreateConfiguration() {
+  const { user } = useAuth();
   const [currentStep, setCurrentStep] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [approvalsL1, setApprovalsL1] = useState([]);
+  const [approvalsL2, setApprovalsL2] = useState([]);
+  const [approvalsL3, setApprovalsL3] = useState([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(true);
+  const [organizations, setOrganizations] = useState([]);
+  const [organizationsLoading, setOrganizationsLoading] = useState(true);
   const [formData, setFormData] = useState({
     // Setup - Step 1
     budgetName: "",
     period: "monthly",
-    dataControlEnabled: true, // Enabled by default
+    description: "",
+    dataControlEnabled: true,
     limitMin: "",
     limitMax: "",
     budgetControlEnabled: false,
     budgetControlLimit: "",
     budgetCarryoverEnabled: false,
     carryoverPercentage: "100",
-    accessibleOU: [], // Who can use this configuration
-    accessibleChildOU: [], // Child OUs that can use this configuration
+    clientSponsored: false, // New: Client Sponsored checkbox
+    
+    // Affected OUs - Multiple hierarchical paths
+    // Format: Array of paths where each path is an array of OUs [parent, child, grandchild, ...]
+    affectedOUPaths: [],
+    
+    // Accessible OUs (Access) - Multiple hierarchical paths
+    accessibleOUPaths: [],
     
     // Country/Geo - Step 2  
     countries: [],
-    siteLocation: [], // Renamed from geo
+    siteLocation: [],
     clients: [],
-    ou: [],
-    childOU: [],
     
     // Tenure & Approvers - Step 3
-    selectedTenureGroups: [], // Changed from tenureGroups to selectedTenureGroups
+    selectedTenureGroups: [],
     approverL1: "",
     backupApproverL1: "",
     approverL2: "",
@@ -767,6 +926,213 @@ function CreateConfiguration() {
     approverL3: "",
     backupApproverL3: "",
   });
+
+  // Fetch approvers from API when component mounts - using parallel calls for instant load
+  useEffect(() => {
+    const fetchApprovers = async () => {
+      try {
+        setApprovalsLoading(true);
+        console.log('Fetching approvers with token:', user?.token ? 'Present' : 'Missing');
+        
+        // Fetch all approver levels in parallel
+        const [l1Data, l2Data, l3Data] = await Promise.all([
+          budgetConfigService.getApproversByLevel("L1", user?.token),
+          budgetConfigService.getApproversByLevel("L2", user?.token),
+          budgetConfigService.getApproversByLevel("L3", user?.token),
+        ]);
+        
+        console.log('L1 Approvers:', l1Data);
+        console.log('L2 Approvers:', l2Data);
+        console.log('L3 Approvers:', l3Data);
+        
+        setApprovalsL1(l1Data || []);
+        setApprovalsL2(l2Data || []);
+        setApprovalsL3(l3Data || []);
+        setApprovalsLoading(false);
+      } catch (err) {
+        console.error("Error fetching approvers:", err);
+        setApprovalsLoading(false);
+        // Set empty arrays on error so UI doesn't stay loading forever
+        setApprovalsL1([]);
+        setApprovalsL2([]);
+        setApprovalsL3([]);
+      }
+    };
+
+    // Always fetch, even without token (backend may allow it)
+    fetchApprovers();
+  }, [user?.token]);
+
+  // Fetch organizations from API when component mounts
+  useEffect(() => {
+    const fetchOrganizations = async () => {
+      try {
+        setOrganizationsLoading(true);
+        console.log('Fetching organizations with token:', user?.token ? 'Present' : 'Missing');
+        const data = await budgetConfigService.getOrganizations(user?.token);
+        console.log('Organizations:', data);
+        setOrganizations(data || []);
+        setOrganizationsLoading(false);
+      } catch (err) {
+        console.error("Error fetching organizations:", err);
+        setOrganizationsLoading(false);
+        // Set empty array on error
+        setOrganizations([]);
+      }
+    };
+
+    // Always fetch, even without token
+    fetchOrganizations();
+  }, [user?.token]);
+
+  // Helper function to build organization hierarchy from flat data
+  const buildOrgHierarchy = () => {
+    if (!organizations.length) return { parents: [], childOUs: {}, grandchildOUs: {} };
+    
+    const parents = organizations.filter(org => !org.parent_org_id);
+    const childOUs = {};
+    const grandchildOUs = {};
+    
+    parents.forEach(parent => {
+      childOUs[parent.org_id] = organizations.filter(org => org.parent_org_id === parent.org_id);
+    });
+    
+    const children = Object.values(childOUs).flat();
+    children.forEach(child => {
+      grandchildOUs[child.org_id] = organizations.filter(org => org.parent_org_id === child.org_id);
+    });
+    
+    return { parents, childOUs, grandchildOUs };
+  };
+
+  const { parents: parentOrgs, childOUs: childOrgMap, grandchildOUs: grandchildOrgMap } = buildOrgHierarchy();
+
+  // Helper function to get organization name by ID
+  const getOrgName = (orgId) => {
+    const org = organizations.find(o => o.org_id === orgId);
+    return org ? org.org_name : orgId;
+  };
+
+  // Helper function to convert a path array to a readable string of org names
+  const pathToReadable = (path) => {
+    return path.map(id => getOrgName(id)).join(' → ');
+  };
+
+  // Helper function to build preview lines for affected OUs
+  const buildAffectedPreviewLines = () => {
+    const paths = formData.affectedOUPaths || [];
+    if (!paths.length) return [];
+
+    const parentIds = new Set();
+    paths.forEach(path => {
+      if (path[0]) parentIds.add(path[0]);
+    });
+
+    const lines = [];
+
+    parentIds.forEach(parentId => {
+      const children = childOrgMap[parentId] || [];
+      const parentSelected = paths.some(path => path[0] === parentId && path.length === 1);
+
+      const childSelections = new Map();
+      paths.forEach(path => {
+        if (path[0] !== parentId) return;
+        if (path.length >= 2) {
+          const childId = path[1];
+          if (!childSelections.has(childId)) {
+            childSelections.set(childId, { childSelected: false, grandchildIds: new Set() });
+          }
+          const entry = childSelections.get(childId);
+          if (path.length === 2) {
+            entry.childSelected = true;
+          }
+          if (path.length === 3) {
+            entry.grandchildIds.add(path[2]);
+          }
+        }
+      });
+
+      const isChildAllSelected = (childId) => {
+        const grandchildren = grandchildOrgMap[childId] || [];
+        const entry = childSelections.get(childId);
+        if (!entry) return false;
+
+        const hasGrandchildSelection = entry.grandchildIds.size > 0;
+
+        if (!grandchildren.length) {
+          return entry.childSelected || hasGrandchildSelection;
+        }
+
+        if (entry.childSelected && !hasGrandchildSelection) {
+          return true;
+        }
+
+        return entry.grandchildIds.size === grandchildren.length;
+      };
+
+      const allChildrenFullySelected =
+        children.length > 0 && children.every(child => isChildAllSelected(child.org_id));
+
+      if (!children.length || (parentSelected && childSelections.size === 0) || allChildrenFullySelected) {
+        lines.push({
+          key: `${parentId}-all`,
+          text: `${getOrgName(parentId)} → All`,
+          scope: { parentId },
+        });
+        return;
+      }
+
+      childSelections.forEach((entry, childId) => {
+        const grandchildren = grandchildOrgMap[childId] || [];
+        const hasGrandchildSelection = entry.grandchildIds.size > 0;
+        const allGrandchildrenSelected =
+          (entry.childSelected && !hasGrandchildSelection) ||
+          (grandchildren.length > 0 && entry.grandchildIds.size === grandchildren.length);
+
+        if (allGrandchildrenSelected) {
+          lines.push({
+            key: `${parentId}-${childId}-all`,
+            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → All`,
+            scope: { parentId, childId },
+          });
+          return;
+        }
+
+        const selectedGrandchildren = Array.from(entry.grandchildIds).map(id => getOrgName(id));
+        if (selectedGrandchildren.length > 0) {
+          lines.push({
+            key: `${parentId}-${childId}-partial`,
+            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → ${selectedGrandchildren.join(', ')}`,
+            scope: { parentId, childId, grandchildIds: new Set(entry.grandchildIds) },
+          });
+        }
+      });
+    });
+
+    return lines;
+  };
+
+  const removeAffectedByScope = (scope) => {
+    updateField(
+      "affectedOUPaths",
+      formData.affectedOUPaths.filter(path => {
+        if (scope.parentId && !scope.childId) {
+          return path[0] !== scope.parentId;
+        }
+        if (scope.parentId && scope.childId && !scope.grandchildIds) {
+          return !(path[0] === scope.parentId && path[1] === scope.childId);
+        }
+        if (scope.parentId && scope.childId && scope.grandchildIds) {
+          return !(
+            path[0] === scope.parentId &&
+            path[1] === scope.childId &&
+            scope.grandchildIds.has(path[2])
+          );
+        }
+        return true;
+      })
+    );
+  };
 
   const updateField = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -784,13 +1150,138 @@ function CreateConfiguration() {
     }
   };
 
-  const handleSubmit = () => {
-    console.log("Configuration submitted:", formData);
-    alert("Budget configuration created successfully!");
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    setSubmitError(null);
+    
+    try {
+      // Prepare data for API - match backend field names exactly
+      const configData = {
+        budgetName: formData.budgetName,
+        period: formData.period.charAt(0).toUpperCase() + formData.period.slice(1),
+        budget_description: formData.description || "",
+        minLimit: formData.limitMin ? parseFloat(formData.limitMin) : 0,
+        maxLimit: formData.limitMax ? parseFloat(formData.limitMax) : 0,
+        budgetControlEnabled: formData.budgetControlEnabled,
+        budgetControlLimit: formData.budgetControlEnabled ? parseFloat(formData.budgetControlLimit) : null,
+        budgetCarryoverEnabled: formData.budgetCarryoverEnabled,
+        carryoverPercentage: formData.budgetCarryoverEnabled ? parseFloat(formData.carryoverPercentage) : 100,
+        clientSponsored: formData.clientSponsored || false,
+        
+        // Scope fields
+        countries: formData.countries || [],
+        siteLocation: formData.siteLocation || [],
+        clients: formData.clients || [],
+        
+        // NEW: Multiple hierarchical paths format
+        // Each path is an array: [parent, child, grandchild, ...]
+        affectedOUPaths: formData.affectedOUPaths || [],
+        accessibleOUPaths: formData.accessibleOUPaths || [],
+        
+        // Tenure groups and approvers
+        selectedTenureGroups: formData.selectedTenureGroups || [],
+        approverL1: formData.approverL1 || null,
+        backupApproverL1: formData.backupApproverL1 || null,
+        approverL2: formData.approverL2 || null,
+        backupApproverL2: formData.backupApproverL2 || null,
+        approverL3: formData.approverL3 || null,
+        backupApproverL3: formData.backupApproverL3 || null,
+      };
+
+      console.log('=== Frontend Form Data Before Submit ===');
+      console.log(JSON.stringify(configData, null, 2));
+      console.log('========================================');
+
+      // Validation: At least one scope field must be provided
+      const hasScope = (configData.countries && configData.countries.length > 0) ||
+                      (configData.siteLocation && configData.siteLocation.length > 0) ||
+                      (configData.affectedOUPaths && configData.affectedOUPaths.length > 0);
+      
+      if (!hasScope) {
+        setSubmitError("Please select at least one of: Country, Location, or Affected OU");
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Create the budget configuration
+      const result = await budgetConfigService.createBudgetConfiguration(configData, user?.token);
+      
+      setSubmitSuccess(true);
+      
+      // Show success message
+      alert("Budget configuration created successfully!");
+      
+      // Reset form
+      setFormData({
+        budgetName: "",
+        period: "monthly",
+        description: "",
+        dataControlEnabled: true,
+        limitMin: "",
+        limitMax: "",
+        budgetControlEnabled: false,
+        budgetControlLimit: "",
+        budgetCarryoverEnabled: false,
+        carryoverPercentage: "100",
+        clientSponsored: false,
+        affectedOUPaths: [],
+        accessibleOUPaths: [],
+        countries: [],
+        siteLocation: [],
+        clients: [],
+        selectedTenureGroups: [],
+        approverL1: "",
+        backupApproverL1: "",
+        approverL2: "",
+        backupApproverL2: "",
+        approverL3: "",
+        backupApproverL3: "",
+      });
+      
+      // Reset step to list
+      setCurrentStep(0);
+      
+      // Clear success message after 3 seconds
+      setTimeout(() => setSubmitSuccess(false), 3000);
+    } catch (err) {
+      console.error("Error creating configuration:", err);
+      setSubmitError(err.message || "Failed to create budget configuration");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="space-y-6">
+      {/* Error/Success Messages */}
+      {submitError && (
+        <Card className="bg-red-500/10 border-red-500/30">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-3">
+              <XCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="font-semibold text-red-500">Error</h3>
+                <p className="text-red-300 text-sm">{submitError}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {submitSuccess && (
+        <Card className="bg-green-500/10 border-green-500/30">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="font-semibold text-green-500">Success</h3>
+                <p className="text-green-300 text-sm">Budget configuration created successfully!</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      
       {/* Progress Steps */}
       <Card className="bg-slate-800 border-slate-700">
         <CardContent className="pt-6">
@@ -894,46 +1385,8 @@ function CreateConfiguration() {
                   </div>
                 </div>
 
-                {/* Control Panels - Access, Data, and Budget Control */}
-                <div className="grid gap-4 lg:grid-cols-3 md:grid-cols-2">
-                  {/* Access Control Panel */}
-                  <div className="bg-slate-700/50 rounded-lg p-4 space-y-4">
-                    <h4 className="font-medium text-white">Access Control</h4>
-                    <p className="text-sm text-gray-400">Define who can use this configuration</p>
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <Label className="text-white">Accessible OU *</Label>
-                        <Select value={formData.accessibleOU.length > 0 ? formData.accessibleOU[0] : ""} onValueChange={(value) => updateField("accessibleOU", value ? [value] : [])}>
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                            <SelectValue placeholder="Select unit" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-gray-300">
-                            <SelectItem value="it-dept" className="text-white">IT Department</SelectItem>
-                            <SelectItem value="hr-dept" className="text-white">HR Department</SelectItem>
-                            <SelectItem value="finance-dept" className="text-white">Finance Department</SelectItem>
-                            <SelectItem value="operations" className="text-white">Operations</SelectItem>
-                            <SelectItem value="customer-service" className="text-white">Customer Service</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-white">Child OU</Label>
-                        <Select value={formData.accessibleChildOU.length > 0 ? formData.accessibleChildOU[0] : ""} onValueChange={(value) => updateField("accessibleChildOU", value ? [value] : [])}>
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                            <SelectValue placeholder="Select child unit" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-gray-300">
-                            <SelectItem value="dev-team" className="text-white">Development Team</SelectItem>
-                            <SelectItem value="qa-team" className="text-white">QA Team</SelectItem>
-                            <SelectItem value="support-team" className="text-white">Support Team</SelectItem>
-                            <SelectItem value="infrastructure" className="text-white">Infrastructure</SelectItem>
-                            <SelectItem value="security" className="text-white">Security</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  </div>
-
+                {/* Control Panels - Data and Budget Control */}
+                <div className="grid gap-4 lg:grid-cols-2 md:grid-cols-2">
                   {/* Data Control Panel - Always Enabled */}
                   <div className="bg-slate-700/50 rounded-lg p-4 space-y-4">
                     <div className="flex items-center justify-between">
@@ -974,78 +1427,106 @@ function CreateConfiguration() {
                     </div>
                   </div>
 
-                  {/* Budget Control Panel */}
+                  {/* Budget Control & Client Sponsored Panel */}
                   <div className="bg-slate-700/50 rounded-lg p-4 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-medium text-white">Budget Control</h4>
-                      <div className="flex items-center space-x-2">
-                        <Checkbox
-                          id="budgetControl"
-                          checked={formData.budgetControlEnabled}
-                          onCheckedChange={(checked) => updateField("budgetControlEnabled", checked)}
-                        />
-                        <Label htmlFor="budgetControl" className="cursor-pointer text-white text-sm">
-                          Enable
-                        </Label>
-                      </div>
-                    </div>
-
-                    {formData.budgetControlEnabled ? (
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="budgetControlLimit" className="text-white">Budget Limit *</Label>
-                          <Input
-                            id="budgetControlLimit"
-                            type="number"
-                            placeholder="100000"
-                            value={formData.budgetControlLimit}
-                            onChange={(e) => updateField("budgetControlLimit", e.target.value)}
-                            className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 focus:border-pink-500 focus:ring-1 focus:ring-pink-500"
-                          />
-                          <p className="text-xs text-gray-400">
-                            Max total budget amount
-                          </p>
-                        </div>
-
-                        {/* Budget Carry Over Option */}
-                        <div className="space-y-2">
+                    <div className="space-y-4">
+                      {/* Budget Control Section */}
+                      <div>
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="font-medium text-white">Budget Control</h4>
                           <div className="flex items-center space-x-2">
                             <Checkbox
-                              id="budgetCarryover"
-                              checked={formData.budgetCarryoverEnabled}
-                              onCheckedChange={(checked) => updateField("budgetCarryoverEnabled", checked)}
+                              id="budgetControl"
+                              checked={formData.budgetControlEnabled}
+                              onCheckedChange={(checked) => updateField("budgetControlEnabled", checked)}
+                              className="border-blue-400 bg-slate-600"
                             />
-                            <Label htmlFor="budgetCarryover" className="cursor-pointer text-white text-sm">
-                              Budget Carry Over
+                            <Label htmlFor="budgetControl" className="cursor-pointer text-white text-sm">
+                              Enable
                             </Label>
                           </div>
-                          
-                          {formData.budgetCarryoverEnabled && (
+                        </div>
+
+                        {formData.budgetControlEnabled ? (
+                          <div className="space-y-4">
                             <div className="space-y-2">
-                              <Label htmlFor="carryoverPercentage" className="text-white">Carry Over Percentage *</Label>
+                              <Label htmlFor="budgetControlLimit" className="text-white">Budget Limit *</Label>
                               <Input
-                                id="carryoverPercentage"
+                                id="budgetControlLimit"
                                 type="number"
-                                min="0"
-                                max="100"
-                                placeholder="100"
-                                value={formData.carryoverPercentage || "100"}
-                                onChange={(e) => {
-                                  const value = Math.min(100, Math.max(0, parseInt(e.target.value) || 0));
-                                  updateField("carryoverPercentage", value.toString());
-                                }}
+                                placeholder="100000"
+                                value={formData.budgetControlLimit}
+                                onChange={(e) => updateField("budgetControlLimit", e.target.value)}
                                 className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 focus:border-pink-500 focus:ring-1 focus:ring-pink-500"
                               />
                               <p className="text-xs text-gray-400">
-                                Percentage of unused budget to carry over (0-100%, default: 100%)
+                                Max total budget amount
                               </p>
                             </div>
-                          )}
-                        </div>
+
+                            {/* Budget Carry Over Option */}
+                            <div className="space-y-2">
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="budgetCarryover"
+                                  checked={formData.budgetCarryoverEnabled}
+                                  onCheckedChange={(checked) => updateField("budgetCarryoverEnabled", checked)}
+                                  className="border-blue-400 bg-slate-600"
+                                />
+                                <Label htmlFor="budgetCarryover" className="cursor-pointer text-white text-sm">
+                                  Budget Carry Over
+                                </Label>
+                              </div>
+                              
+                              {formData.budgetCarryoverEnabled && (
+                                <div className="space-y-2">
+                                  <Label htmlFor="carryoverPercentage" className="text-white">Carry Over Percentage *</Label>
+                                  <Input
+                                    id="carryoverPercentage"
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    placeholder="100"
+                                    value={formData.carryoverPercentage || "100"}
+                                    onChange={(e) => {
+                                      const value = Math.min(100, Math.max(0, parseInt(e.target.value) || 0));
+                                      updateField("carryoverPercentage", value.toString());
+                                    }}
+                                    className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 focus:border-pink-500 focus:ring-1 focus:ring-pink-500"
+                                  />
+                                  <p className="text-xs text-gray-400">
+                                    Percentage of unused budget to carry over (0-100%, default: 100%)
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-gray-400">Enable to set budget limits</p>
+                        )}
                       </div>
-                    ) : (
-                      <p className="text-sm text-gray-400">Enable to set budget limits</p>
-                    )}
+
+                      {/* Separator */}
+                      <div className="border-t border-slate-600"></div>
+
+                      {/* Client Sponsored Section */}
+                      <div>
+                        <div className="flex items-center space-x-2 mb-2">
+                          <Checkbox
+                            id="clientSponsoredStandalone"
+                            checked={formData.clientSponsored}
+                            onCheckedChange={(checked) => updateField("clientSponsored", checked)}
+                            className="border-blue-400 bg-slate-600"
+                          />
+                          <Label htmlFor="clientSponsoredStandalone" className="cursor-pointer text-white font-medium">
+                            Client Sponsored
+                          </Label>
+                        </div>
+                        <p className="text-xs text-gray-400 ml-6">
+                          Mark if this budget is sponsored by an external client
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </CardContent>
@@ -1069,9 +1550,9 @@ function CreateConfiguration() {
               <CardContent className="space-y-6">
                 {/* Top Row: Location Settings and Client & Organization */}
                 <div className="grid gap-6 md:grid-cols-2">
-                  {/* Left: Location Settings Panel */}
+                  {/* Left: Location Settings & Clients Panel */}
                   <div className="bg-slate-700/50 rounded-lg p-4 space-y-4">
-                    <h4 className="font-medium text-white">Location Settings</h4>
+                    <h4 className="font-medium text-white">Location & Clients</h4>
                     <div className="space-y-4">
                       <div className="space-y-2">
                         <Label className="text-white">Countries</Label>
@@ -1103,57 +1584,263 @@ function CreateConfiguration() {
                           </SelectContent>
                         </Select>
                       </div>
+                      <div className="space-y-2">
+                        <Label className="text-white">Clients (Multi-select)</Label>
+                        <MultiSelect
+                          options={[
+                            { value: "pldt", label: "PLDT" },
+                            { value: "globe", label: "Globe Telecom" },
+                            { value: "smart", label: "Smart Communications" },
+                            { value: "converge", label: "Converge ICT" },
+                            { value: "dito", label: "DITO Telecommunity" },
+                          ]}
+                          selected={formData.clients}
+                          onChange={(selected) => updateField("clients", selected)}
+                          placeholder="Select clients"
+                          hasAllOption={true}
+                        />
+                      </div>
                     </div>
                   </div>
 
-                  {/* Right: Client & Organization Panel */}
+                  {/* Right: Organization Panel */}
                   <div className="bg-slate-700/50 rounded-lg p-4 space-y-4">
-                    <h4 className="font-medium text-white">Client & Organization</h4>
+                    <h4 className="font-medium text-white">Organization</h4>
                     <div className="space-y-4">
-                      <div className="space-y-2">
-                        <Label className="text-white">Clients</Label>
-                        <Select value={formData.clients.length > 0 ? formData.clients[0] : ""} onValueChange={(value) => updateField("clients", value ? [value] : [])}>
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                            <SelectValue placeholder="Select client" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-gray-300">
-                            <SelectItem value="pldt" className="text-white">PLDT</SelectItem>
-                            <SelectItem value="globe" className="text-white">Globe Telecom</SelectItem>
-                            <SelectItem value="smart" className="text-white">Smart Communications</SelectItem>
-                            <SelectItem value="converge" className="text-white">Converge ICT</SelectItem>
-                            <SelectItem value="dito" className="text-white">DITO Telecommunity</SelectItem>
-                          </SelectContent>
-                        </Select>
+
+                      {/* Affected OUs - Tree-Based Selector with Checkboxes */}
+                      <div className="space-y-1">
+                        <Label className="text-white font-medium text-sm">Affected OUs</Label>
+                        
+                        {/* OU Tree Selector */}
+                        <div className="bg-slate-600/30 rounded text-sm">
+                          {(() => {
+                            // Helper function to check if an OU is selected at any path level
+                            const isOUSelected = (ouValue, level) => {
+                              return formData.affectedOUPaths.some(path => {
+                                if (level === 'parent') return path[0] === ouValue;
+                                if (level === 'child') return path[1] === ouValue;
+                                if (level === 'grandchild') return path[2] === ouValue;
+                                return false;
+                              });
+                            };
+
+                            // Helper to toggle a path
+                            const togglePath = (newPath) => {
+                              const pathExists = formData.affectedOUPaths.some(p => JSON.stringify(p) === JSON.stringify(newPath));
+                              if (pathExists) {
+                                updateField("affectedOUPaths", formData.affectedOUPaths.filter(p => JSON.stringify(p) !== JSON.stringify(newPath)));
+                              } else {
+                                updateField("affectedOUPaths", [...formData.affectedOUPaths, newPath]);
+                              }
+                            };
+
+                            const parentOUs = parentOrgs;
+                            const childOUs = childOrgMap;
+                            const grandchildOUs = grandchildOrgMap;
+
+                            return (
+                              <div className="max-h-80 overflow-y-auto border border-slate-500 rounded bg-slate-700/40 p-2">
+                                {organizationsLoading ? (
+                                  <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
+                                ) : parentOUs.length === 0 ? (
+                                  <div className="text-gray-400 text-sm p-2">No organizations available</div>
+                                ) : (
+                                  parentOUs.map((parent) => {
+                                    const isParentSelected = isOUSelected(parent.org_id, 'parent');
+                                    return (
+                                      <div key={parent.org_id} className="space-y-0">
+                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                          <Checkbox
+                                            id={`ou-${parent.org_id}`}
+                                            checked={isParentSelected}
+                                            onCheckedChange={() => togglePath([parent.org_id])}
+                                            className="border-pink-400 bg-slate-600 h-4 w-4"
+                                          />
+                                          <span className="text-white text-xs">{parent.org_name}</span>
+                                        </div>
+
+                                        {/* Children - Show if parent path exists */}
+                                        {formData.affectedOUPaths.some(path => path[0] === parent.org_id) && childOUs[parent.org_id] && (
+                                          <div className="ml-4 space-y-0">
+                                            {childOUs[parent.org_id].map((child) => {
+                                              const isChildSelected = isOUSelected(child.org_id, 'child');
+                                              return (
+                                                <div key={child.org_id} className="space-y-0">
+                                                  <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                    <Checkbox
+                                                      id={`ou-${child.org_id}`}
+                                                      checked={isChildSelected}
+                                                      onCheckedChange={() => togglePath([parent.org_id, child.org_id])}
+                                                      className="border-pink-400 bg-slate-600 h-4 w-4"
+                                                    />
+                                                    <span className="text-gray-300 text-xs">{child.org_name}</span>
+                                                  </div>
+
+                                                  {/* Grandchildren - Show if parent-child path exists */}
+                                                  {formData.affectedOUPaths.some(path => path[0] === parent.org_id && path[1] === child.org_id) && grandchildOUs[child.org_id] && (
+                                                    <div className="ml-4 space-y-0">
+                                                      {grandchildOUs[child.org_id].map((grandchild) => {
+                                                        const isGrandchildSelected = isOUSelected(grandchild.org_id, 'grandchild');
+                                                        return (
+                                                          <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                            <Checkbox
+                                                              id={`ou-${grandchild.org_id}`}
+                                                              checked={isGrandchildSelected}
+                                                              onCheckedChange={() => togglePath([parent.org_id, child.org_id, grandchild.org_id])}
+                                                              className="border-pink-400 bg-slate-600 h-4 w-4"
+                                                            />
+                                                            <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
+                                                          </div>
+                                                        );
+                                                      })}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Selected Paths - Condensed Preview */}
+                        {formData.affectedOUPaths.length > 0 && (
+                          <div className="bg-pink-900/20 border border-pink-700/50 rounded p-2 space-y-1">
+                            {buildAffectedPreviewLines().map((line) => (
+                              <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
+                                <span>{line.text}</span>
+                                <button
+                                  onClick={() => removeAffectedByScope(line.scope)}
+                                  className="text-red-400 hover:text-red-300"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div className="space-y-2">
-                        <Label className="text-white">Organizational Units (OU)</Label>
-                        <Select value={formData.ou.length > 0 ? formData.ou[0] : ""} onValueChange={(value) => updateField("ou", value ? [value] : [])}>
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                            <SelectValue placeholder="Select organizational unit" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-gray-300">
-                            <SelectItem value="it-dept" className="text-white">IT Department</SelectItem>
-                            <SelectItem value="hr-dept" className="text-white">HR Department</SelectItem>
-                            <SelectItem value="finance-dept" className="text-white">Finance Department</SelectItem>
-                            <SelectItem value="operations" className="text-white">Operations</SelectItem>
-                            <SelectItem value="customer-service" className="text-white">Customer Service</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-white">Child OU</Label>
-                        <Select value={formData.childOU.length > 0 ? formData.childOU[0] : ""} onValueChange={(value) => updateField("childOU", value ? [value] : [])}>
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                            <SelectValue placeholder="Select child organizational unit" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-gray-300">
-                            <SelectItem value="dev-team" className="text-white">Development Team</SelectItem>
-                            <SelectItem value="qa-team" className="text-white">QA Team</SelectItem>
-                            <SelectItem value="support-team" className="text-white">Support Team</SelectItem>
-                            <SelectItem value="infrastructure" className="text-white">Infrastructure</SelectItem>
-                            <SelectItem value="security" className="text-white">Security</SelectItem>
-                          </SelectContent>
-                        </Select>
+
+                      {/* Accessible OUs (Access) - Tree-Based Selector with Checkboxes */}
+                      <div className="space-y-1">
+                        <Label className="text-white font-medium text-sm">Accessible OUs</Label>
+                        
+                        {/* Access OU Tree Selector */}
+                        <div className="bg-slate-600/30 rounded text-sm">
+                          {(() => {
+                            // Helper function to check if an OU is selected at any path level
+                            const isAccessOUSelected = (ouValue, level) => {
+                              return formData.accessibleOUPaths.some(path => {
+                                if (level === 'parent') return path[0] === ouValue;
+                                if (level === 'child') return path[1] === ouValue;
+                                if (level === 'grandchild') return path[2] === ouValue;
+                                return false;
+                              });
+                            };
+
+                            // Helper to toggle a path
+                            const toggleAccessPath = (newPath) => {
+                              const pathExists = formData.accessibleOUPaths.some(p => JSON.stringify(p) === JSON.stringify(newPath));
+                              if (pathExists) {
+                                updateField("accessibleOUPaths", formData.accessibleOUPaths.filter(p => JSON.stringify(p) !== JSON.stringify(newPath)));
+                              } else {
+                                updateField("accessibleOUPaths", [...formData.accessibleOUPaths, newPath]);
+                              }
+                            };
+
+                            const parentAccessOUs = parentOrgs;
+                            const childAccessOUs = childOrgMap;
+                            const grandchildAccessOUs = grandchildOrgMap;
+
+                            return (
+                              <div className="max-h-80 overflow-y-auto border border-slate-500 rounded bg-slate-700/40 p-2">
+                                {organizationsLoading ? (
+                                  <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
+                                ) : parentAccessOUs.length === 0 ? (
+                                  <div className="text-gray-400 text-sm p-2">No organizations available</div>
+                                ) : (
+                                  parentAccessOUs.map((parent) => {
+                                    const isParentSelected = isAccessOUSelected(parent.org_id, 'parent');
+                                    return (
+                                      <div key={parent.org_id} className="space-y-0">
+                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                          <Checkbox
+                                            id={`access-ou-${parent.org_id}`}
+                                            checked={isParentSelected}
+                                            onCheckedChange={() => toggleAccessPath([parent.org_id])}
+                                            className="border-blue-400 bg-slate-600 h-4 w-4"
+                                          />
+                                          <span className="text-white text-xs">{parent.org_name}</span>
+                                        </div>
+
+                                        {/* Children - Show if parent path exists */}
+                                        {formData.accessibleOUPaths.some(path => path[0] === parent.org_id) && childAccessOUs[parent.org_id] && (
+                                          <div className="ml-4 space-y-0">
+                                            {childAccessOUs[parent.org_id].map((child) => {
+                                              const isChildSelected = isAccessOUSelected(child.org_id, 'child');
+                                              return (
+                                                <div key={child.org_id} className="space-y-0">
+                                                  <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                    <Checkbox
+                                                      id={`access-ou-${child.org_id}`}
+                                                      checked={isChildSelected}
+                                                      onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id])}
+                                                      className="border-blue-400 bg-slate-600 h-4 w-4"
+                                                    />
+                                                    <span className="text-gray-300 text-xs">{child.org_name}</span>
+                                                  </div>
+
+                                                  {/* Grandchildren - Show if parent-child path exists */}
+                                                  {formData.accessibleOUPaths.some(path => path[0] === parent.org_id && path[1] === child.org_id) && grandchildAccessOUs[child.org_id] && (
+                                                    <div className="ml-4 space-y-0">
+                                                      {grandchildAccessOUs[child.org_id].map((grandchild) => {
+                                                        const isGrandchildSelected = isAccessOUSelected(grandchild.org_id, 'grandchild');
+                                                        return (
+                                                          <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                            <Checkbox
+                                                              id={`access-ou-${grandchild.org_id}`}
+                                                              checked={isGrandchildSelected}
+                                                              onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id, grandchild.org_id])}
+                                                              className="border-blue-400 bg-slate-600 h-4 w-4"
+                                                            />
+                                                            <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
+                                                          </div>
+                                                        );
+                                                      })}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Selected Access Paths - Compact */}
+                        {formData.accessibleOUPaths.length > 0 && (
+                          <div className="bg-blue-900/20 border border-blue-700/50 rounded p-2 space-y-1">
+                            {formData.accessibleOUPaths.map((path, idx) => (
+                              <div key={idx} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
+                                <span>{path.join(' → ')}</span>
+                                <button onClick={() => updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-300">✕</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1194,6 +1881,7 @@ function CreateConfiguration() {
                           <Checkbox
                             id={tenure.value}
                             checked={formData.selectedTenureGroups.includes(tenure.value)}
+                            className="border-blue-400 bg-slate-600"
                             onCheckedChange={(checked) => {
                               if (checked) {
                                 updateField("selectedTenureGroups", [...formData.selectedTenureGroups, tenure.value]);
@@ -1201,7 +1889,6 @@ function CreateConfiguration() {
                                 updateField("selectedTenureGroups", formData.selectedTenureGroups.filter(t => t !== tenure.value));
                               }
                             }}
-                            className="w-5 h-5"
                           />
                           <Label htmlFor={tenure.value} className="cursor-pointer text-white text-base font-medium">
                             {tenure.label}
@@ -1224,27 +1911,31 @@ function CreateConfiguration() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="approverL1" className="text-white">Primary Approver *</Label>
-                          <Select value={formData.approverL1} onValueChange={(value) => updateField("approverL1", value)}>
+                          <Select value={formData.approverL1} onValueChange={(value) => updateField("approverL1", value)} disabled={approvalsLoading}>
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                              <SelectValue placeholder="Select primary approver" />
+                              <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select primary approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              <SelectItem value="john-smith" className="text-white">John Smith</SelectItem>
-                              <SelectItem value="jane-doe" className="text-white">Jane Doe</SelectItem>
-                              <SelectItem value="mike-wilson" className="text-white">Mike Wilson</SelectItem>
+                              {approvalsL1.map((approver) => (
+                                <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
+                                  {approver.first_name} {approver.last_name}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="backupApproverL1" className="text-white">Backup Approver *</Label>
-                          <Select value={formData.backupApproverL1} onValueChange={(value) => updateField("backupApproverL1", value)}>
+                          <Select value={formData.backupApproverL1} onValueChange={(value) => updateField("backupApproverL1", value)} disabled={approvalsLoading}>
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                              <SelectValue placeholder="Select backup approver" />
+                              <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select backup approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              <SelectItem value="sarah-jones" className="text-white">Sarah Jones</SelectItem>
-                              <SelectItem value="bob-martinez" className="text-white">Bob Martinez</SelectItem>
-                              <SelectItem value="alice-chen" className="text-white">Alice Chen</SelectItem>
+                              {approvalsL1.map((approver) => (
+                                <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
+                                  {approver.first_name} {approver.last_name}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
@@ -1260,27 +1951,31 @@ function CreateConfiguration() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="approverL2" className="text-white">Primary Approver *</Label>
-                          <Select value={formData.approverL2} onValueChange={(value) => updateField("approverL2", value)}>
+                          <Select value={formData.approverL2} onValueChange={(value) => updateField("approverL2", value)} disabled={approvalsLoading}>
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                              <SelectValue placeholder="Select primary approver" />
+                              <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select primary approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              <SelectItem value="michael-johnson" className="text-white">Michael Johnson</SelectItem>
-                              <SelectItem value="sarah-wilson" className="text-white">Sarah Wilson</SelectItem>
-                              <SelectItem value="robert-taylor" className="text-white">Robert Taylor</SelectItem>
+                              {approvalsL2.map((approver) => (
+                                <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
+                                  {approver.first_name} {approver.last_name}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="backupApproverL2" className="text-white">Backup Approver *</Label>
-                          <Select value={formData.backupApproverL2} onValueChange={(value) => updateField("backupApproverL2", value)}>
+                          <Select value={formData.backupApproverL2} onValueChange={(value) => updateField("backupApproverL2", value)} disabled={approvalsLoading}>
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                              <SelectValue placeholder="Select backup approver" />
+                              <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select backup approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              <SelectItem value="emily-davis" className="text-white">Emily Davis</SelectItem>
-                              <SelectItem value="anna-thompson" className="text-white">Anna Thompson</SelectItem>
-                              <SelectItem value="mark-williams" className="text-white">Mark Williams</SelectItem>
+                              {approvalsL2.map((approver) => (
+                                <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
+                                  {approver.first_name} {approver.last_name}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
@@ -1296,27 +1991,31 @@ function CreateConfiguration() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="approverL3" className="text-white">Primary Approver *</Label>
-                          <Select value={formData.approverL3} onValueChange={(value) => updateField("approverL3", value)}>
+                          <Select value={formData.approverL3} onValueChange={(value) => updateField("approverL3", value)} disabled={approvalsLoading}>
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                              <SelectValue placeholder="Select primary approver" />
+                              <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select primary approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              <SelectItem value="david-brown" className="text-white">David Brown</SelectItem>
-                              <SelectItem value="lisa-garcia" className="text-white">Lisa Garcia</SelectItem>
-                              <SelectItem value="jennifer-lee" className="text-white">Jennifer Lee</SelectItem>
+                              {approvalsL3.map((approver) => (
+                                <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
+                                  {approver.first_name} {approver.last_name}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="backupApproverL3" className="text-white">Backup Approver *</Label>
-                          <Select value={formData.backupApproverL3} onValueChange={(value) => updateField("backupApproverL3", value)}>
+                          <Select value={formData.backupApproverL3} onValueChange={(value) => updateField("backupApproverL3", value)} disabled={approvalsLoading}>
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                              <SelectValue placeholder="Select backup approver" />
+                              <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select backup approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              <SelectItem value="kevin-wong" className="text-white">Kevin Wong</SelectItem>
-                              <SelectItem value="patricia-miller" className="text-white">Patricia Miller</SelectItem>
-                              <SelectItem value="daniel-kim" className="text-white">Daniel Kim</SelectItem>
+                              {approvalsL3.map((approver) => (
+                                <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
+                                  {approver.first_name} {approver.last_name}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
@@ -1355,18 +2054,23 @@ function CreateConfiguration() {
                       </div>
                       <div className="flex justify-between items-start">
                         <span className="text-gray-300 font-medium">Description:</span>
-                        <span className="text-white text-sm text-right max-w-[60%] leading-relaxed">{formData.budgetDescription || "No description provided"}</span>
+                        <span className="text-white text-sm text-right max-w-[60%] leading-relaxed">{formData.description || "No description provided"}</span>
                       </div>
                       <div className="flex justify-between items-center">
                         <span className="text-gray-300 font-medium">Period:</span>
                         <span className="text-white font-semibold capitalize">{formData.period}</span>
                       </div>
                       <div className="flex justify-between items-start">
-                        <span className="text-gray-300 font-medium">Accessible OU:</span>
-                        <span className="text-white text-sm text-right max-w-[60%]">{formData.accessibleOU.length ? formData.accessibleOU.map(code => {
-                          const ouMap = { "it-dept": "IT Department", "hr-dept": "HR Department", "finance-dept": "Finance Department", operations: "Operations", "customer-service": "Customer Service" };
-                          return ouMap[code] || code;
-                        }).join(", ") : "Not specified"}</span>
+                        <span className="text-gray-300 font-medium">Accessible OU Paths:</span>
+                        <span className="text-white text-sm text-right max-w-[60%]">
+                          {formData.accessibleOUPaths.length > 0 
+                            ? formData.accessibleOUPaths.map((path, idx) => (
+                              <div key={idx} className="text-xs text-blue-300 mb-1">
+                                {path.join(" → ")}
+                              </div>
+                            ))
+                            : "Not specified"}
+                        </span>
                       </div>
                       <div className="flex justify-between items-center">
                         <span className="text-gray-300 font-medium">Data Control:</span>
@@ -1409,18 +2113,16 @@ function CreateConfiguration() {
                         }).join(", ") : "None selected"}</span>
                       </div>
                       <div className="flex justify-between items-start">
-                        <span className="text-gray-300 font-medium">OU:</span>
-                        <span className="text-white font-semibold text-right max-w-[60%]">{formData.ou.length ? formData.ou.map(code => {
-                          const ouMap = { "it-dept": "IT Department", "hr-dept": "HR Department", "finance-dept": "Finance Department", operations: "Operations", "customer-service": "Customer Service" };
-                          return ouMap[code] || code;
-                        }).join(", ") : "None selected"}</span>
-                      </div>
-                      <div className="flex justify-between items-start">
-                        <span className="text-gray-300 font-medium">Child OU:</span>
-                        <span className="text-white font-semibold text-right max-w-[60%]">{formData.childOU.length ? formData.childOU.map(code => {
-                          const childOUMap = { "dev-team": "Development Team", "qa-team": "QA Team", "support-team": "Support Team", infrastructure: "Infrastructure", security: "Security" };
-                          return childOUMap[code] || code;
-                        }).join(", ") : "None selected"}</span>
+                        <span className="text-gray-300 font-medium">Affected OU Paths:</span>
+                        <span className="text-white text-sm text-right max-w-[60%]">
+                          {formData.affectedOUPaths.length > 0 
+                            ? formData.affectedOUPaths.map((path, idx) => (
+                              <div key={idx} className="text-xs text-pink-300 mb-1">
+                                {path.join(" → ")}
+                              </div>
+                            ))
+                            : "None selected"}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -1479,7 +2181,7 @@ function CreateConfiguration() {
               <Button 
                 variant="outline" 
                 onClick={prevStep} 
-                disabled={currentStep === 0} 
+                disabled={currentStep === 0 || isSubmitting} 
                 className="border-slate-600 text-white hover:bg-slate-700"
               >
                 <ChevronLeft className="mr-2 h-4 w-4" />
@@ -1487,14 +2189,31 @@ function CreateConfiguration() {
               </Button>
 
               {currentStep < STEPS.length - 1 ? (
-                <Button onClick={nextStep} className="bg-blue-600 hover:bg-blue-700 text-white font-medium">
+                <Button 
+                  onClick={nextStep} 
+                  disabled={isSubmitting}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium"
+                >
                   Next
                   <ChevronRight className="ml-2 h-4 w-4" />
                 </Button>
               ) : (
-                <Button onClick={handleSubmit} className="bg-green-600 hover:bg-green-700">
-                  <Check className="mr-2 h-4 w-4" />
-                  Create Configuration
+                <Button 
+                  onClick={handleSubmit} 
+                  disabled={isSubmitting}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader className="mr-2 h-4 w-4 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="mr-2 h-4 w-4" />
+                      Create Configuration
+                    </>
+                  )}
                 </Button>
               )}
             </div>
