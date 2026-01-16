@@ -1,22 +1,22 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { authAPI } from '../utils/api';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { AlertCircle, Loader2, ArrowLeft } from '../components/icons';
+import { AlertCircle, Loader2, FileText } from '../components/icons';
 
 export default function UserAgreement() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const email = searchParams.get('email');
-  const role = searchParams.get('role');
+  const userId = searchParams.get('userId');
+  const role = searchParams.get('role') || 'requestor';
 
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  if (!email || !role) {
+  if (!email || !userId) {
     navigate('/login');
     return null;
   }
@@ -30,51 +30,41 @@ export default function UserAgreement() {
     setIsLoading(true);
     setError('');
 
-    const userId = searchParams.get('userId') || searchParams.get('email');
-    const result = await authAPI.acceptUserAgreement(userId, '1.0');
-
-    setIsLoading(false);
-
-    if (!result.success) {
-      setError(result.error);
-      return;
+    try {
+      console.log('[USER AGREEMENT] Agreement accepted, redirecting to password change');
+      
+      // Don't record agreement yet - just redirect to password change
+      // Agreement will be recorded after password change succeeds
+      navigate(`/first-time-password?email=${encodeURIComponent(email)}&userId=${encodeURIComponent(userId)}&role=${encodeURIComponent(role)}`);
+    } catch (err) {
+      console.error('[USER AGREEMENT] Error:', err);
+      setError('An error occurred while processing your request. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
-
-    // Navigate to dashboard
-    navigate('/dashboard');
   };
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden"
-      style={{
-        background: 'linear-gradient(135deg, oklch(0.08 0.04 270) 0%, oklch(0.12 0.06 280) 50%, oklch(0.15 0.08 290) 100%)',
-      }}
-    >
-      {/* Gradient overlays */}
-      <div
-        className="absolute top-20 right-20 w-96 h-96 rounded-full blur-3xl pointer-events-none"
-        style={{
-          background: 'radial-gradient(circle, oklch(0.65 0.28 340 / 0.15) 0%, transparent 70%)',
-        }}
-      />
-      <div
-        className="absolute bottom-20 left-20 w-96 h-96 rounded-full blur-3xl pointer-events-none"
-        style={{
-          background: 'radial-gradient(circle, oklch(0.85 0.18 85 / 0.08) 0%, transparent 70%)',
-        }}
-      />
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden" style={{ background: 'linear-gradient(to bottom right, #0a0e27, #1a1f4d, #2d3b8f)' }}>
+      <div className="absolute top-20 right-20 w-96 h-96 rounded-full blur-3xl pointer-events-none" style={{ background: '#e91e8c/20' }} />
+      <div className="absolute bottom-20 left-20 w-96 h-96 rounded-full blur-3xl pointer-events-none" style={{ background: '#ffd700/10' }} />
+      <div className="absolute top-1/2 left-1/2 w-96 h-96 rounded-full blur-3xl pointer-events-none" style={{ background: '#2d3b8f/30', transform: 'translate(-50%, -50%)' }} />
 
       <div className="relative z-10 w-full max-w-2xl">
-        <div className="rounded-2xl shadow-2xl overflow-hidden p-8 md:p-10" style={{ backgroundColor: 'oklch(0.18 0.05 280)' }}>
-          <div className="space-y-8">
+        <div className="bg-[#1e2a3a] rounded-2xl shadow-2xl overflow-hidden p-8 md:p-10">
+          <div className="space-y-6">
             {/* Header */}
             <div className="space-y-2">
-              <h2 className="text-3xl font-bold" style={{ color: 'oklch(0.95 0.02 280)' }}>User Agreement</h2>
-              <p style={{ color: 'oklch(0.65 0.03 280)' }}>Please review and accept the terms to continue</p>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg" style={{ background: '#4c5fd5/10' }}>
+                  <FileText className="w-6 h-6" style={{ color: '#4c5fd5' }} />
+                </div>
+                <h2 className="text-3xl font-bold text-white">User Agreement</h2>
+              </div>
+              <p className="text-gray-300">Please review and accept the terms to continue</p>
             </div>
 
-            {/* Error message */}
+            {/* Error Alert */}
             {error && (
               <Alert variant="destructive" className="animate-in fade-in slide-in-from-top-2">
                 <AlertCircle className="h-4 w-4" />
@@ -82,21 +72,41 @@ export default function UserAgreement() {
               </Alert>
             )}
 
-            {/* Terms content */}
-            <div className="border border-border rounded-lg p-6 max-h-96 overflow-y-auto" style={{ backgroundColor: 'oklch(0.12 0.04 270)' }}>
-              <div className="space-y-4 text-sm" style={{ color: 'oklch(0.65 0.03 280)' }}>
-                <h3 className="font-semibold text-lg" style={{ color: 'oklch(0.95 0.02 280)' }}>ORBIT System User Agreement</h3>
+            {/* Terms Content */}
+            <div 
+              className="border border-gray-700 rounded-lg p-6 max-h-96 overflow-y-auto bg-[#0f1729]"
+              style={{
+                scrollbarWidth: 'thin',
+                scrollbarColor: '#4a5568 #1e2a3a',
+              }}>
+              <style>{`
+                div[style*="scrollbarWidth"]::-webkit-scrollbar {
+                  width: 8px;
+                }
+                div[style*="scrollbarWidth"]::-webkit-scrollbar-track {
+                  background: #1e2a3a;
+                }
+                div[style*="scrollbarWidth"]::-webkit-scrollbar-thumb {
+                  background: #4a5568;
+                  border-radius: 4px;
+                }
+                div[style*="scrollbarWidth"]::-webkit-scrollbar-thumb:hover {
+                  background: #5a6578;
+                }
+              `}</style>
+              <div className="space-y-4 text-sm text-gray-200">
+                <h3 className="font-semibold text-lg text-white">ORBIT System User Agreement</h3>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>1. Acceptance of Terms</h4>
+                  <h4 className="font-semibold text-white mb-2">1. Acceptance of Terms</h4>
                   <p>
-                    By accessing and using the ORBIT system, you acknowledge that you have read, understood, and agree to be bound by these
-                    terms and conditions.
+                    By accessing and using the ORBIT system, you acknowledge that you have read, understood, and agree to be
+                    bound by these terms and conditions.
                   </p>
                 </section>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>2. User Responsibilities</h4>
+                  <h4 className="font-semibold text-white mb-2">2. User Responsibilities</h4>
                   <ul className="list-disc list-inside space-y-1 ml-2">
                     <li>Maintain the confidentiality of your login credentials</li>
                     <li>Use the system only for authorized business purposes</li>
@@ -106,15 +116,15 @@ export default function UserAgreement() {
                 </section>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>3. Data Privacy and Security</h4>
+                  <h4 className="font-semibold text-white mb-2">3. Data Privacy and Security</h4>
                   <p>
-                    You acknowledge that all data entered into the system is subject to company data protection policies. You agree to handle
-                    sensitive information in accordance with applicable privacy laws and regulations.
+                    You acknowledge that all data entered into the system is subject to company data protection policies. You
+                    agree to handle sensitive information in accordance with applicable privacy laws and regulations.
                   </p>
                 </section>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>4. System Access and Usage</h4>
+                  <h4 className="font-semibold text-white mb-2">4. System Access and Usage</h4>
                   <ul className="list-disc list-inside space-y-1 ml-2">
                     <li>Access is granted based on your role and responsibilities</li>
                     <li>Unauthorized access attempts will be logged and investigated</li>
@@ -124,7 +134,7 @@ export default function UserAgreement() {
                 </section>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>5. Prohibited Activities</h4>
+                  <h4 className="font-semibold text-white mb-2">5. Prohibited Activities</h4>
                   <ul className="list-disc list-inside space-y-1 ml-2">
                     <li>Attempting to bypass security measures</li>
                     <li>Sharing login credentials with others</li>
@@ -134,53 +144,71 @@ export default function UserAgreement() {
                 </section>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>6. Intellectual Property</h4>
+                  <h4 className="font-semibold text-white mb-2">6. Intellectual Property</h4>
                   <p>
-                    All content, features, and functionality of the ORBIT system are owned by the company and are protected by intellectual
-                    property laws.
+                    All content, features, and functionality of the ORBIT system are owned by the company and are protected by
+                    intellectual property laws.
                   </p>
                 </section>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>7. Modifications</h4>
+                  <h4 className="font-semibold text-white mb-2">7. Modifications</h4>
                   <p>
-                    The company reserves the right to modify these terms at any time. Continued use of the system constitutes acceptance of any
-                    modifications.
+                    The company reserves the right to modify these terms at any time. Continued use of the system constitutes
+                    acceptance of any modifications.
                   </p>
                 </section>
 
                 <section>
-                  <h4 className="font-semibold mb-2" style={{ color: 'oklch(0.95 0.02 280)' }}>8. Termination</h4>
+                  <h4 className="font-semibold text-white mb-2">8. Termination</h4>
                   <p>
-                    Your access may be terminated immediately without notice if you violate these terms or engage in unauthorized activities.
+                    Your access may be terminated immediately without notice if you violate these terms or engage in
+                    unauthorized activities.
                   </p>
                 </section>
               </div>
             </div>
 
             {/* Checkbox */}
-            <div className="flex items-start gap-3 p-4 border border-border rounded-lg" style={{ backgroundColor: 'oklch(0.12 0.04 270)' }}>
-              <Checkbox id="accept-agreement" checked={accepted} onCheckedChange={setAccepted} className="mt-1" />
-              <label htmlFor="accept-agreement" className="text-sm cursor-pointer leading-relaxed" style={{ color: 'oklch(0.95 0.02 280)' }}>
-                I have read and agree to the ORBIT System User Agreement. I understand my responsibilities and the consequences of violating
-                these terms.
+            <div className="flex items-start gap-3 p-4 bg-[#1e2a3a] border border-gray-700 rounded-lg">
+              <Checkbox
+                id="accept-agreement"
+                checked={accepted}
+                onCheckedChange={setAccepted}
+                disabled={isLoading}
+                className="mt-1"
+              />
+              <label htmlFor="accept-agreement" className="text-sm text-white cursor-pointer leading-relaxed">
+                I have read and agree to the ORBIT System User Agreement. I understand my responsibilities and the
+                consequences of violating these terms.
               </label>
             </div>
 
-            {/* Submit button */}
-            <Button onClick={handleContinue} className="w-full h-11 text-base font-semibold" disabled={isLoading}>
+            {/* Submit Button */}
+            <Button
+              onClick={handleContinue}
+              disabled={isLoading}
+              className="w-full h-11 text-base font-semibold text-white transition-all shadow-md hover:shadow-lg"
+              style={{
+                backgroundColor: '#4c5fd5',
+              }}
+              onMouseEnter={(e) => !isLoading && (e.target.style.backgroundColor = '#3d4fb5')}
+              onMouseLeave={(e) => !isLoading && (e.target.style.backgroundColor = '#4c5fd5')}
+            >
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  Continuing...
+                  Processing...
                 </>
               ) : (
-                'Accept & Continue'
+                'Continue'
               )}
             </Button>
 
             {/* Footer */}
-            <div className="text-center text-sm" style={{ color: 'oklch(0.65 0.03 280)' }}>© 2025 ORBIT. All rights reserved.</div>
+            <div className="text-center text-sm text-gray-400">
+              © 2025 ORBIT. All rights reserved.
+            </div>
           </div>
         </div>
       </div>

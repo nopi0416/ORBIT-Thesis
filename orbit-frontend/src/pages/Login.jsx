@@ -20,7 +20,7 @@ export default function Login() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [requiresOTP, setRequiresOTP] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
-  const [timeRemaining, setTimeRemaining] = useState(300); // 5 minutes
+  const [timeRemaining, setTimeRemaining] = useState(180); // 3 minutes
   const inputRefs = useRef([]);
 
   // Timer for OTP expiration
@@ -39,6 +39,30 @@ export default function Login() {
 
     return () => clearInterval(interval);
   }, [requiresOTP, timeRemaining]);
+
+  // Initialize resend cooldown when OTP page is shown
+  useEffect(() => {
+    if (requiresOTP) {
+      setResendCooldown(120); // 2 minutes cooldown since OTP was just sent
+    }
+  }, [requiresOTP]);
+
+  // Timer for resend cooldown
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+
+    const interval = setInterval(() => {
+      setResendCooldown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [resendCooldown]);
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -84,8 +108,8 @@ export default function Login() {
     if (resendCooldown > 0) return;
 
     setError('');
-    setResendCooldown(60);
-    setTimeRemaining(300);
+    setResendCooldown(120);
+    setTimeRemaining(180);
 
     try {
       const result = await authAPI.resendOTP(email, 'login');
@@ -98,17 +122,6 @@ export default function Login() {
       setError('Failed to resend OTP. Please try again.');
       setTimeRemaining(0);
     }
-
-    // Decrement cooldown timer
-    const cooldownInterval = setInterval(() => {
-      setResendCooldown((prev) => {
-        if (prev <= 1) {
-          clearInterval(cooldownInterval);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
   };
 
   const validateForm = () => {
@@ -168,10 +181,13 @@ export default function Login() {
         console.log('[LOGIN FORM] Complete login result:', result);
 
         if (result.success) {
-          // Check if password change is required (first-time user)
-          if (result.requiresPasswordChange) {
+          // Check if user agreement is required (first-time login)
+          if (result.requiresUserAgreement) {
+            console.log('[LOGIN FORM] User agreement required, redirecting to user-agreement');
+            navigate(`/user-agreement?email=${encodeURIComponent(email)}&userId=${result.userId}&role=${encodeURIComponent(result.role || 'requestor')}`);
+          } else if (result.requiresPasswordChange) {
             console.log('[LOGIN FORM] Password change required, redirecting to first-time-password');
-            navigate(`/first-time-password?email=${encodeURIComponent(email)}`);
+            navigate(`/first-time-password?email=${encodeURIComponent(email)}&role=${encodeURIComponent(result.role || 'requestor')}`);
           } else {
             // OTP verified, redirecting to dashboard
             console.log('[LOGIN FORM] OTP verified, redirecting to dashboard');
@@ -220,7 +236,7 @@ export default function Login() {
     setError('');
     setFieldErrors({});
     setResendCooldown(0);
-    setTimeRemaining(300);
+    setTimeRemaining(180);
   };
 
   return (
@@ -330,6 +346,7 @@ export default function Login() {
                           className="border rounded-md transition-colors"
                           disabled={isLoading}
                           autoComplete="email"
+                          autoFocus
                           aria-invalid={!!fieldErrors.email}
                           aria-describedby={fieldErrors.email ? 'email-error' : undefined}
                         />
@@ -416,7 +433,7 @@ export default function Login() {
                       {/* OTP digit inputs */}
                       <div className="flex gap-2 justify-center">
                         {otp.map((digit, index) => (
-                          <Input
+                          <input
                             key={index}
                             ref={(el) => {
                               inputRefs.current[index] = el;
@@ -428,6 +445,7 @@ export default function Login() {
                             onChange={(e) => handleOtpChange(index, e.target.value)}
                             onKeyDown={(e) => handleOtpKeyDown(index, e)}
                             onPaste={handleOtpPaste}
+                            autoFocus={index === 0}
                             style={{
                               width: '3rem',
                               height: '3.5rem',
@@ -437,8 +455,10 @@ export default function Login() {
                               backgroundColor: 'oklch(0.18 0.05 280)',
                               borderColor: 'oklch(0.3 0.05 280)',
                               color: 'oklch(0.95 0.02 280)',
+                              border: '1px solid',
+                              borderRadius: '0.375rem',
+                              transition: 'all 0.3s',
                             }}
-                            className="border rounded-md transition-colors focus:border-2"
                             disabled={isLoading || timeRemaining <= 0}
                             aria-label={`OTP Digit ${index + 1}`}
                           />
@@ -452,7 +472,7 @@ export default function Login() {
                         </p>
                         <div>
                           {resendCooldown > 0 ? (
-                            <span style={{ color: 'oklch(0.65 0.03 280)' }}>Resend code in {resendCooldown}s</span>
+                            <span style={{ color: 'oklch(0.65 0.03 280)' }}>Resend code in {formatTime(resendCooldown)}</span>
                           ) : (
                             <button
                               type="button"

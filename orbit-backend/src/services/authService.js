@@ -245,29 +245,44 @@ export class AuthService {
         };
       }
 
-      // Check if password needs to be changed
-      if (user.password_change_required) {
+      // Check if user agreement is accepted (first-time login)
+      const userId = user.user_id || user.id;
+      const { data: userAgreements, error: agreementError } = await supabase
+        .from('tbluser_agreements')
+        .select('*')
+        .eq('user_id', userId);
+
+      console.log(`[COMPLETE LOGIN] User agreement check for user ${userId}:`, {
+        hasAgreement: userAgreements && userAgreements.length > 0,
+        error: agreementError?.message,
+        recordCount: userAgreements?.length,
+      });
+
+      if (!userAgreements || userAgreements.length === 0) {
+        // User hasn't accepted user agreement yet - first time login
         return {
           success: true,
-          requiresPasswordChange: true,
           data: {
-            userId: user.user_id || user.id,
+            requiresUserAgreement: true,
+            userId,
             email: user.email,
             role: user.role,
+            firstName: user.first_name,
+            lastName: user.last_name,
           },
-          message: 'Password change required',
+          message: 'User agreement acceptance required',
         };
       }
 
       // Generate JWT token
-      const token = this.generateToken(user.user_id || user.id, user.email, user.role);
+      const token = this.generateToken(userId, user.email, user.role);
 
       // Update last login
       try {
         await supabase
           .from('tblusers')
           .update({ updated_at: new Date().toISOString() })
-          .eq('user_id', user.user_id || user.id);
+          .eq('user_id', userId);
       } catch (e) {
         // Silently fail if update not supported
       }
@@ -276,7 +291,7 @@ export class AuthService {
         success: true,
         data: {
           token,
-          userId: user.user_id || user.id,
+          userId,
           email: user.email,
           firstName: user.first_name,
           lastName: user.last_name,
@@ -354,8 +369,12 @@ export class AuthService {
 
       // Send OTP via email
       const emailResult = await sendOTPEmail(email, otp);
+      
       if (!emailResult.success) {
-        console.log(`[OTP] Warning: Failed to send email but OTP stored`);
+        console.log(`[OTP] Warning: Failed to send email - ${emailResult.error}`);
+        console.log(`[OTP] Email config - USER: ${process.env.EMAIL_USER}, HAS_PASSWORD: ${!!process.env.EMAIL_PASSWORD}`);
+      } else {
+        console.log(`[OTP] Email sent successfully to ${email}`);
       }
 
       // TODO: Send OTP via email using email service
@@ -526,11 +545,12 @@ export class AuthService {
         }
       }
 
-      // Update password_hash only (most reliable column)
+      // Update password_hash (don't try to update non-existent column)
       const { data, error } = await supabase
         .from('tblusers')
         .update({
           password_hash: newPassword, // TODO: Hash with bcrypt before storing
+          updated_at: new Date().toISOString(),
         })
         .eq('email', email)
         .select();
@@ -543,6 +563,8 @@ export class AuthService {
           error: 'Failed to update password. Please try again.',
         };
       }
+
+      console.log(`[PASSWORD CHANGE] User ${email} has changed password`);
 
       return {
         success: true,
@@ -700,27 +722,33 @@ export class AuthService {
    */
   static async acceptUserAgreement(userId, version = '1.0') {
     try {
+      const now = new Date().toISOString();
       const { error } = await supabase
         .from('tbluser_agreements')
         .insert([
           {
             user_id: userId,
             version,
-            accepted_at: new Date().toISOString(),
+            accepted_at: now,
+            created_at: now,
           },
         ]);
 
-      if (error) throw error;
+      if (error) {
+        console.error('[USER AGREEMENT] Database error:', error);
+        throw error;
+      }
 
+      console.log(`[USER AGREEMENT] User ${userId} accepted agreement version ${version}`);
       return {
         success: true,
         message: 'User agreement accepted successfully',
       };
     } catch (error) {
-      console.error('Error accepting user agreement:', error);
+      console.error('[USER AGREEMENT] Error accepting user agreement:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to process your request. Please try again.',
       };
     }
   }

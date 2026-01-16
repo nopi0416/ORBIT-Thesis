@@ -221,7 +221,7 @@ export const authAPI = {
         accepted: true,
         version,
       },
-      includeToken: true,
+      includeToken: false,
     });
   },
 

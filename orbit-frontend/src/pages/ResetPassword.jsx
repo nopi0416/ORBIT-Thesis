@@ -186,6 +186,7 @@ export default function ResetPassword() {
                     className="border rounded-md transition-colors"
                     disabled={isLoading}
                     autoComplete="new-password"
+                    autoFocus
                   />
                   <button
                     type="button"

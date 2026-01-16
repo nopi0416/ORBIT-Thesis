@@ -126,6 +126,7 @@ export default function ForgotPassword() {
                     className="border rounded-md transition-colors"
                     disabled={isLoading}
                     autoComplete="email"
+                    autoFocus
                   />
                 </div>
               </div>

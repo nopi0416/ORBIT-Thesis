@@ -97,8 +97,23 @@ export function AuthProvider({ children }) {
       });
 
       console.log('Complete login response:', response.data);
+      console.log('requiresUserAgreement:', response.data.data?.requiresUserAgreement);
 
       if (response.data.success) {
+        // Check if user agreement is required (first-time login)
+        if (response.data.data?.requiresUserAgreement) {
+          console.log('User agreement required for first-time login');
+          return { 
+            success: true, 
+            requiresUserAgreement: true,
+            userId: response.data.data?.userId,
+            email: response.data.data?.email,
+            firstName: response.data.data?.firstName,
+            lastName: response.data.data?.lastName,
+            role: response.data.data?.role
+          };
+        }
+
         // Check if password change is required
         if (response.data.requiresPasswordChange) {
           console.log('Password change required, storing temp data');

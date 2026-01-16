@@ -192,6 +192,7 @@ export default function SupportTicket() {
                   className="pl-10 h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}
+                  autoFocus
                 />
               </div>
             </div>

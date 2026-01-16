@@ -394,13 +394,16 @@ export class AuthController {
       const result = await AuthService.acceptUserAgreement(userId, version);
 
       if (!result.success) {
-        return sendError(res, result.error, 400);
+        // Mask database errors - don't expose table names or constraints
+        const userFriendlyError = 'Unable to process your agreement. Please try again.';
+        return sendError(res, userFriendlyError, 400);
       }
 
       sendSuccess(res, {}, result.message);
     } catch (error) {
-      console.error('Error in acceptUserAgreement:', error);
-      sendError(res, error.message, 500);
+      console.error('[USER AGREEMENT CONTROLLER] Error in acceptUserAgreement:', error);
+      // Never expose error details to client
+      sendError(res, 'An error occurred while processing your request. Please try again.', 500);
     }
   }
 

@@ -16,7 +16,7 @@ export default function VerifyOTP() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
-  const [timeRemaining, setTimeRemaining] = useState(300); // 5 minutes
+  const [timeRemaining, setTimeRemaining] = useState(180); // 3 minutes
   const inputRefs = useRef([]);
 
   // Redirect if no email
@@ -25,6 +25,28 @@ export default function VerifyOTP() {
       navigate('/login');
     }
   }, [email, navigate]);
+
+  // Initialize resend cooldown on page load
+  useEffect(() => {
+    setResendCooldown(120); // 2 minutes cooldown since OTP was just sent
+  }, []);
+
+  // Timer for resend cooldown
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+
+    const interval = setInterval(() => {
+      setResendCooldown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [resendCooldown]);
 
   // Timer for OTP expiration
   useEffect(() => {
@@ -129,8 +151,8 @@ export default function VerifyOTP() {
     if (resendCooldown > 0) return;
 
     setError('');
-    setResendCooldown(60);
-    setTimeRemaining(300);
+    setResendCooldown(120);
+    setTimeRemaining(180);
 
     try {
       const result = await authAPI.resendOTP(email, type || 'reset');
@@ -142,16 +164,6 @@ export default function VerifyOTP() {
       setError('Failed to resend OTP. Please try again.');
       console.error('Resend OTP error:', err);
     }
-
-    const interval = setInterval(() => {
-      setResendCooldown((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
   };
 
   if (!email) {
@@ -219,7 +231,7 @@ export default function VerifyOTP() {
               <div className="space-y-4">
                 <div className="flex gap-2 justify-center">
                   {otp.map((digit, index) => (
-                    <Input
+                    <input
                       key={index}
                       ref={(el) => {
                         inputRefs.current[index] = el;
@@ -231,6 +243,7 @@ export default function VerifyOTP() {
                       onChange={(e) => handleChange(index, e.target.value)}
                       onKeyDown={(e) => handleKeyDown(index, e)}
                       onPaste={handlePaste}
+                      autoFocus={index === 0}
                       style={{
                         width: '3rem',
                         height: '3.5rem',
@@ -240,8 +253,10 @@ export default function VerifyOTP() {
                         backgroundColor: 'oklch(0.18 0.05 280)',
                         borderColor: 'oklch(0.3 0.05 280)',
                         color: 'oklch(0.95 0.02 280)',
+                        border: '1px solid',
+                        borderRadius: '0.375rem',
+                        transition: 'all 0.3s',
                       }}
-                      className="border rounded-md transition-colors"
                       disabled={isLoading || timeRemaining <= 0}
                       aria-label={`Digit ${index + 1}`}
                     />
@@ -254,7 +269,7 @@ export default function VerifyOTP() {
                   </p>
                   <div>
                     {resendCooldown > 0 ? (
-                      <span style={{ color: 'oklch(0.65 0.03 280)' }}>Resend code in {resendCooldown}s</span>
+                      <span style={{ color: 'oklch(0.65 0.03 280)' }}>Resend code in {formatTime(resendCooldown)}</span>
                     ) : (
                       <button
                         type="button"
