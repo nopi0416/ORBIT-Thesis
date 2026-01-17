@@ -25,7 +25,8 @@ export class BudgetConfigController {
       console.log('Affected OU Paths:', configData.affectedOUPaths);
       console.log('Accessible OU Paths:', configData.accessibleOUPaths);
       console.log('Clients:', configData.clients);
-      console.log('Client Sponsored:', configData.clientSponsored);
+      console.log('Start Date:', configData.startDate);
+      console.log('End Date:', configData.endDate);
       console.log('Selected Tenure Groups:', configData.selectedTenureGroups);
       console.log('Approver L1:', configData.approverL1);
       console.log('========================================');
@@ -66,8 +67,8 @@ export class BudgetConfigController {
         budget_control_limit: configData.budgetControlLimit || null,
         carryover_enabled: configData.budgetCarryoverEnabled || false,
         carryover_percentage: configData.carryoverPercentage || 100,
-        client_sponsored: configData.clientSponsored || false,
-        period_type: configData.period,
+        start_date: configData.startDate || null,
+        end_date: configData.endDate || null,
         budget_description: configData.budget_description || null,
         created_by: configData.createdBy || '00000000-0000-0000-0000-000000000000',
         
@@ -110,7 +111,6 @@ export class BudgetConfigController {
     try {
       const filters = {
         budget_name: req.query.name,
-        period_type: req.query.period,
         geo_scope: req.query.geo,
         department_scope: req.query.department,
       };

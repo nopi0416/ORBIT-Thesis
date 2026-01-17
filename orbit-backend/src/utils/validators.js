@@ -12,10 +12,25 @@ export const validateBudgetConfig = (data) => {
     errors.budgetName = 'Budget name is required';
   }
 
-  // Period validation (camelCase from frontend)
-  const validPeriods = ['Monthly', 'Quarterly', 'Semi-Annual', 'Yearly'];
-  if (!data.period || !validPeriods.includes(data.period)) {
-    errors.period = `Period must be one of: ${validPeriods.join(', ')}`;
+  // Date range validation (camelCase from frontend)
+  if (!data.startDate) {
+    errors.startDate = 'Start date is required';
+  }
+  if (!data.endDate) {
+    errors.endDate = 'End date is required';
+  }
+  if (data.startDate && data.endDate) {
+    const start = new Date(data.startDate);
+    const end = new Date(data.endDate);
+    if (Number.isNaN(start.getTime())) {
+      errors.startDate = 'Start date must be a valid date';
+    }
+    if (Number.isNaN(end.getTime())) {
+      errors.endDate = 'End date must be a valid date';
+    }
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start > end) {
+      errors.dateRange = 'Start date must be on or before end date';
+    }
   }
 
   // Min/Max limit validation

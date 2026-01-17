@@ -34,7 +34,7 @@ import {
   FileDown,
   Loader,
 } from "../components/icons";
-import { BUDGET_PERIODS, APPROVAL_STATUS, CONFIG_STATUS } from "../utils/types";
+import { APPROVAL_STATUS, CONFIG_STATUS } from "../utils/types";
 import { cn } from "../utils/cn";
 import budgetConfigService from "../services/budgetConfigService";
 
@@ -83,125 +83,6 @@ export default function BudgetConfigurationPage() {
     </div>
   );
 }
-
-const mockConfigurations = [
-  {
-    id: "1",
-    name: "Q1 2024 Performance Bonus",
-    period: "Quarterly",
-    geo: ["Philippines", "Singapore"],
-    location: ["Manila", "Cebu"],
-    clients: ["PLDT", "Globe"],
-    department: "IT Department",
-    status: "active",
-    limitMin: 1000,
-    limitMax: 10000,
-    budgetControlEnabled: true,
-    budgetControlLimit: 50000,
-    budgetUsed: 32000,
-    ongoingApprovals: 3,
-    approvalStatus: "approved",
-    submittedDate: "2024-01-15",
-    description: "Performance bonus for Q1 2024 high performers in IT department. This budget configuration allows team leads to recognize exceptional performance.",
-    approvalLevels: {
-      level1: {
-        status: "approved",
-        approver: "John Smith",
-        backupApprover: "Jane Doe",
-        approvedDate: "2024-01-16"
-      },
-      level2: {
-        status: "approved", 
-        approver: "Michael Johnson",
-        backupApprover: "Sarah Wilson",
-        approvedDate: "2024-01-17"
-      },
-      level3: {
-        status: "approved",
-        approver: "David Brown",
-        backupApprover: "Lisa Garcia",
-        approvedDate: "2024-01-18"
-      }
-    },
-  },
-  {
-    id: "2",
-    name: "Annual Recognition Awards",
-    period: "Yearly",
-    geo: ["Philippines"],
-    location: ["Manila"],
-    clients: ["Smart", "DITO"],
-    department: "HR Department",
-    status: "active",
-    limitMin: 2000,
-    limitMax: 15000,
-    budgetControlEnabled: false,
-    budgetControlLimit: null,
-    budgetUsed: 8500,
-    ongoingApprovals: 1,
-    approvalStatus: "pending_l2",
-    submittedDate: "2024-02-10",
-    description: "Annual recognition awards for employees who have shown exceptional dedication and performance throughout the year.",
-    approvalLevels: {
-      level1: {
-        status: "approved",
-        approver: "Alice Chen",
-        backupApprover: "Bob Martinez",
-        approvedDate: "2024-02-11"
-      },
-      level2: {
-        status: "pending",
-        approver: "Robert Taylor",
-        backupApprover: "Emily Davis",
-        approvedDate: null
-      },
-      level3: {
-        status: "pending",
-        approver: "Jennifer Lee",
-        backupApprover: "Kevin Wong",
-        approvedDate: null
-      }
-    },
-  },
-  {
-    id: "3",
-    name: "Monthly Incentive Program",
-    period: "Monthly",
-    geo: ["Philippines", "Malaysia"],
-    location: ["Manila", "Clark"],
-    clients: ["PLDT", "Globe", "Smart"],
-    department: "Operations",
-    status: "draft",
-    limitMin: 500,
-    limitMax: 5000,
-    budgetControlEnabled: true,
-    budgetControlLimit: 25000,
-    budgetUsed: 12300,
-    ongoingApprovals: 0,
-    approvalStatus: "no_submission",
-    description: "Monthly incentive program to reward operational excellence and customer satisfaction scores.",
-    approvalLevels: {
-      level1: {
-        status: "pending",
-        approver: "Carlos Rodriguez",
-        backupApprover: "Anna Thompson",
-        approvedDate: null
-      },
-      level2: {
-        status: "pending",
-        approver: "Mark Williams",
-        backupApprover: "Susan Jones",
-        approvedDate: null
-      },
-      level3: {
-        status: "pending",
-        approver: "Patricia Miller",
-        backupApprover: "Daniel Kim",
-        approvedDate: null
-      }
-    },
-  },
-];
 
 const getApprovalStatusInfo = (status) => {
   switch (status) {
@@ -259,10 +140,9 @@ function ConfigurationList({ canEdit, userRole }) {
           const locationScopes = config.access_scopes?.filter(s => s.scope_type === 'Location').map(s => s.scope_value) || [];
           const clientScopes = config.access_scopes?.filter(s => s.scope_type === 'Client').map(s => s.scope_value) || [];
           
-          // Format period type with capital first letter
-          const formattedPeriod = config.period_type 
-            ? config.period_type.charAt(0).toUpperCase() + config.period_type.slice(1)
-            : 'Monthly';
+          const startDate = config.start_date || config.startDate || null;
+          const endDate = config.end_date || config.endDate || null;
+          const dateRangeLabel = startDate && endDate ? `${startDate} → ${endDate}` : 'Not specified';
           
           return {
             // Map database field names to UI field names
@@ -271,8 +151,9 @@ function ConfigurationList({ canEdit, userRole }) {
             name: config.budget_name || config.name || 'Unnamed Configuration',
             budgetName: config.budget_name || config.name || 'Unnamed Configuration',
             description: config.description || config.budget_description || 'No description provided',
-            period: formattedPeriod,
-            periodType: config.period_type || 'monthly',
+            startDate,
+            endDate,
+            dateRangeLabel,
             department: config.department_scope || config.department || 'All',
             limitMin: config.min_limit || config.limitMin || 0,
             limitMax: config.max_limit || config.limitMax || 0,
@@ -280,11 +161,10 @@ function ConfigurationList({ canEdit, userRole }) {
             geoScope: geoScopes.length > 0 ? geoScopes : (config.geo_scope || []),
             location: locationScopes.length > 0 ? locationScopes : (config.location || []),
             locationScope: locationScopes.length > 0 ? locationScopes : (config.location_scope || []),
-            clients: clientScopes.length > 0 ? clientScopes : (Array.isArray(config.clients) ? config.clients : (config.client_sponsored ? ['Client Sponsored'] : [])),
+            clients: clientScopes.length > 0 ? clientScopes : (Array.isArray(config.clients) ? config.clients : []),
             budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
             budgetControlLimit: config.max_limit || config.budgetControlLimit || 0,
             budgetCarryoverEnabled: config.carryover_enabled || config.budgetCarryoverEnabled || false,
-            clientSponsored: config.client_sponsored || config.clientSponsored || false,
             approvalStatus: config.approvalStatus || 'pending',
             createdAt: config.created_at || config.createdAt || new Date().toISOString(),
             ...config, // Include all original properties as fallback
@@ -519,7 +399,7 @@ function ConfigurationList({ canEdit, userRole }) {
                       <div className="flex items-center gap-3">
                         <h3 className="font-semibold text-white">{config.name}</h3>
                         <Badge variant="outline" className="text-xs border-slate-500 text-gray-300 bg-slate-600">
-                          {config.period}
+                          {config.dateRangeLabel || "Not specified"}
                         </Badge>
                         {config.ongoingApprovals > 0 && (
                           <Badge className="bg-orange-500 text-white text-xs">
@@ -615,11 +495,15 @@ function ConfigurationList({ canEdit, userRole }) {
                       <p className="text-gray-300 text-sm">{selectedConfig.budget_description || "No description provided"}</p>
                     </div>
 
-                    {/* Top Row: Period, Limit Range, Budget Used */}
+                    {/* Top Row: Dates, Limit Range, Budget Used */}
                     <div className="grid grid-cols-3 gap-6 text-sm">
                       <div>
-                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Period</label>
-                        <p className="text-white font-semibold">{selectedConfig.period_type || "Not specified"}</p>
+                        <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Budget Dates</label>
+                        <p className="text-white font-semibold">
+                          {selectedConfig.start_date || selectedConfig.startDate
+                            ? `${selectedConfig.start_date || selectedConfig.startDate} → ${selectedConfig.end_date || selectedConfig.endDate}`
+                            : "Not specified"}
+                        </p>
                       </div>
                       <div>
                         <label className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Limit Range</label>
@@ -885,6 +769,9 @@ function CreateConfiguration() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [stepError, setStepError] = useState(null);
+  const [successModalOpen, setSuccessModalOpen] = useState(false);
+  const [successCountdown, setSuccessCountdown] = useState(5);
   const [approvalsL1, setApprovalsL1] = useState([]);
   const [approvalsL2, setApprovalsL2] = useState([]);
   const [approvalsL3, setApprovalsL3] = useState([]);
@@ -894,7 +781,8 @@ function CreateConfiguration() {
   const [formData, setFormData] = useState({
     // Setup - Step 1
     budgetName: "",
-    period: "monthly",
+    startDate: "",
+    endDate: "",
     description: "",
     dataControlEnabled: true,
     limitMin: "",
@@ -903,7 +791,6 @@ function CreateConfiguration() {
     budgetControlLimit: "",
     budgetCarryoverEnabled: false,
     carryoverPercentage: "100",
-    clientSponsored: false, // New: Client Sponsored checkbox
     
     // Affected OUs - Multiple hierarchical paths
     // Format: Array of paths where each path is an array of OUs [parent, child, grandchild, ...]
@@ -1134,12 +1021,175 @@ function CreateConfiguration() {
     );
   };
 
+  const buildAccessiblePreviewLines = () => {
+    const paths = formData.accessibleOUPaths || [];
+    if (!paths.length) return [];
+
+    const parentIds = new Set();
+    paths.forEach(path => {
+      if (path[0]) parentIds.add(path[0]);
+    });
+
+    const lines = [];
+
+    parentIds.forEach(parentId => {
+      const children = childOrgMap[parentId] || [];
+      const parentSelected = paths.some(path => path[0] === parentId && path.length === 1);
+
+      const childSelections = new Map();
+      paths.forEach(path => {
+        if (path[0] !== parentId) return;
+        if (path.length >= 2) {
+          const childId = path[1];
+          if (!childSelections.has(childId)) {
+            childSelections.set(childId, { childSelected: false, grandchildIds: new Set() });
+          }
+          const entry = childSelections.get(childId);
+          if (path.length === 2) {
+            entry.childSelected = true;
+          }
+          if (path.length === 3) {
+            entry.grandchildIds.add(path[2]);
+          }
+        }
+      });
+
+      const isChildAllSelected = (childId) => {
+        const grandchildren = grandchildOrgMap[childId] || [];
+        const entry = childSelections.get(childId);
+        if (!entry) return false;
+
+        const hasGrandchildSelection = entry.grandchildIds.size > 0;
+
+        if (!grandchildren.length) {
+          return entry.childSelected || hasGrandchildSelection;
+        }
+
+        if (entry.childSelected && !hasGrandchildSelection) {
+          return true;
+        }
+
+        return entry.grandchildIds.size === grandchildren.length;
+      };
+
+      const allChildrenFullySelected =
+        children.length > 0 && children.every(child => isChildAllSelected(child.org_id));
+
+      if (!children.length || (parentSelected && childSelections.size === 0) || allChildrenFullySelected) {
+        lines.push({
+          key: `${parentId}-all`,
+          text: `${getOrgName(parentId)} → All`,
+          scope: { parentId },
+        });
+        return;
+      }
+
+      childSelections.forEach((entry, childId) => {
+        const grandchildren = grandchildOrgMap[childId] || [];
+        const hasGrandchildSelection = entry.grandchildIds.size > 0;
+        const allGrandchildrenSelected =
+          (entry.childSelected && !hasGrandchildSelection) ||
+          (grandchildren.length > 0 && entry.grandchildIds.size === grandchildren.length);
+
+        if (allGrandchildrenSelected) {
+          lines.push({
+            key: `${parentId}-${childId}-all`,
+            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → All`,
+            scope: { parentId, childId },
+          });
+          return;
+        }
+
+        const selectedGrandchildren = Array.from(entry.grandchildIds).map(id => getOrgName(id));
+        if (selectedGrandchildren.length > 0) {
+          lines.push({
+            key: `${parentId}-${childId}-partial`,
+            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → ${selectedGrandchildren.join(', ')}`,
+            scope: { parentId, childId, grandchildIds: new Set(entry.grandchildIds) },
+          });
+        }
+      });
+    });
+
+    return lines;
+  };
+
+  const removeAccessibleByScope = (scope) => {
+    updateField(
+      "accessibleOUPaths",
+      formData.accessibleOUPaths.filter(path => {
+        if (scope.parentId && !scope.childId) {
+          return path[0] !== scope.parentId;
+        }
+        if (scope.parentId && scope.childId && !scope.grandchildIds) {
+          return !(path[0] === scope.parentId && path[1] === scope.childId);
+        }
+        if (scope.parentId && scope.childId && scope.grandchildIds) {
+          return !(
+            path[0] === scope.parentId &&
+            path[1] === scope.childId &&
+            scope.grandchildIds.has(path[2])
+          );
+        }
+        return true;
+      })
+    );
+  };
+
+  const getApproverName = (userId) => {
+    if (!userId) return "Not specified";
+    const allApprovers = [...approvalsL1, ...approvalsL2, ...approvalsL3];
+    const match = allApprovers.find((approver) => approver.user_id === userId);
+    return match ? `${match.first_name} ${match.last_name}` : userId;
+  };
+
   const updateField = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  const getStepValidationError = (stepIndex) => {
+    if (stepIndex === 0) {
+      if (!formData.budgetName?.trim()) return "Budget name is required.";
+      if (!formData.startDate) return "Start date is required.";
+      if (!formData.endDate) return "End date is required.";
+      if (!formData.limitMin) return "Min limit is required.";
+      if (!formData.limitMax) return "Max limit is required.";
+      if (formData.budgetControlEnabled && !formData.budgetControlLimit) {
+        return "Budget limit is required when budget control is enabled.";
+      }
+    }
+
+    if (stepIndex === 1) {
+      if (!formData.countries || formData.countries.length === 0) return "Country is required.";
+      if (!formData.siteLocation || formData.siteLocation.length === 0) return "Site location is required.";
+      if (!formData.clients || formData.clients.length === 0) return "At least one client is required.";
+      if (!formData.affectedOUPaths || formData.affectedOUPaths.length === 0) return "Affected OU selection is required.";
+      if (!formData.accessibleOUPaths || formData.accessibleOUPaths.length === 0) return "Accessible OU selection is required.";
+    }
+
+    if (stepIndex === 2) {
+      if (!formData.selectedTenureGroups || formData.selectedTenureGroups.length === 0) {
+        return "At least one tenure group is required.";
+      }
+      if (!formData.approverL1) return "Primary L1 approver is required.";
+      if (!formData.backupApproverL1) return "Backup L1 approver is required.";
+      if (!formData.approverL2) return "Primary L2 approver is required.";
+      if (!formData.backupApproverL2) return "Backup L2 approver is required.";
+      if (!formData.approverL3) return "Primary L3 approver is required.";
+      if (!formData.backupApproverL3) return "Backup L3 approver is required.";
+    }
+
+    return null;
+  };
+
   const nextStep = () => {
     if (currentStep < STEPS.length - 1) {
+      const errorMessage = getStepValidationError(currentStep);
+      if (errorMessage) {
+        setStepError(errorMessage);
+        return;
+      }
+      setStepError(null);
       setCurrentStep(currentStep + 1);
     }
   };
@@ -1147,6 +1197,7 @@ function CreateConfiguration() {
   const prevStep = () => {
     if (currentStep > 0) {
       setCurrentStep(currentStep - 1);
+      setStepError(null);
     }
   };
 
@@ -1158,7 +1209,8 @@ function CreateConfiguration() {
       // Prepare data for API - match backend field names exactly
       const configData = {
         budgetName: formData.budgetName,
-        period: formData.period.charAt(0).toUpperCase() + formData.period.slice(1),
+        startDate: formData.startDate || null,
+        endDate: formData.endDate || null,
         budget_description: formData.description || "",
         minLimit: formData.limitMin ? parseFloat(formData.limitMin) : 0,
         maxLimit: formData.limitMax ? parseFloat(formData.limitMax) : 0,
@@ -1166,7 +1218,6 @@ function CreateConfiguration() {
         budgetControlLimit: formData.budgetControlEnabled ? parseFloat(formData.budgetControlLimit) : null,
         budgetCarryoverEnabled: formData.budgetCarryoverEnabled,
         carryoverPercentage: formData.budgetCarryoverEnabled ? parseFloat(formData.carryoverPercentage) : 100,
-        clientSponsored: formData.clientSponsored || false,
         
         // Scope fields
         countries: formData.countries || [],
@@ -1207,14 +1258,14 @@ function CreateConfiguration() {
       const result = await budgetConfigService.createBudgetConfiguration(configData, user?.token);
       
       setSubmitSuccess(true);
-      
-      // Show success message
-      alert("Budget configuration created successfully!");
+      setSuccessCountdown(5);
+      setSuccessModalOpen(true);
       
       // Reset form
       setFormData({
         budgetName: "",
-        period: "monthly",
+        startDate: "",
+        endDate: "",
         description: "",
         dataControlEnabled: true,
         limitMin: "",
@@ -1223,7 +1274,6 @@ function CreateConfiguration() {
         budgetControlLimit: "",
         budgetCarryoverEnabled: false,
         carryoverPercentage: "100",
-        clientSponsored: false,
         affectedOUPaths: [],
         accessibleOUPaths: [],
         countries: [],
@@ -1251,6 +1301,23 @@ function CreateConfiguration() {
     }
   };
 
+  useEffect(() => {
+    if (!successModalOpen) return;
+
+    const intervalId = setInterval(() => {
+      setSuccessCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(intervalId);
+          setSuccessModalOpen(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [successModalOpen]);
+
   return (
     <div className="space-y-6">
       {/* Error/Success Messages */}
@@ -1262,6 +1329,20 @@ function CreateConfiguration() {
               <div className="flex-1">
                 <h3 className="font-semibold text-red-500">Error</h3>
                 <p className="text-red-300 text-sm">{submitError}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {stepError && (
+        <Card className="bg-amber-500/10 border-amber-500/30">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="font-semibold text-amber-400">Incomplete Step</h3>
+                <p className="text-amber-200 text-sm">{stepError}</p>
               </div>
             </div>
           </CardContent>
@@ -1356,17 +1437,24 @@ function CreateConfiguration() {
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Budget Period *</Label>
-                      <Select value={formData.period} onValueChange={(value) => updateField("period", value)}>
-                        <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-slate-800 border-gray-300">
-                          <SelectItem value="monthly" className="text-white">Monthly</SelectItem>
-                          <SelectItem value="quarterly" className="text-white">Quarterly</SelectItem>
-                          <SelectItem value="semi-annually" className="text-white">Every 6 Months</SelectItem>
-                          <SelectItem value="yearly" className="text-white">Yearly</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <div className="flex items-center gap-3">
+                        <Label htmlFor="startDate" className="text-white text-xs whitespace-nowrap">Start Date:</Label>
+                        <Input
+                          id="startDate"
+                          type="date"
+                          value={formData.startDate}
+                          onChange={(e) => updateField("startDate", e.target.value)}
+                          className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 focus:border-pink-500 focus:ring-1 focus:ring-pink-500"
+                        />
+                        <Label htmlFor="endDate" className="text-white text-xs whitespace-nowrap">End Date:</Label>
+                        <Input
+                          id="endDate"
+                          type="date"
+                          value={formData.endDate}
+                          onChange={(e) => updateField("endDate", e.target.value)}
+                          className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 focus:border-pink-500 focus:ring-1 focus:ring-pink-500"
+                        />
+                      </div>
                     </div>
                   </div>
                   
@@ -1499,6 +1587,23 @@ function CreateConfiguration() {
                                   </p>
                                 </div>
                               )}
+
+                              <Dialog open={successModalOpen} onOpenChange={setSuccessModalOpen}>
+                                <DialogContent className="bg-slate-800 border-slate-600 text-white max-w-md">
+                                  <button
+                                    onClick={() => setSuccessModalOpen(false)}
+                                    className="absolute right-4 top-4 text-sm text-gray-300 hover:text-white"
+                                  >
+                                    Close({successCountdown}s)
+                                  </button>
+                                  <DialogHeader>
+                                    <DialogTitle className="text-white">Configuration Created</DialogTitle>
+                                    <DialogDescription className="text-gray-400">
+                                      The budget configuration was created successfully.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                </DialogContent>
+                              </Dialog>
                             </div>
                           </div>
                         ) : (
@@ -1506,26 +1611,6 @@ function CreateConfiguration() {
                         )}
                       </div>
 
-                      {/* Separator */}
-                      <div className="border-t border-slate-600"></div>
-
-                      {/* Client Sponsored Section */}
-                      <div>
-                        <div className="flex items-center space-x-2 mb-2">
-                          <Checkbox
-                            id="clientSponsoredStandalone"
-                            checked={formData.clientSponsored}
-                            onCheckedChange={(checked) => updateField("clientSponsored", checked)}
-                            className="border-blue-400 bg-slate-600"
-                          />
-                          <Label htmlFor="clientSponsoredStandalone" className="cursor-pointer text-white font-medium">
-                            Client Sponsored
-                          </Label>
-                        </div>
-                        <p className="text-xs text-gray-400 ml-6">
-                          Mark if this budget is sponsored by an external client
-                        </p>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -1830,13 +1915,18 @@ function CreateConfiguration() {
                           })()}
                         </div>
 
-                        {/* Selected Access Paths - Compact */}
+                        {/* Selected Access Paths - Condensed Preview */}
                         {formData.accessibleOUPaths.length > 0 && (
                           <div className="bg-blue-900/20 border border-blue-700/50 rounded p-2 space-y-1">
-                            {formData.accessibleOUPaths.map((path, idx) => (
-                              <div key={idx} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
-                                <span>{path.join(' → ')}</span>
-                                <button onClick={() => updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-300">✕</button>
+                            {buildAccessiblePreviewLines().map((line) => (
+                              <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
+                                <span>{line.text}</span>
+                                <button
+                                  onClick={() => removeAccessibleByScope(line.scope)}
+                                  className="text-red-400 hover:text-red-300"
+                                >
+                                  ✕
+                                </button>
                               </div>
                             ))}
                           </div>
@@ -1911,7 +2001,16 @@ function CreateConfiguration() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="approverL1" className="text-white">Primary Approver *</Label>
-                          <Select value={formData.approverL1} onValueChange={(value) => updateField("approverL1", value)} disabled={approvalsLoading}>
+                          <Select
+                            value={formData.approverL1}
+                            onValueChange={(value) => {
+                              updateField("approverL1", value);
+                              if (formData.backupApproverL1 === value) {
+                                updateField("backupApproverL1", "");
+                              }
+                            }}
+                            disabled={approvalsLoading}
+                          >
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
                               <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select primary approver"} />
                             </SelectTrigger>
@@ -1931,7 +2030,7 @@ function CreateConfiguration() {
                               <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select backup approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              {approvalsL1.map((approver) => (
+                              {approvalsL1.filter((approver) => approver.user_id !== formData.approverL1).map((approver) => (
                                 <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
                                   {approver.first_name} {approver.last_name}
                                 </SelectItem>
@@ -1951,7 +2050,16 @@ function CreateConfiguration() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="approverL2" className="text-white">Primary Approver *</Label>
-                          <Select value={formData.approverL2} onValueChange={(value) => updateField("approverL2", value)} disabled={approvalsLoading}>
+                          <Select
+                            value={formData.approverL2}
+                            onValueChange={(value) => {
+                              updateField("approverL2", value);
+                              if (formData.backupApproverL2 === value) {
+                                updateField("backupApproverL2", "");
+                              }
+                            }}
+                            disabled={approvalsLoading}
+                          >
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
                               <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select primary approver"} />
                             </SelectTrigger>
@@ -1971,7 +2079,7 @@ function CreateConfiguration() {
                               <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select backup approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              {approvalsL2.map((approver) => (
+                              {approvalsL2.filter((approver) => approver.user_id !== formData.approverL2).map((approver) => (
                                 <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
                                   {approver.first_name} {approver.last_name}
                                 </SelectItem>
@@ -1991,7 +2099,16 @@ function CreateConfiguration() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="approverL3" className="text-white">Primary Approver *</Label>
-                          <Select value={formData.approverL3} onValueChange={(value) => updateField("approverL3", value)} disabled={approvalsLoading}>
+                          <Select
+                            value={formData.approverL3}
+                            onValueChange={(value) => {
+                              updateField("approverL3", value);
+                              if (formData.backupApproverL3 === value) {
+                                updateField("backupApproverL3", "");
+                              }
+                            }}
+                            disabled={approvalsLoading}
+                          >
                             <SelectTrigger className="bg-slate-700 border-gray-300 text-white focus:border-pink-500 focus:ring-1 focus:ring-pink-500">
                               <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select primary approver"} />
                             </SelectTrigger>
@@ -2011,7 +2128,7 @@ function CreateConfiguration() {
                               <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select backup approver"} />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-gray-300">
-                              {approvalsL3.map((approver) => (
+                              {approvalsL3.filter((approver) => approver.user_id !== formData.approverL3).map((approver) => (
                                 <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
                                   {approver.first_name} {approver.last_name}
                                 </SelectItem>
@@ -2057,8 +2174,12 @@ function CreateConfiguration() {
                         <span className="text-white text-sm text-right max-w-[60%] leading-relaxed">{formData.description || "No description provided"}</span>
                       </div>
                       <div className="flex justify-between items-center">
-                        <span className="text-gray-300 font-medium">Period:</span>
-                        <span className="text-white font-semibold capitalize">{formData.period}</span>
+                        <span className="text-gray-300 font-medium">Budget Dates:</span>
+                        <span className="text-white font-semibold">
+                          {formData.startDate && formData.endDate
+                            ? `${formData.startDate} → ${formData.endDate}`
+                            : "Not specified"}
+                        </span>
                       </div>
                       <div className="flex justify-between items-start">
                         <span className="text-gray-300 font-medium">Accessible OU Paths:</span>
@@ -2066,7 +2187,7 @@ function CreateConfiguration() {
                           {formData.accessibleOUPaths.length > 0 
                             ? formData.accessibleOUPaths.map((path, idx) => (
                               <div key={idx} className="text-xs text-blue-300 mb-1">
-                                {path.join(" → ")}
+                                {pathToReadable(path)}
                               </div>
                             ))
                             : "Not specified"}
@@ -2118,7 +2239,7 @@ function CreateConfiguration() {
                           {formData.affectedOUPaths.length > 0 
                             ? formData.affectedOUPaths.map((path, idx) => (
                               <div key={idx} className="text-xs text-pink-300 mb-1">
-                                {path.join(" → ")}
+                                {pathToReadable(path)}
                               </div>
                             ))
                             : "None selected"}
@@ -2142,27 +2263,27 @@ function CreateConfiguration() {
                         <div className="grid gap-3">
                           <div className="flex justify-between items-center">
                             <span className="text-gray-300 font-medium">L1 Primary:</span>
-                            <span className="text-white font-semibold">{formData.approverL1 || "Not specified"}</span>
+                            <span className="text-white font-semibold">{getApproverName(formData.approverL1)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-300 font-medium">L1 Backup:</span>
-                            <span className="text-white font-semibold">{formData.backupApproverL1 || "Not specified"}</span>
+                            <span className="text-white font-semibold">{getApproverName(formData.backupApproverL1)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-300 font-medium">L2 Primary:</span>
-                            <span className="text-white font-semibold">{formData.approverL2 || "Not specified"}</span>
+                            <span className="text-white font-semibold">{getApproverName(formData.approverL2)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-300 font-medium">L2 Backup:</span>
-                            <span className="text-white font-semibold">{formData.backupApproverL2 || "Not specified"}</span>
+                            <span className="text-white font-semibold">{getApproverName(formData.backupApproverL2)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-300 font-medium">L3 Primary:</span>
-                            <span className="text-white font-semibold">{formData.approverL3 || "Not specified"}</span>
+                            <span className="text-white font-semibold">{getApproverName(formData.approverL3)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-300 font-medium">L3 Backup:</span>
-                            <span className="text-white font-semibold">{formData.backupApproverL3 || "Not specified"}</span>
+                            <span className="text-white font-semibold">{getApproverName(formData.backupApproverL3)}</span>
                           </div>
                         </div>
                       </div>

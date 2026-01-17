@@ -19,8 +19,8 @@ export class BudgetConfigService {
         max_limit,
         budget_control,
         carryover_enabled,
-        client_sponsored,
-        period_type,
+        start_date,
+        end_date,
         created_by,
         tenure_groups,
         approvers,
@@ -37,8 +37,8 @@ export class BudgetConfigService {
             max_limit: max_limit ? parseFloat(max_limit) : null,
             budget_control: budget_control || false,
             carryover_enabled: carryover_enabled || false,
-            client_sponsored: client_sponsored || false,
-            period_type,
+            start_date: start_date || null,
+            end_date: end_date || null,
             created_by,
             created_at: new Date().toISOString(),
           },
@@ -133,14 +133,20 @@ export class BudgetConfigService {
       const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
+      const trackingStart = start_date ? new Date(start_date) : periodStart;
+      const trackingEnd = end_date ? new Date(end_date) : periodEnd;
+      const trackingLabel = start_date && end_date
+        ? `${trackingStart.toISOString().split('T')[0]} - ${trackingEnd.toISOString().split('T')[0]}`
+        : currentPeriod;
+
       const { error: trackingError } = await supabase
         .from('tblbudgetconfig_budget_tracking')
         .insert([
           {
             budget_id,
-            period_start: periodStart.toISOString().split('T')[0],
-            period_end: periodEnd.toISOString().split('T')[0],
-            period_label: currentPeriod,
+            period_start: trackingStart.toISOString().split('T')[0],
+            period_end: trackingEnd.toISOString().split('T')[0],
+            period_label: trackingLabel,
             total_budget: max_limit || 0,
             budget_used: 0,
             budget_carryover: 0,
@@ -184,10 +190,6 @@ export class BudgetConfigService {
       // Apply filters if provided
       if (filters.budget_name) {
         query = query.ilike('budget_name', `%${filters.budget_name}%`);
-      }
-
-      if (filters.period_type) {
-        query = query.eq('period_type', filters.period_type);
       }
 
       if (filters.geo_scope) {
@@ -284,8 +286,8 @@ export class BudgetConfigService {
         max_limit,
         budget_control,
         carryover_enabled,
-        client_sponsored,
-        period_type,
+        start_date,
+        end_date,
         geo_scope,
         location_scope,
         department_scope,
@@ -304,8 +306,8 @@ export class BudgetConfigService {
           ...(max_limit !== undefined && { max_limit: max_limit ? parseFloat(max_limit) : null }),
           ...(budget_control !== undefined && { budget_control }),
           ...(carryover_enabled !== undefined && { carryover_enabled }),
-          ...(client_sponsored !== undefined && { client_sponsored }),
-          ...(period_type && { period_type }),
+          ...(start_date !== undefined && { start_date }),
+          ...(end_date !== undefined && { end_date }),
           ...(geo_scope && { geo_scope }),
           ...(location_scope && { location_scope }),
           ...(department_scope && { department_scope }),

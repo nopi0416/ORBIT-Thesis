@@ -39,7 +39,7 @@ export function MultiSelect({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-full justify-between font-normal bg-transparent"
+          className="w-full justify-between font-normal bg-slate-700 border-gray-300 text-white hover:bg-slate-600"
         >
           <span className="truncate">
             {selected.length === 0
@@ -51,28 +51,28 @@ export function MultiSelect({
           <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-full p-0" align="start">
-        <div className="max-h-64 overflow-auto p-2">
+      <PopoverContent className="w-full p-0 bg-slate-800 border-gray-300 text-white" align="start">
+        <div className="max-h-64 overflow-auto">
           {hasAllOption && (
-            <div className="flex items-center space-x-2 rounded-sm px-2 py-2 hover:bg-accent">
+            <div className="flex items-center space-x-2 px-3 py-2 hover:bg-slate-700">
               <Checkbox 
                 id="option-all" 
                 checked={allSelected} 
                 onCheckedChange={() => handleToggle("all")} 
               />
-              <Label htmlFor="option-all" className="flex-1 cursor-pointer text-sm font-medium">
+              <Label htmlFor="option-all" className="flex-1 cursor-pointer text-sm font-medium text-white">
                 All
               </Label>
             </div>
           )}
           {options.map((option) => (
-            <div key={option.value} className="flex items-center space-x-2 rounded-sm px-2 py-2 hover:bg-accent">
+            <div key={option.value} className="flex items-center space-x-2 px-3 py-2 hover:bg-slate-700">
               <Checkbox
                 id={`option-${option.value}`}
                 checked={selected.includes(option.value)}
                 onCheckedChange={() => handleToggle(option.value)}
               />
-              <Label htmlFor={`option-${option.value}`} className="flex-1 cursor-pointer text-sm">
+              <Label htmlFor={`option-${option.value}`} className="flex-1 cursor-pointer text-sm text-white">
                 {option.label}
               </Label>
             </div>
