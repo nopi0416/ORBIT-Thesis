@@ -3,9 +3,12 @@
  * Handles all business logic for authentication operations
  */
 
+import jwt from 'jsonwebtoken';
 import supabase from '../config/database.js';
 import { sendOTPEmail, sendPasswordResetEmail } from '../config/email.js';
 import { validatePassword } from '../utils/authValidators.js';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
 export class AuthService {
   /**
@@ -757,18 +760,33 @@ export class AuthService {
    * Generate JWT token (stub - replace with actual JWT library)
    */
   static generateToken(userId, email, role) {
-    // TODO: Implement actual JWT signing
-    // For now, return a basic token string
     const payload = {
       userId,
       email,
       role,
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 24 * 60 * 60, // 24 hours
     };
 
-    // This is a placeholder - use jsonwebtoken library in production
-    return Buffer.from(JSON.stringify(payload)).toString('base64');
+    // Sign JWT token with 24 hour expiry
+    return jwt.sign(payload, JWT_SECRET, { 
+      expiresIn: '24h',
+      issuer: 'orbit-auth',
+      subject: userId.toString(),
+    });
+  }
+
+  static verifyToken(token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      return {
+        success: true,
+        data: decoded,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message || 'Invalid token',
+      };
+    }
   }
 }
 
