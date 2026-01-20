@@ -11,10 +11,12 @@ export function MultiSelect({
   onChange,
   placeholder = "Select...",
   hasAllOption = false,
+  disabled = false,
 }) {
   const [open, setOpen] = useState(false);
 
   const handleToggle = (value) => {
+    if (disabled) return;
     if (value === "all") {
       if (selected.length === options.length) {
         onChange([]);
@@ -33,13 +35,14 @@ export function MultiSelect({
   const allSelected = hasAllOption && selected.length === options.length;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={disabled ? false : open} onOpenChange={disabled ? undefined : setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-full justify-between font-normal bg-slate-700 border-gray-300 text-white hover:bg-slate-600"
+          disabled={disabled}
+          className="w-full justify-between font-normal bg-slate-700 border-gray-300 text-white hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span className="truncate">
             {selected.length === 0
@@ -58,6 +61,7 @@ export function MultiSelect({
               <Checkbox 
                 id="option-all" 
                 checked={allSelected} 
+                disabled={disabled}
                 onCheckedChange={() => handleToggle("all")} 
               />
               <Label htmlFor="option-all" className="flex-1 cursor-pointer text-sm font-medium text-white">
@@ -70,6 +74,7 @@ export function MultiSelect({
               <Checkbox
                 id={`option-${option.value}`}
                 checked={selected.includes(option.value)}
+                disabled={disabled}
                 onCheckedChange={() => handleToggle(option.value)}
               />
               <Label htmlFor={`option-${option.value}`} className="flex-1 cursor-pointer text-sm text-white">

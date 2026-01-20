@@ -16,6 +16,17 @@ router.get('/organizations/list/all', BudgetConfigController.getOrganizations);
 // GET - Get organizations by hierarchy level
 router.get('/organizations/by-level/list', BudgetConfigController.getOrganizationsByLevel);
 
+// ==================== Geo & Location Endpoints ====================
+
+// GET - Get all geo entries
+router.get('/geo/list/all', BudgetConfigController.getAllGeo);
+
+// GET - Get locations (optional geo_id)
+router.get('/locations/list/all', BudgetConfigController.getLocations);
+
+// GET - Get organization geo/location mappings
+router.get('/organization-geo-location/list/all', BudgetConfigController.getOrganizationGeoLocations);
+
 // ==================== Approvers Lookup Endpoints (MUST BE BEFORE :id) ====================
 
 // GET - Get all approvers grouped by level

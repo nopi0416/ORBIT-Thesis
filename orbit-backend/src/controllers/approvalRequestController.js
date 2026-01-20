@@ -13,17 +13,16 @@ export class ApprovalRequestController {
    */
   static async createApprovalRequest(req, res) {
     try {
-      const { budget_id, title, description, total_request_amount } = req.body;
-      const { id: userId } = req.user;
+      const { budget_id, description, total_request_amount } = req.body;
+      const userId = req.user?.id || req.body.submitted_by || req.body.created_by;
 
       // Validate required fields
-      if (!budget_id || !title || !total_request_amount) {
-        return sendSuccess(res, 400, false, 'Missing required fields: budget_id, title, total_request_amount');
+      if (!budget_id || !total_request_amount || !userId) {
+        return sendError(res, 'Missing required fields: budget_id, total_request_amount, submitted_by', 400);
       }
 
       const result = await ApprovalRequestService.createApprovalRequest({
         budget_id,
-        title,
         description,
         total_request_amount,
         submitted_by: userId,
@@ -31,13 +30,13 @@ export class ApprovalRequestController {
       });
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 201, true, result.message, result.data);
+      sendSuccess(res, result.data, result.message, 201);
     } catch (error) {
       console.error('Error in createApprovalRequest:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -52,13 +51,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getApprovalRequestById(id);
 
       if (!result.success) {
-        return sendError(res, 404, result.error);
+        return sendError(res, result.error, 404);
       }
 
-      sendSuccess(res, 200, true, 'Approval request retrieved', result.data);
+      sendSuccess(res, result.data, 'Approval request retrieved', 200);
     } catch (error) {
       console.error('Error in getApprovalRequest:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -69,24 +68,27 @@ export class ApprovalRequestController {
   static async getAllApprovalRequests(req, res) {
     try {
       const { budget_id, status, search, submitted_by } = req.query;
+      const isUuid = (value) =>
+        typeof value === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
       const filters = {
         ...(budget_id && { budget_id }),
         ...(status && { status }),
         ...(search && { search }),
-        ...(submitted_by && { submitted_by }),
+        ...(submitted_by && isUuid(submitted_by) && { submitted_by }),
       };
 
       const result = await ApprovalRequestService.getAllApprovalRequests(filters);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, 'Approval requests retrieved', result.data);
+      sendSuccess(res, result.data, 'Approval requests retrieved', 200);
     } catch (error) {
       console.error('Error in getAllApprovalRequests:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -103,13 +105,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.updateApprovalRequest(id, updateData);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, result.message, result.data);
+      sendSuccess(res, result.data, result.message, 200);
     } catch (error) {
       console.error('Error in updateApprovalRequest:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -125,13 +127,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.submitApprovalRequest(id, userId);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, result.message, result.data);
+      sendSuccess(res, result.data, result.message, 200);
     } catch (error) {
       console.error('Error in submitApprovalRequest:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -148,13 +150,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.addLineItem(id, lineItemData);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 201, true, result.message, result.data);
+      sendSuccess(res, result.data, result.message, 201);
     } catch (error) {
       console.error('Error in addLineItem:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -169,19 +171,19 @@ export class ApprovalRequestController {
       const { line_items } = req.body;
 
       if (!Array.isArray(line_items) || line_items.length === 0) {
-        return sendSuccess(res, 400, false, 'line_items must be a non-empty array');
+        return sendError(res, 'line_items must be a non-empty array', 400);
       }
 
       const result = await ApprovalRequestService.addLineItemsBulk(id, line_items, userId);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 201, true, result.message, result.data);
+      sendSuccess(res, result.data, result.message, 201);
     } catch (error) {
       console.error('Error in addLineItemsBulk:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -196,13 +198,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getLineItemsByRequestId(id);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, 'Line items retrieved', result.data);
+      sendSuccess(res, result.data, 'Line items retrieved', 200);
     } catch (error) {
       console.error('Error in getLineItems:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 

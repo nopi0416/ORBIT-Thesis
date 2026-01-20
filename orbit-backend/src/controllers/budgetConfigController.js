@@ -43,50 +43,39 @@ export class BudgetConfigController {
         return sendError(res, scopeValidation.errors, 400);
       }
 
-      // Build scope arrays from front end data
-      const geoScopeArray = configData.countries && Array.isArray(configData.countries) 
-        ? configData.countries 
-        : [];
-      
-      const locationScopeArray = configData.siteLocation && Array.isArray(configData.siteLocation)
-        ? configData.siteLocation
-        : [];
+      const toStorageValue = (value) => {
+        if (Array.isArray(value)) return JSON.stringify(value);
+        if (value === undefined || value === null || value === '') return null;
+        return value;
+      };
 
-      console.log('=== Scope Arrays Built ===');
-      console.log('Geo Scope Array:', geoScopeArray);
-      console.log('Location Scope Array:', locationScopeArray);
-      console.log('Affected OU Paths (Multi-Root):', configData.affectedOUPaths);
-      console.log('Accessible OU Paths (Multi-Root):', configData.accessibleOUPaths);
-      console.log('=========================');
+      const geoValue = toStorageValue(configData.geo || configData.countries);
+      const locationValue = toStorageValue(configData.location || configData.siteLocation);
+      const clientValue = toStorageValue(configData.client || configData.clients);
+      const accessOuValue = toStorageValue(configData.access_ou || configData.accessibleOUPaths);
+      const affectedOuValue = toStorageValue(configData.affected_ou || configData.affectedOUPaths);
+      const tenureGroupValue = toStorageValue(configData.tenure_group || configData.selectedTenureGroups);
 
       const dbData = {
         budget_name: configData.budgetName,
         min_limit: configData.minLimit || null,
         max_limit: configData.maxLimit || null,
         budget_control: configData.budgetControlEnabled || false,
-        budget_control_limit: configData.budgetControlLimit || null,
         carryover_enabled: configData.budgetCarryoverEnabled || false,
-        carryover_percentage: configData.carryoverPercentage || 100,
         start_date: configData.startDate || null,
         end_date: configData.endDate || null,
-        budget_description: configData.budget_description || null,
+        budget_description: configData.description || configData.budget_description || null,
         created_by: configData.createdBy || '00000000-0000-0000-0000-000000000000',
-        
-        // Related data for normalized tables
-        tenure_groups: configData.selectedTenureGroups || [],
+
+        geo: geoValue,
+        location: locationValue,
+        client: clientValue,
+        access_ou: accessOuValue,
+        affected_ou: affectedOuValue,
+        tenure_group: tenureGroupValue,
+
+        // Related data for approvers table
         approvers: configData.approvers || BudgetConfigService.buildApproversFromConfig(configData),
-        
-        // Pass multi-path hierarchical OU data to helper
-        access_scopes: BudgetConfigService.buildAccessScopesFromConfig(
-          geoScopeArray, 
-          locationScopeArray, 
-          {
-            ...configData,
-            affectedOUPaths: configData.affectedOUPaths || [],
-            accessibleOUPaths: configData.accessibleOUPaths || [],
-            clients: configData.clients || [],
-          }
-        ),
       };
 
       // Create budget configuration
@@ -111,8 +100,9 @@ export class BudgetConfigController {
     try {
       const filters = {
         budget_name: req.query.name,
-        geo_scope: req.query.geo,
-        department_scope: req.query.department,
+        geo: req.query.geo,
+        location: req.query.location,
+        client: req.query.client,
       };
 
       const result = await BudgetConfigService.getAllBudgetConfigs(filters);
@@ -571,6 +561,64 @@ export class BudgetConfigController {
       sendSuccess(res, result.data, 'Organizations by level retrieved successfully');
     } catch (error) {
       console.error('Error in getOrganizationsByLevel:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/geo
+   * Get all geo entries
+   */
+  static async getAllGeo(req, res) {
+    try {
+      const result = await BudgetConfigService.getAllGeo();
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Geo list retrieved successfully');
+    } catch (error) {
+      console.error('Error in getAllGeo:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/locations
+   * Get locations (optional geo_id filter)
+   */
+  static async getLocations(req, res) {
+    try {
+      const { geo_id } = req.query;
+      const result = await BudgetConfigService.getLocations(geo_id || null);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Locations retrieved successfully');
+    } catch (error) {
+      console.error('Error in getLocations:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/organization-geo-location
+   * Get org-geo-location mappings
+   */
+  static async getOrganizationGeoLocations(req, res) {
+    try {
+      const result = await BudgetConfigService.getOrganizationGeoLocations();
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Organization geo/location mapping retrieved successfully');
+    } catch (error) {
+      console.error('Error in getOrganizationGeoLocations:', error);
       sendError(res, error.message, 500);
     }
   }

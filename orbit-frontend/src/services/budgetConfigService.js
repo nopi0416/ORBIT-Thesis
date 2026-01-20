@@ -431,6 +431,76 @@ export const getOrganizationsByLevel = async (token) => {
 };
 
 /**
+ * GET - Get all geo entries
+ */
+export const getGeoList = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/geo/list/all`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch geo list');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching geo list:', error);
+    throw error;
+  }
+};
+
+/**
+ * GET - Get locations (optional geo_id)
+ */
+export const getLocations = async (geoId, token) => {
+  try {
+    const query = geoId ? `?geo_id=${encodeURIComponent(geoId)}` : '';
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/locations/list/all${query}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch locations');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching locations:', error);
+    throw error;
+  }
+};
+
+/**
+ * GET - Get organization geo/location mappings
+ */
+export const getOrganizationGeoLocations = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/organization-geo-location/list/all`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch organization geo/location mappings');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching organization geo/location mappings:', error);
+    throw error;
+  }
+};
+
+/**
  * GET - Get all approvers grouped by level (L1, L2, L3)
  */
 export const getAllApprovers = async (token) => {
@@ -526,6 +596,9 @@ export default {
   // Organizations
   getOrganizations,
   getOrganizationsByLevel,
+  getGeoList,
+  getLocations,
+  getOrganizationGeoLocations,
   
   // Real Approvers Data
   getAllApprovers,

@@ -7,6 +7,24 @@ import supabase from '../config/database.js';
  */
 
 export class ApprovalRequestService {
+  static normalizeItemType(rawType) {
+    if (!rawType) return 'bonus';
+    const value = String(rawType).trim().toLowerCase();
+    const mapping = {
+      bonus: 'bonus',
+      incentive: 'incentive',
+      performance_bonus: 'bonus',
+      'performance bonus': 'bonus',
+      spot_award: 'bonus',
+      'spot award': 'bonus',
+      innovation_reward: 'bonus',
+      'innovation reward': 'bonus',
+      recognition: 'bonus',
+    };
+
+    return mapping[value] || 'bonus';
+  }
+
   /**
    * Create a new approval request (DRAFT status)
    */
@@ -14,7 +32,6 @@ export class ApprovalRequestService {
     try {
       const {
         budget_id,
-        title,
         description,
         total_request_amount,
         submitted_by,
@@ -30,7 +47,6 @@ export class ApprovalRequestService {
           {
             budget_id,
             request_number: requestNumber,
-            title,
             description,
             total_request_amount: parseFloat(total_request_amount),
             submitted_by,
@@ -142,7 +158,7 @@ export class ApprovalRequestService {
 
       if (filters.search) {
         query = query.or(
-          `request_number.ilike.%${filters.search}%,title.ilike.%${filters.search}%`
+          `request_number.ilike.%${filters.search}%`
         );
       }
 
@@ -171,7 +187,6 @@ export class ApprovalRequestService {
   static async updateApprovalRequest(requestId, updateData) {
     try {
       const {
-        title,
         description,
         total_request_amount,
         overall_status,
@@ -188,7 +203,6 @@ export class ApprovalRequestService {
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
         .update({
-          ...(title && { title }),
           ...(description && { description }),
           ...(total_request_amount !== undefined && {
             total_request_amount: parseFloat(total_request_amount),
@@ -366,7 +380,7 @@ export class ApprovalRequestService {
             employee_name,
             department,
             position,
-            item_type,
+            item_type: this.normalizeItemType(item_type),
             item_description,
             amount: parseFloat(amount),
             is_deduction: is_deduction || false,
@@ -407,7 +421,7 @@ export class ApprovalRequestService {
         employee_name: item.employee_name,
         department: item.department,
         position: item.position,
-        item_type: item.item_type || 'bonus',
+        item_type: this.normalizeItemType(item.item_type),
         item_description: item.item_description,
         amount: parseFloat(item.amount),
         is_deduction: item.is_deduction || item.amount < 0,

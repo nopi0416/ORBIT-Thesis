@@ -76,13 +76,15 @@ export const validateScopeFields = (data) => {
 
   // At least one scope should be provided
   // Check both possible field name formats
-  const geoScope = data.geo_scope || data.geoScope || data.countries;
-  const locationScope = data.location_scope || data.locationScope || data.siteLocation;
-  const departmentScope = data.department_scope || data.departmentScope || data.ou;
-  
-  const hasScope = geoScope || locationScope || departmentScope;
+  const geoScope = data.geo || data.geo_scope || data.geoScope || data.countries;
+  const locationScope = data.location || data.location_scope || data.locationScope || data.siteLocation;
+  const clientScope = data.client || data.clients || data.clientScope;
+  const accessOuScope = data.access_ou || data.accessibleOUPaths || data.accessOu || data.accessOuPaths;
+  const affectedOuScope = data.affected_ou || data.affectedOUPaths || data.affectedOu || data.affectedOuPaths;
+
+  const hasScope = geoScope || locationScope || clientScope || accessOuScope || affectedOuScope;
   if (!hasScope) {
-    errors.scope = 'At least one scope (geo, location, or department) is required';
+    errors.scope = 'At least one scope (geo, location, client, access OU, or affected OU) is required';
   }
 
   return {
