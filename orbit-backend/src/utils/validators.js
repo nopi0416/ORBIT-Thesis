@@ -45,6 +45,12 @@ export const validateBudgetConfig = (data) => {
     errors.budgetControlLimit = 'Budget limit is required when control is enabled';
   }
 
+  // Payroll cycle validation
+  const payCycle = data.payCycle || data.pay_cycle;
+  if (!payCycle) {
+    errors.payCycle = 'Payroll cycle is required';
+  }
+
   // Approver validation - check if approvers are valid users
   if (data.approverL1 && !isValidUser(data.approverL1)) {
     errors.approverL1 = `Invalid approver: ${data.approverL1}. User not found in system.`;

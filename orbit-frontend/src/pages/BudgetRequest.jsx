@@ -104,6 +104,8 @@ function ConfigurationList() {
   const [configurations, setConfigurations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [selectedConfig, setSelectedConfig] = useState(null);
 
   useEffect(() => {
     const fetchConfigurations = async () => {
@@ -125,7 +127,8 @@ function ConfigurationList() {
             limitMin: config.min_limit || config.limitMin || 0,
             limitMax: config.max_limit || config.limitMax || 0,
             budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
-            budgetControlLimit: config.max_limit || config.budgetControlLimit || 0,
+            budgetLimit: config.budget_limit || config.budgetLimit || config.max_limit || 0,
+            payCycle: config.pay_cycle || config.payCycle || "—",
             geo: parseStoredList(config.geo || config.countries),
             location: parseStoredList(config.location || config.siteLocation),
             clients: parseStoredList(config.client || config.clients),
@@ -170,6 +173,9 @@ function ConfigurationList() {
     const matchesClient = filterClient === "all" || config.clients.includes(filterClient);
     return matchesSearch && matchesGeo && matchesLocation && matchesClient;
   });
+
+  const historyItems = selectedConfig?.history || [];
+  const logItems = selectedConfig?.logs || selectedConfig?.logEntries || [];
 
   return (
     <div className="space-y-6">
@@ -263,40 +269,121 @@ function ConfigurationList() {
           ) : filteredConfigurations.length === 0 ? (
             <div className="text-sm text-gray-400">No configurations found.</div>
           ) : (
-            <div className="space-y-3">
-              {filteredConfigurations.map((config) => {
-                const approvalInfo = getApprovalStatusInfo(config.approvalStatus);
-                const StatusIcon = approvalInfo.icon;
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm text-left text-gray-300">
+                <thead className="text-xs uppercase bg-slate-700 text-gray-300">
+                  <tr>
+                    <th className="px-4 py-3">Configuration</th>
+                    <th className="px-4 py-3">Date Range</th>
+                    <th className="px-4 py-3">Budget Limit</th>
+                    <th className="px-4 py-3">Payroll Cycle</th>
+                    <th className="px-4 py-3">Geo</th>
+                    <th className="px-4 py-3">Location</th>
+                    <th className="px-4 py-3">Client</th>
+                    <th className="px-4 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredConfigurations.map((config) => {
+                    const approvalInfo = getApprovalStatusInfo(config.approvalStatus);
+                    const StatusIcon = approvalInfo.icon;
 
-                return (
-                  <div key={config.id} className="bg-slate-700/50 border border-slate-600 rounded-lg p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-white">{config.name}</h3>
+                    return (
+                      <tr
+                        key={config.id}
+                        className="border-b border-slate-700 hover:bg-slate-700/60 cursor-pointer"
+                        onClick={() => {
+                          setSelectedConfig(config);
+                          setDetailsOpen(true);
+                        }}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-white">{config.name}</div>
+                          <div className="text-xs text-gray-400">{config.description}</div>
+                        </td>
+                        <td className="px-4 py-3">
                           <Badge variant="outline" className="text-xs border-slate-500 text-gray-300 bg-slate-600">
                             {config.dateRangeLabel}
                           </Badge>
-                        </div>
-                        <p className="text-sm text-gray-400">{config.description}</p>
-                        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-300">
-                          <span>Geo: {config.geo.length ? config.geo.join(", ") : "—"}</span>
-                          <span>Location: {config.location.length ? config.location.join(", ") : "—"}</span>
-                          <span>Client: {config.clients.length ? config.clients.join(", ") : "—"}</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm">
-                        <StatusIcon className={`h-4 w-4 ${approvalInfo.color}`} />
-                        <span className="text-gray-300">{approvalInfo.label}</span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+                        </td>
+                        <td className="px-4 py-3">
+                          {config.budgetControlEnabled ? config.budgetLimit : "—"}
+                        </td>
+                        <td className="px-4 py-3">{config.payCycle}</td>
+                        <td className="px-4 py-3">{config.geo.length ? config.geo.join(", ") : "—"}</td>
+                        <td className="px-4 py-3">{config.location.length ? config.location.join(", ") : "—"}</td>
+                        <td className="px-4 py-3">{config.clients.length ? config.clients.join(", ") : "—"}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2 text-xs">
+                            <StatusIcon className={`h-4 w-4 ${approvalInfo.color}`} />
+                            <span>{approvalInfo.label}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <DialogContent className="bg-slate-800 border-slate-600 text-white max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-white">{selectedConfig?.name || "Configuration"}</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              {selectedConfig?.description || "Configuration details"}
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs defaultValue="history" className="space-y-4">
+            <TabsList className="bg-slate-700/60 border-slate-600 p-1">
+              <TabsTrigger
+                value="history"
+                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+              >
+                History
+              </TabsTrigger>
+              <TabsTrigger
+                value="logs"
+                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+              >
+                Logs
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="history" className="space-y-2">
+              {historyItems.length === 0 ? (
+                <p className="text-sm text-gray-400">No history available.</p>
+              ) : (
+                <ul className="space-y-2 text-sm text-gray-200">
+                  {historyItems.map((item, index) => (
+                    <li key={`${item.id || item.timestamp || index}`} className="bg-slate-700/50 rounded p-3">
+                      {item.message || item.event || JSON.stringify(item)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </TabsContent>
+
+            <TabsContent value="logs" className="space-y-2">
+              {logItems.length === 0 ? (
+                <p className="text-sm text-gray-400">No logs available.</p>
+              ) : (
+                <ul className="space-y-2 text-sm text-gray-200">
+                  {logItems.map((item, index) => (
+                    <li key={`${item.id || item.timestamp || index}`} className="bg-slate-700/50 rounded p-3">
+                      {item.message || item.event || JSON.stringify(item)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -325,8 +412,7 @@ function CreateConfiguration() {
     limitMax: "",
     budgetControlEnabled: false,
     budgetControlLimit: "",
-    budgetCarryoverEnabled: false,
-    carryoverPercentage: "100",
+    payCycle: "",
     affectedOUPaths: [],
     accessibleOUPaths: [],
     countries: [],
@@ -658,6 +744,7 @@ function CreateConfiguration() {
     if (!formData.endDate) return "End date is required.";
     if (!formData.limitMin) return "Min limit is required.";
     if (!formData.limitMax) return "Max limit is required.";
+    if (!formData.payCycle) return "Payroll cycle is required.";
     if (formData.budgetControlEnabled && !formData.budgetControlLimit) {
       return "Budget limit is required when budget control is enabled.";
     }
@@ -697,10 +784,10 @@ function CreateConfiguration() {
         description: formData.description || "",
         minLimit: formData.limitMin ? parseFloat(formData.limitMin) : 0,
         maxLimit: formData.limitMax ? parseFloat(formData.limitMax) : 0,
+        payCycle: formData.payCycle,
         budgetControlEnabled: formData.budgetControlEnabled,
         budgetControlLimit: formData.budgetControlEnabled ? parseFloat(formData.budgetControlLimit) : null,
-        budgetCarryoverEnabled: formData.budgetCarryoverEnabled,
-        carryoverPercentage: formData.budgetCarryoverEnabled ? parseFloat(formData.carryoverPercentage) : 100,
+        budgetLimit: formData.budgetControlEnabled ? parseFloat(formData.budgetControlLimit) : null,
         countries: formData.countries || [],
         siteLocation: formData.siteLocation || [],
         clients: formData.clients || [],
@@ -744,8 +831,7 @@ function CreateConfiguration() {
         limitMax: "",
         budgetControlEnabled: false,
         budgetControlLimit: "",
-        budgetCarryoverEnabled: false,
-        carryoverPercentage: "100",
+        payCycle: "",
         affectedOUPaths: [],
         accessibleOUPaths: [],
         countries: [],
@@ -940,22 +1026,40 @@ function CreateConfiguration() {
 
             <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
               <div className="flex items-center justify-between">
-                <h4 className="font-medium text-white">Budget Control</h4>
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="budgetControl"
-                    checked={formData.budgetControlEnabled}
-                    onCheckedChange={(checked) => updateField("budgetControlEnabled", checked)}
-                    className="border-blue-400 bg-slate-600"
-                  />
-                  <Label htmlFor="budgetControl" className="cursor-pointer text-white text-sm">
-                    Enable
-                  </Label>
-                </div>
+                <h4 className="font-medium text-white">Payroll Cycle & Budget Control</h4>
+              </div>
+              <p className="text-xs text-gray-400">Define the configuration's payroll period.</p>
+              <div className="space-y-2">
+                <Label className="text-white">Cycle *</Label>
+                <Select value={formData.payCycle} onValueChange={(value) => updateField("payCycle", value)}>
+                  <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
+                    <SelectValue placeholder="Select payroll cycle" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-gray-300">
+                    <SelectItem value="MONTHLY" className="text-white">Monthly (End of Month)</SelectItem>
+                    <SelectItem value="SEMI_MONTHLY" className="text-white">Semi-Monthly (15 & 30)</SelectItem>
+                    <SelectItem value="BI_WEEKLY" className="text-white">Bi-Weekly (Every 14 Days)</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
-              {formData.budgetControlEnabled ? (
-                <div className="space-y-3">
+              <div className="pt-2 space-y-3 border-t border-slate-600/60">
+                <div className="flex items-center justify-between">
+                  <h5 className="font-medium text-white">Budget Control</h5>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="budgetControl"
+                      checked={formData.budgetControlEnabled}
+                      onCheckedChange={(checked) => updateField("budgetControlEnabled", checked)}
+                      className="border-blue-400 bg-slate-600"
+                    />
+                    <Label htmlFor="budgetControl" className="cursor-pointer text-white text-sm">
+                      Enable
+                    </Label>
+                  </div>
+                </div>
+
+                {formData.budgetControlEnabled ? (
                   <div className="space-y-2">
                     <Label htmlFor="budgetControlLimit" className="text-white">Budget Limit *</Label>
                     <Input
@@ -967,52 +1071,20 @@ function CreateConfiguration() {
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center space-x-2">
-                      <Checkbox
-                        id="budgetCarryover"
-                        checked={formData.budgetCarryoverEnabled}
-                        onCheckedChange={(checked) => updateField("budgetCarryoverEnabled", checked)}
-                        className="border-blue-400 bg-slate-600"
-                      />
-                      <Label htmlFor="budgetCarryover" className="cursor-pointer text-white text-sm">
-                        Budget Carry Over
-                      </Label>
-                    </div>
-
-                    {formData.budgetCarryoverEnabled && (
-                      <div className="space-y-2">
-                        <Label htmlFor="carryoverPercentage" className="text-white">Carry Over % *</Label>
-                        <Input
-                          id="carryoverPercentage"
-                          type="number"
-                          min="0"
-                          max="100"
-                          placeholder="100"
-                          value={formData.carryoverPercentage || "100"}
-                          onChange={(e) => {
-                            const value = Math.min(100, Math.max(0, parseInt(e.target.value, 10) || 0));
-                            updateField("carryoverPercentage", value.toString());
-                          }}
-                          className="bg-slate-700 border-gray-300 text-white"
-                        />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-400">Enable to set budget limits</p>
-              )}
+                ) : (
+                  <p className="text-sm text-gray-400">Enable to set budget limits</p>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-12">
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5">
+            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5 min-h-[420px]">
               <h4 className="font-medium text-white">Organization</h4>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label className="text-white text-sm">Affected OUs</Label>
-                  <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2">
+                  <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
                     {organizationsLoading ? (
                       <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
                     ) : parentOrgs.length === 0 ? (
@@ -1114,7 +1186,7 @@ function CreateConfiguration() {
 
                 <div className="space-y-2">
                   <Label className="text-white text-sm">Accessible OUs</Label>
-                  <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2">
+                  <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
                     {organizationsLoading ? (
                       <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
                     ) : parentOrgs.length === 0 ? (
@@ -1216,7 +1288,7 @@ function CreateConfiguration() {
               </div>
             </div>
 
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-2">
+            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-2 min-h-[420px]">
               <div className="space-y-3">
                 <h4 className="font-medium text-white">Location & Client Scope</h4>
                 <div className="space-y-2">
@@ -1306,7 +1378,7 @@ function CreateConfiguration() {
               </div>
             </div>
 
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-5 lg:col-span-5">
+            <div className="bg-slate-700/50 rounded-lg p-4 space-y-5 lg:col-span-5 min-h-[420px]">
               <h4 className="font-medium text-white">Approval Hierarchy</h4>
 
               {[1, 2, 3].map((level) => {

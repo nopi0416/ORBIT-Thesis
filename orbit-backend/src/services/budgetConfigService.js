@@ -18,7 +18,9 @@ export class BudgetConfigService {
         min_limit,
         max_limit,
         budget_control,
-        carryover_enabled,
+        budget_limit,
+        currency,
+        pay_cycle,
         start_date,
         end_date,
         created_by,
@@ -41,7 +43,9 @@ export class BudgetConfigService {
             min_limit: min_limit ? parseFloat(min_limit) : null,
             max_limit: max_limit ? parseFloat(max_limit) : null,
             budget_control: budget_control || false,
-            carryover_enabled: carryover_enabled || false,
+            budget_limit: budget_limit ? parseFloat(budget_limit) : null,
+            currency: currency || null,
+            pay_cycle: pay_cycle || null,
             geo: geo || null,
             location: location || null,
             client: client || null,
@@ -101,6 +105,8 @@ export class BudgetConfigService {
       const trackingLabel = start_date && end_date
         ? `${trackingStart.toISOString().split('T')[0]} - ${trackingEnd.toISOString().split('T')[0]}`
         : currentPeriod;
+      const normalizedBudgetLimit = budget_limit ? parseFloat(budget_limit) : null;
+      const normalizedMaxLimit = max_limit ? parseFloat(max_limit) : null;
 
       const { error: trackingError } = await supabase
         .from('tblbudgetconfig_budget_tracking')
@@ -110,7 +116,7 @@ export class BudgetConfigService {
             period_start: trackingStart.toISOString().split('T')[0],
             period_end: trackingEnd.toISOString().split('T')[0],
             period_label: trackingLabel,
-            total_budget: max_limit || 0,
+            total_budget: normalizedBudgetLimit ?? normalizedMaxLimit ?? 0,
             budget_used: 0,
             budget_carryover: 0,
             approval_count_total: 0,
@@ -244,7 +250,9 @@ export class BudgetConfigService {
         min_limit,
         max_limit,
         budget_control,
-        carryover_enabled,
+        budget_limit,
+        currency,
+        pay_cycle,
         start_date,
         end_date,
         geo,
@@ -265,7 +273,9 @@ export class BudgetConfigService {
           ...(min_limit !== undefined && { min_limit: min_limit ? parseFloat(min_limit) : null }),
           ...(max_limit !== undefined && { max_limit: max_limit ? parseFloat(max_limit) : null }),
           ...(budget_control !== undefined && { budget_control }),
-          ...(carryover_enabled !== undefined && { carryover_enabled }),
+          ...(budget_limit !== undefined && { budget_limit: budget_limit ? parseFloat(budget_limit) : null }),
+          ...(currency !== undefined && { currency }),
+          ...(pay_cycle !== undefined && { pay_cycle }),
           ...(start_date !== undefined && { start_date }),
           ...(end_date !== undefined && { end_date }),
           ...(geo !== undefined && { geo }),
