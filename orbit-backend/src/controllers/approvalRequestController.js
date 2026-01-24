@@ -8,6 +8,31 @@ import { sendSuccess, sendError } from '../utils/response.js';
 
 export class ApprovalRequestController {
   /**
+   * Get employee by EID (company scoped)
+   * GET /api/approval-requests/employees/:eid?company_id=uuid
+   */
+  static async getEmployeeByEid(req, res) {
+    try {
+      const { eid } = req.params;
+      const { company_id } = req.query;
+
+      if (!eid) {
+        return sendError(res, 'Employee ID is required', 400);
+      }
+
+      const result = await ApprovalRequestService.getEmployeeByEid(eid, company_id);
+
+      if (!result.success) {
+        return sendError(res, result.error, 404);
+      }
+
+      sendSuccess(res, result.data, 'Employee retrieved', 200);
+    } catch (error) {
+      console.error('Error in getEmployeeByEid:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+  /**
    * Create new approval request (DRAFT)
    * POST /api/approval-requests
    */

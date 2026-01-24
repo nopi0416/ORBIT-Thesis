@@ -1,4 +1,4 @@
-import supabase from '../config/database.js';
+import supabase, { supabaseSecondary } from '../config/database.js';
 
 /**
  * Approval Request Service
@@ -7,6 +7,48 @@ import supabase from '../config/database.js';
  */
 
 export class ApprovalRequestService {
+  static defaultCompanyId = 'caaa0000-0000-0000-0000-000000000001';
+
+  /**
+   * Get employee details by EID and company ID
+   */
+  static async getEmployeeByEid(eid, companyId) {
+    try {
+      if (!supabaseSecondary) {
+        return {
+          success: false,
+          error: 'Employee warehouse connection is not configured (SUPABASE_URL2/KEY2).',
+        };
+      }
+      const company = companyId || this.defaultCompanyId;
+
+      const { data, error } = await supabaseSecondary
+        .from('tblemployee')
+        .select('*')
+        .eq('company_id', company)
+        .eq('eid', eid)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data) {
+        return {
+          success: false,
+          error: 'Employee not found',
+        };
+      }
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error fetching employee by EID:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
   static normalizeItemType(rawType) {
     if (!rawType) return 'bonus';
     const value = String(rawType).trim().toLowerCase();

@@ -159,12 +159,21 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   });
   const [individualRequest, setIndividualRequest] = useState({
     employeeId: '',
+    employeeName: '',
+    email: '',
     position: '',
-    rewardType: '',
+    employeeStatus: '',
+    geo: '',
+    location: '',
+    department: '',
+    hireDate: '',
+    terminationDate: '',
     amount: '',
     isDeduction: false,
     notes: '',
   });
+  const [employeeLookupLoading, setEmployeeLookupLoading] = useState(false);
+  const [employeeLookupError, setEmployeeLookupError] = useState(null);
   const [bulkItems, setBulkItems] = useState([]);
   const [bulkFileName, setBulkFileName] = useState('');
   const [bulkParseError, setBulkParseError] = useState(null);
@@ -174,6 +183,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [submitting, setSubmitting] = useState(false);
 
   const token = useMemo(() => getToken(), [refreshKey]);
+  const companyId = 'caaa0000-0000-0000-0000-000000000001';
 
   useEffect(() => {
     const fetchConfigs = async () => {
@@ -297,18 +307,84 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     fetchRequests();
   }, [userId, token, refreshKey]);
 
+  useEffect(() => {
+    const employeeId = individualRequest.employeeId?.trim();
+    if (!employeeId) {
+      setEmployeeLookupError(null);
+      setIndividualRequest((prev) => ({
+        ...prev,
+        employeeName: '',
+        email: '',
+        position: '',
+        employeeStatus: '',
+        geo: '',
+        location: '',
+        department: '',
+        hireDate: '',
+        terminationDate: '',
+      }));
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setEmployeeLookupLoading(true);
+      setEmployeeLookupError(null);
+      try {
+        const data = await approvalRequestService.getEmployeeByEid(employeeId, companyId, token);
+        setIndividualRequest((prev) => ({
+          ...prev,
+          employeeName: data.name || '',
+          email: data.email || '',
+          position: data.position || '',
+          employeeStatus: data.employee_status || '',
+          geo: data.geo || '',
+          location: data.location || '',
+          department: data.department || '',
+          hireDate: data.hire_date || '',
+          terminationDate: data.termination_date || '',
+        }));
+      } catch (error) {
+        setEmployeeLookupError(error.message || 'Employee not found.');
+        setIndividualRequest((prev) => ({
+          ...prev,
+          employeeName: '',
+          email: '',
+          position: '',
+          employeeStatus: '',
+          geo: '',
+          location: '',
+          department: '',
+          hireDate: '',
+          terminationDate: '',
+        }));
+      } finally {
+        setEmployeeLookupLoading(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [individualRequest.employeeId, companyId, token]);
+
   const handleOpenModal = (config) => {
     setSelectedConfig(config);
     setRequestMode('individual');
     setRequestDetails({ details: '' });
     setIndividualRequest({
       employeeId: '',
+      employeeName: '',
+      email: '',
       position: '',
-      rewardType: '',
+      employeeStatus: '',
+      geo: '',
+      location: '',
+      department: '',
+      hireDate: '',
+      terminationDate: '',
       amount: '',
       isDeduction: false,
       notes: '',
     });
+    setEmployeeLookupError(null);
     setBulkItems([]);
     setBulkFileName('');
     setBulkParseError(null);
@@ -492,7 +568,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return;
     }
 
-    if (!individualRequest.employeeId || !individualRequest.position || !individualRequest.rewardType || !individualRequest.amount) {
+    if (!individualRequest.employeeId || !individualRequest.employeeName || !individualRequest.department || !individualRequest.position || !individualRequest.amount) {
       setSubmitError('Complete all required individual fields.');
       return;
     }
@@ -519,8 +595,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         {
           item_number: 1,
           employee_id: individualRequest.employeeId,
+          employee_name: individualRequest.employeeName,
+          department: individualRequest.department,
           position: individualRequest.position,
-          item_type: individualRequest.rewardType,
+          item_type: 'other',
+          item_description: requestDetails.details.trim(),
           amount: amountValue,
           is_deduction: individualRequest.isDeduction,
           notes: individualRequest.notes,
@@ -719,7 +798,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       </Card>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white w-full max-w-4xl p-4">
+        <DialogContent className="bg-slate-800 border-slate-700 text-white w-full max-w-5xl p-4">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Submit Approval Request</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -797,29 +876,86 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       placeholder="e.g., EMP001"
                       className="bg-slate-700 border-gray-300 text-white"
                     />
+                    {employeeLookupLoading && (
+                      <p className="text-xs text-slate-400">Fetching employee details...</p>
+                    )}
+                    {employeeLookupError && (
+                      <p className="text-xs text-red-300">{employeeLookupError}</p>
+                    )}
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-white">Position *</Label>
+                    <Label className="text-white">Employee Name</Label>
                     <Input
-                      value={individualRequest.position}
-                      onChange={(e) => setIndividualRequest((prev) => ({ ...prev, position: e.target.value }))}
-                      placeholder="e.g., Team Lead"
+                      value={individualRequest.employeeName}
+                      disabled
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-white">Reward Type *</Label>
-                    <Select value={individualRequest.rewardType} onValueChange={(value) => setIndividualRequest((prev) => ({ ...prev, rewardType: value }))}>
-                      <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                        <SelectValue placeholder="Select reward type" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-800 border-gray-300">
-                        <SelectItem value="performance_bonus" className="text-white">Performance Bonus</SelectItem>
-                        <SelectItem value="spot_award" className="text-white">Spot Award</SelectItem>
-                        <SelectItem value="innovation_reward" className="text-white">Innovation Reward</SelectItem>
-                        <SelectItem value="recognition" className="text-white">Recognition</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <Label className="text-white">Email</Label>
+                    <Input
+                      value={individualRequest.email}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Position</Label>
+                    <Input
+                      value={individualRequest.position}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Employee Status</Label>
+                    <Input
+                      value={individualRequest.employeeStatus}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Geo</Label>
+                    <Input
+                      value={individualRequest.geo}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Location</Label>
+                    <Input
+                      value={individualRequest.location}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Department</Label>
+                    <Input
+                      value={individualRequest.department}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Hire Date</Label>
+                    <Input
+                      type="date"
+                      value={individualRequest.hireDate || ''}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Termination Date</Label>
+                    <Input
+                      type="date"
+                      value={individualRequest.terminationDate || ''}
+                      disabled
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-white">Amount *</Label>
@@ -839,7 +975,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     onCheckedChange={(checked) => setIndividualRequest((prev) => ({ ...prev, isDeduction: Boolean(checked) }))}
                     className="border-blue-400 bg-slate-600"
                   />
-                  <Label htmlFor="isDeduction" className="text-white text-sm">Mark as deduction</Label>
+                  <Label htmlFor="isDeduction" className="text-white text-sm">Deduction?</Label>
                 </div>
                 <div className="space-y-2">
                   <Label className="text-white">Notes</Label>
@@ -910,7 +1046,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             </Tabs>
 
             <div className="space-y-2">
-              <Label className="text-white">Request Details *</Label>
+              <Label className="text-white">Approval Description *</Label>
               <Textarea
                 value={requestDetails.details}
                 onChange={(e) => setRequestDetails((prev) => ({ ...prev, details: e.target.value }))}

@@ -24,6 +24,13 @@ router.post('/', authenticateToken, ApprovalRequestController.createApprovalRequ
 router.get('/', authenticateToken, ApprovalRequestController.getAllApprovalRequests);
 
 /**
+ * GET /api/approval-requests/employees/:eid
+ * Get employee details by employee ID (EID)
+ * Query: ?company_id=uuid (optional)
+ */
+router.get('/employees/:eid', authenticateToken, ApprovalRequestController.getEmployeeByEid);
+
+/**
  * GET /api/approval-requests/:id
  * Get specific approval request with all related data
  */

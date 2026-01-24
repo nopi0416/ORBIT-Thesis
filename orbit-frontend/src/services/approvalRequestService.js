@@ -62,6 +62,20 @@ const submitApprovalRequest = async (requestId, token) => {
   return parseResponse(response);
 };
 
+const getEmployeeByEid = async (eid, companyId, token) => {
+  if (!eid) throw new Error('Employee ID is required');
+  const queryParams = new URLSearchParams();
+  if (companyId) queryParams.append('company_id', companyId);
+  const url = `${API_BASE_URL}/approval-requests/employees/${encodeURIComponent(eid)}${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
 const addLineItem = async (requestId, payload, token) => {
   const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/line-items`, {
     method: 'POST',
@@ -87,6 +101,7 @@ export default {
   getPendingApprovals,
   createApprovalRequest,
   submitApprovalRequest,
+  getEmployeeByEid,
   addLineItem,
   addLineItemsBulk,
 };

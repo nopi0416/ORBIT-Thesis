@@ -171,6 +171,12 @@ function ConfigurationList() {
   const [error, setError] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
+  const [editConfig, setEditConfig] = useState(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState(null);
+  const [editSuccess, setEditSuccess] = useState(false);
+
+  const token = user?.token || localStorage.getItem("authToken") || "";
 
   useEffect(() => {
     const fetchConfigurations = async () => {
@@ -188,15 +194,25 @@ function ConfigurationList() {
             id: config.budget_id || config.id,
             name: config.budget_name || config.name || "Unnamed Configuration",
             description: config.description || config.budget_description || "No description provided",
+            startDate,
+            endDate,
             dateRangeLabel,
             limitMin: config.min_limit || config.limitMin || 0,
             limitMax: config.max_limit || config.limitMax || 0,
             budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
             budgetLimit: config.budget_limit || config.budgetLimit || config.max_limit || 0,
             payCycle: config.pay_cycle || config.payCycle || "—",
+            currency: config.currency || config.currency_code || config.currencyCode || "—",
             geo: parseStoredList(config.geo || config.countries),
             location: parseStoredList(config.location || config.siteLocation),
             clients: parseStoredList(config.client || config.clients),
+            approvers: config.approvers || config.approval_hierarchy || [],
+            approverL1: config.approver_l1 || config.approverL1 || config.approver_l1_id || "",
+            backupApproverL1: config.backup_approver_l1 || config.backupApproverL1 || config.backup_approver_l1_id || "",
+            approverL2: config.approver_l2 || config.approverL2 || config.approver_l2_id || "",
+            backupApproverL2: config.backup_approver_l2 || config.backupApproverL2 || config.backup_approver_l2_id || "",
+            approverL3: config.approver_l3 || config.approverL3 || config.approver_l3_id || "",
+            backupApproverL3: config.backup_approver_l3 || config.backupApproverL3 || config.backup_approver_l3_id || "",
             approvalStatus: config.approvalStatus || "no_submission",
           };
         });
@@ -212,6 +228,129 @@ function ConfigurationList() {
 
     fetchConfigurations();
   }, [user]);
+
+  useEffect(() => {
+    if (!selectedConfig) return;
+    setEditConfig({
+      id: selectedConfig.id,
+      name: selectedConfig.name || "",
+      description: selectedConfig.description || "",
+      startDate: selectedConfig.startDate || "",
+      endDate: selectedConfig.endDate || "",
+      limitMin: selectedConfig.limitMin || "",
+      limitMax: selectedConfig.limitMax || "",
+      currency: selectedConfig.currency || "",
+      payCycle: selectedConfig.payCycle || "",
+      budgetControlEnabled: Boolean(selectedConfig.budgetControlEnabled),
+      budgetControlLimit: selectedConfig.budgetLimit || "",
+      approverL1: selectedConfig.approverL1 || "",
+      backupApproverL1: selectedConfig.backupApproverL1 || "",
+      approverL2: selectedConfig.approverL2 || "",
+      backupApproverL2: selectedConfig.backupApproverL2 || "",
+      approverL3: selectedConfig.approverL3 || "",
+      backupApproverL3: selectedConfig.backupApproverL3 || "",
+    });
+    setEditError(null);
+    setEditSuccess(false);
+  }, [selectedConfig]);
+
+  const renderApproverSummary = (config) => {
+    if (config.approvers?.length) {
+      return config.approvers.map((approver) => {
+        const primary = approver.approver_name || approver.primary_approver || "—";
+        const backup = approver.backup_approver_name || approver.backup_approver || "—";
+        return `L${approver.approval_level}: ${primary}${backup && backup !== "—" ? ` (Backup: ${backup})` : ""}`;
+      });
+    }
+
+    const lines = [];
+    if (config.approverL1 || config.backupApproverL1) {
+      lines.push(`L1: ${config.approverL1 || "—"}${config.backupApproverL1 ? ` (Backup: ${config.backupApproverL1})` : ""}`);
+    }
+    if (config.approverL2 || config.backupApproverL2) {
+      lines.push(`L2: ${config.approverL2 || "—"}${config.backupApproverL2 ? ` (Backup: ${config.backupApproverL2})` : ""}`);
+    }
+    if (config.approverL3 || config.backupApproverL3) {
+      lines.push(`L3: ${config.approverL3 || "—"}${config.backupApproverL3 ? ` (Backup: ${config.backupApproverL3})` : ""}`);
+    }
+    return lines.length ? lines : ["—"];
+  };
+
+  const handleEditChange = (field, value) => {
+    setEditConfig((prev) => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editConfig?.id) return;
+    setEditSaving(true);
+    setEditError(null);
+    setEditSuccess(false);
+
+    try {
+      const payload = {
+        budgetName: editConfig.name,
+        description: editConfig.description,
+        startDate: editConfig.startDate || null,
+        endDate: editConfig.endDate || null,
+        minLimit: editConfig.limitMin ? parseFloat(editConfig.limitMin) : 0,
+        maxLimit: editConfig.limitMax ? parseFloat(editConfig.limitMax) : 0,
+        currency: editConfig.currency || null,
+        payCycle: editConfig.payCycle || null,
+        budgetControlEnabled: editConfig.budgetControlEnabled,
+        budgetControlLimit: editConfig.budgetControlEnabled && editConfig.budgetControlLimit
+          ? parseFloat(editConfig.budgetControlLimit)
+          : null,
+        budgetLimit: editConfig.budgetControlEnabled && editConfig.budgetControlLimit
+          ? parseFloat(editConfig.budgetControlLimit)
+          : null,
+        approverL1: editConfig.approverL1 || null,
+        backupApproverL1: editConfig.backupApproverL1 || null,
+        approverL2: editConfig.approverL2 || null,
+        backupApproverL2: editConfig.backupApproverL2 || null,
+        approverL3: editConfig.approverL3 || null,
+        backupApproverL3: editConfig.backupApproverL3 || null,
+      };
+
+      await budgetConfigService.updateBudgetConfiguration(editConfig.id, payload, token);
+
+      setConfigurations((prev) =>
+        prev.map((config) =>
+          config.id === editConfig.id
+            ? {
+                ...config,
+                name: editConfig.name,
+                description: editConfig.description,
+                startDate: editConfig.startDate,
+                endDate: editConfig.endDate,
+                dateRangeLabel:
+                  editConfig.startDate && editConfig.endDate
+                    ? `${editConfig.startDate} → ${editConfig.endDate}`
+                    : config.dateRangeLabel,
+                limitMin: editConfig.limitMin,
+                limitMax: editConfig.limitMax,
+                currency: editConfig.currency,
+                payCycle: editConfig.payCycle,
+                budgetControlEnabled: editConfig.budgetControlEnabled,
+                budgetLimit: editConfig.budgetControlEnabled ? editConfig.budgetControlLimit : "—",
+                approverL1: editConfig.approverL1,
+                backupApproverL1: editConfig.backupApproverL1,
+                approverL2: editConfig.approverL2,
+                backupApproverL2: editConfig.backupApproverL2,
+                approverL3: editConfig.approverL3,
+                backupApproverL3: editConfig.backupApproverL3,
+              }
+            : config
+        )
+      );
+
+      setSelectedConfig((prev) => (prev ? { ...prev, ...editConfig } : prev));
+      setEditSuccess(true);
+    } catch (err) {
+      setEditError(err.message || "Failed to update configuration");
+    } finally {
+      setEditSaving(false);
+    }
+  };
 
   const geoOptions = useMemo(() => {
     const values = new Set();
@@ -696,9 +835,11 @@ function ConfigurationList() {
                     <th className="px-4 py-3">Date Range</th>
                     <th className="px-4 py-3">Budget Limit</th>
                     <th className="px-4 py-3">Payroll Cycle</th>
+                    <th className="px-4 py-3">Currency</th>
                     <th className="px-4 py-3">Geo</th>
                     <th className="px-4 py-3">Location</th>
                     <th className="px-4 py-3">Client</th>
+                    <th className="px-4 py-3">Approvers</th>
                     <th className="px-4 py-3">Status</th>
                   </tr>
                 </thead>
@@ -729,9 +870,17 @@ function ConfigurationList() {
                           {config.budgetControlEnabled ? config.budgetLimit : "—"}
                         </td>
                         <td className="px-4 py-3">{config.payCycle}</td>
+                        <td className="px-4 py-3">{config.currency || "—"}</td>
                         <td className="px-4 py-3">{config.geo.length ? config.geo.join(", ") : "—"}</td>
                         <td className="px-4 py-3">{config.location.length ? config.location.join(", ") : "—"}</td>
                         <td className="px-4 py-3">{config.clients.length ? config.clients.join(", ") : "—"}</td>
+                        <td className="px-4 py-3">
+                          <div className="space-y-1 text-xs text-gray-300">
+                            {renderApproverSummary(config).map((line, index) => (
+                              <div key={`${config.id}-approver-${index}`}>{line}</div>
+                            ))}
+                          </div>
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2 text-xs">
                             <StatusIcon className={`h-4 w-4 ${approvalInfo.color}`} />
@@ -757,8 +906,14 @@ function ConfigurationList() {
             </DialogDescription>
           </DialogHeader>
 
-          <Tabs defaultValue="history" className="space-y-4">
+          <Tabs defaultValue="edit" className="space-y-4">
             <TabsList className="bg-slate-700/60 border-slate-600 p-1">
+              <TabsTrigger
+                value="edit"
+                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+              >
+                Edit
+              </TabsTrigger>
               <TabsTrigger
                 value="history"
                 className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
@@ -772,6 +927,187 @@ function ConfigurationList() {
                 Logs
               </TabsTrigger>
             </TabsList>
+
+            <TabsContent value="edit" className="space-y-4">
+              {!editConfig ? (
+                <p className="text-sm text-gray-400">Select a configuration to edit.</p>
+              ) : (
+                <div className="space-y-4">
+                  {editError && (
+                    <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+                      {editError}
+                    </div>
+                  )}
+                  {editSuccess && (
+                    <div className="rounded-lg border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-300">
+                      Configuration updated successfully.
+                    </div>
+                  )}
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label className="text-white">Budget Name</Label>
+                      <Input
+                        value={editConfig.name}
+                        onChange={(e) => handleEditChange("name", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Payroll Cycle</Label>
+                      <SearchableSelect
+                        value={editConfig.payCycle}
+                        onValueChange={(value) => handleEditChange("payCycle", value)}
+                        options={[
+                          { value: "MONTHLY", label: "Monthly (End of Month)" },
+                          { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
+                          { value: "BI_WEEKLY", label: "Bi-Weekly (Every 14 Days)" },
+                        ]}
+                        placeholder="Select payroll cycle"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Start Date</Label>
+                      <Input
+                        type="date"
+                        value={editConfig.startDate || ""}
+                        onChange={(e) => handleEditChange("startDate", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">End Date</Label>
+                      <Input
+                        type="date"
+                        value={editConfig.endDate || ""}
+                        onChange={(e) => handleEditChange("endDate", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Currency</Label>
+                      <SearchableSelect
+                        value={editConfig.currency}
+                        onValueChange={(value) => handleEditChange("currency", value)}
+                        options={currencyOptions}
+                        placeholder="Select currency"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Budget Control</Label>
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="edit-budget-control"
+                          checked={editConfig.budgetControlEnabled}
+                          onCheckedChange={(checked) => handleEditChange("budgetControlEnabled", Boolean(checked))}
+                          className="border-blue-400 bg-slate-600"
+                        />
+                        <Label htmlFor="edit-budget-control" className="text-white text-sm">Enable</Label>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Budget Limit</Label>
+                      <Input
+                        type="number"
+                        value={editConfig.budgetControlLimit}
+                        onChange={(e) => handleEditChange("budgetControlLimit", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!editConfig.budgetControlEnabled}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Min Limit</Label>
+                      <Input
+                        type="number"
+                        value={editConfig.limitMin}
+                        onChange={(e) => handleEditChange("limitMin", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Max Limit</Label>
+                      <Input
+                        type="number"
+                        value={editConfig.limitMax}
+                        onChange={(e) => handleEditChange("limitMax", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-white">Description</Label>
+                    <textarea
+                      value={editConfig.description}
+                      onChange={(e) => handleEditChange("description", e.target.value)}
+                      rows={3}
+                      className="w-full rounded-md bg-slate-700 border border-gray-300 px-3 py-2 text-white"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label className="text-white">Approver L1</Label>
+                      <Input
+                        value={editConfig.approverL1}
+                        onChange={(e) => handleEditChange("approverL1", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Backup L1</Label>
+                      <Input
+                        value={editConfig.backupApproverL1}
+                        onChange={(e) => handleEditChange("backupApproverL1", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Approver L2</Label>
+                      <Input
+                        value={editConfig.approverL2}
+                        onChange={(e) => handleEditChange("approverL2", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Backup L2</Label>
+                      <Input
+                        value={editConfig.backupApproverL2}
+                        onChange={(e) => handleEditChange("backupApproverL2", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Approver L3</Label>
+                      <Input
+                        value={editConfig.approverL3}
+                        onChange={(e) => handleEditChange("approverL3", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Backup L3</Label>
+                      <Input
+                        value={editConfig.backupApproverL3}
+                        onChange={(e) => handleEditChange("backupApproverL3", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <Button
+                      onClick={handleSaveEdit}
+                      disabled={editSaving}
+                      className="bg-blue-600 hover:bg-blue-700 text-white"
+                    >
+                      {editSaving ? "Saving..." : "Save Changes"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </TabsContent>
 
             <TabsContent value="history" className="space-y-2">
               {historyItems.length === 0 ? (
