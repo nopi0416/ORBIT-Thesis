@@ -1,5 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import DashboardLayout from '../layouts/DashboardLayout';
 import Dashboard from '../pages/Dashboard';
 import BudgetRequest from '../pages/BudgetRequest';
@@ -19,6 +20,18 @@ import AdminLogs from '../pages/admin/AdminLogs';
 import AdminUserManagement from '../pages/admin/AdminUserManagement';
 import AdminOUManagement from '../pages/admin/AdminOUManagement';
 import AdminProfile from '../pages/admin/AdminProfile';
+
+// Role-based Route Protection Component
+const AdminRoute = ({ children }) => {
+  const { user } = useAuth();
+  
+  // If not admin, redirect to dashboard
+  if (user?.role !== "admin") {
+    return <Navigate to="/dashboard" replace />;
+  }
+  
+  return children;
+};
 
 // Main App Router Component
 export const AppRouter = () => {
@@ -62,36 +75,48 @@ export const AppRouter = () => {
         </DashboardLayout>
       } />
 
-      {/* Admin Routes */}
+      {/* Admin Routes - Protected by role check */}
       <Route path="/admin" element={
-        <DashboardLayout>
-          <AdminDashboard />
-        </DashboardLayout>
+        <AdminRoute>
+          <DashboardLayout>
+            <AdminDashboard />
+          </DashboardLayout>
+        </AdminRoute>
       } />
       <Route path="/admin/dashboard" element={
-        <DashboardLayout>
-          <AdminDashboard />
-        </DashboardLayout>
+        <AdminRoute>
+          <DashboardLayout>
+            <AdminDashboard />
+          </DashboardLayout>
+        </AdminRoute>
       } />
       <Route path="/admin/logs" element={
-        <DashboardLayout>
-          <AdminLogs />
-        </DashboardLayout>
+        <AdminRoute>
+          <DashboardLayout>
+            <AdminLogs />
+          </DashboardLayout>
+        </AdminRoute>
       } />
       <Route path="/admin/users" element={
-        <DashboardLayout>
-          <AdminUserManagement />
-        </DashboardLayout>
+        <AdminRoute>
+          <DashboardLayout>
+            <AdminUserManagement />
+          </DashboardLayout>
+        </AdminRoute>
       } />
       <Route path="/admin/organizations" element={
-        <DashboardLayout>
-          <AdminOUManagement />
-        </DashboardLayout>
+        <AdminRoute>
+          <DashboardLayout>
+            <AdminOUManagement />
+          </DashboardLayout>
+        </AdminRoute>
       } />
       <Route path="/admin/settings" element={
-        <DashboardLayout>
-          <AdminProfile />
-        </DashboardLayout>
+        <AdminRoute>
+          <DashboardLayout>
+            <AdminProfile />
+          </DashboardLayout>
+        </AdminRoute>
       } />
       
       {/* Login page without layout */}

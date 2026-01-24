@@ -106,49 +106,57 @@ export function Sidebar({ userRole }) {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 p-3">
-        {/* Regular Navigation */}
-        {navigation.map((item) => {
-          const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
-          return (
-            <Link
-              key={item.name}
-              to={item.href}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                isActive ? "bg-primary/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white",
-              )}
-              title={!isHovered ? item.name : undefined}
-            >
-              <item.icon className="h-5 w-5 shrink-0" />
-              {isHovered && <span>{item.name}</span>}
-            </Link>
-          );
-        })}
-
-        {/* Admin Navigation Section */}
-        {isHovered && (
+        {/* Regular Navigation - Only visible to non-admin users */}
+        {userRole !== "admin" && (
           <>
-            <div className="my-2 border-t border-white/10"></div>
-            <p className="px-3 py-2 text-xs font-semibold uppercase text-white/50">Admin</p>
+            {navigation.map((item) => {
+              const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    isActive ? "bg-primary/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white",
+                  )}
+                  title={!isHovered ? item.name : undefined}
+                >
+                  <item.icon className="h-5 w-5 shrink-0" />
+                  {isHovered && <span>{item.name}</span>}
+                </Link>
+              );
+            })}
           </>
         )}
-        {adminNavigation.map((item) => {
-          const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
-          return (
-            <Link
-              key={item.name}
-              to={item.href}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                isActive ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-white/70 hover:bg-white/10 hover:text-white",
-              )}
-              title={!isHovered ? item.name : undefined}
-            >
-              <item.icon className="h-5 w-5 shrink-0" />
-              {isHovered && <span>{item.name}</span>}
-            </Link>
-          );
-        })}
+
+        {/* Admin Navigation Section - Only visible to admin users */}
+        {userRole === "admin" && (
+          <>
+            {isHovered && (
+              <>
+                <div className="my-2 border-t border-white/10"></div>
+                <p className="px-3 py-2 text-xs font-semibold uppercase text-white/50">Admin</p>
+              </>
+            )}
+            {adminNavigation.map((item) => {
+              const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    isActive ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-white/70 hover:bg-white/10 hover:text-white",
+                  )}
+                  title={!isHovered ? item.name : undefined}
+                >
+                  <item.icon className="h-5 w-5 shrink-0" />
+                  {isHovered && <span>{item.name}</span>}
+                </Link>
+              );
+            })}
+          </>
+        )}
       </nav>
 
       {/* Footer */}

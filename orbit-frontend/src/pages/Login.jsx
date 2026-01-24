@@ -54,7 +54,7 @@ export default function Login() {
 
       if (result.success) {
         // Redirect to dashboard on successful login
-        navigate('/dashboard');
+        navigate('/admin/dashboard');
       } else {
         setError(result.error || 'Login failed. Please try again.');
       }

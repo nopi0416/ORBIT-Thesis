@@ -53,7 +53,7 @@ export function AuthProvider({ children }) {
         id: '1',
         name: credentials.email.split('@')[0],
         email: credentials.email,
-        role: 'requestor', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll'
+        role: 'admin', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll', 'admin'
       };
       setUser(mockUser);
       return { success: true };

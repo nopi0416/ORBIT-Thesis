@@ -76,7 +76,47 @@ export const validateScopeFields = (data) => {
   };
 };
 
+/**
+ * Admin User Creation Validator
+ */
+export const validateAdminUserCreation = (data) => {
+  const errors = {};
+
+  // Required fields
+  if (!data.firstName || data.firstName.trim() === '') {
+    errors.firstName = 'First name is required';
+  }
+
+  if (!data.lastName || data.lastName.trim() === '') {
+    errors.lastName = 'Last name is required';
+  }
+
+  if (!data.email || data.email.trim() === '') {
+    errors.email = 'Email is required';
+  } else {
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(data.email)) {
+      errors.email = 'Invalid email format';
+    }
+  }
+
+  if (!data.employeeId || data.employeeId.trim() === '') {
+    errors.employeeId = 'Employee ID is required';
+  }
+
+  if (!data.roleId || data.roleId.trim() === '') {
+    errors.roleId = 'Role ID is required';
+  }
+
+  return {
+    isValid: Object.keys(errors).length === 0,
+    errors,
+  };
+};
+
 export default {
   validateBudgetConfig,
   validateScopeFields,
+  validateAdminUserCreation,
 };

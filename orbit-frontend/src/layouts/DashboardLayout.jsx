@@ -6,6 +6,7 @@ import { DemoUserSwitcher } from '../components/DemoUserSwitcher';
 
 export default function DashboardLayout({ children }) {
   const { user } = useAuth();
+  const isAdminUser = user?.role === "admin";
 
   return (
     <AuthGuard requireAuth>
@@ -17,10 +18,12 @@ export default function DashboardLayout({ children }) {
 
         {/* Main content area */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
-          {/* Demo User Switcher - Fixed top right */}
-          <div className="fixed top-4 right-4 z-30">
-            <DemoUserSwitcher />
-          </div>
+          {/* Demo User Switcher - Fixed top right (Only for non-admin users) */}
+          {!isAdminUser && (
+            <div className="fixed top-4 right-4 z-30">
+              <DemoUserSwitcher />
+            </div>
+          )}
           {/* Base gradient background */}
           <div
             className="fixed inset-0 z-0 pointer-events-none"
