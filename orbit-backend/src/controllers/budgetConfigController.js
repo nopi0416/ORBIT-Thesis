@@ -626,6 +626,54 @@ export class BudgetConfigController {
   }
 
   /**
+   * GET /api/organization-geo-location/by-org
+   * Get org-geo-location mappings filtered by org IDs
+   */
+  static async getOrganizationGeoLocationsByOrg(req, res) {
+    try {
+      const { org_id } = req.query;
+      const orgIds = typeof org_id === 'string'
+        ? org_id.split(',').map((id) => id.trim()).filter(Boolean)
+        : [];
+
+      const result = await BudgetConfigService.getOrganizationGeoLocationsByOrgIds(orgIds);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Organization geo/location mapping retrieved successfully');
+    } catch (error) {
+      console.error('Error in getOrganizationGeoLocationsByOrg:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/clients/by-org
+   * Get clients filtered by parent org IDs
+   */
+  static async getClientsByParentOrg(req, res) {
+    try {
+      const { org_id } = req.query;
+      const orgIds = typeof org_id === 'string'
+        ? org_id.split(',').map((id) => id.trim()).filter(Boolean)
+        : [];
+
+      const result = await BudgetConfigService.getClientsByParentOrgIds(orgIds);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Clients retrieved successfully');
+    } catch (error) {
+      console.error('Error in getClientsByParentOrg:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
    * GET /api/approvers
    * Get all approvers grouped by level
    */

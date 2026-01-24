@@ -7,12 +7,14 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { Checkbox } from "../components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { SearchableSelect } from "../components/ui/searchable-select";
 import { MultiSelect } from "../components/ui/multi-select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { useAuth } from "../context/AuthContext";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
 import budgetConfigService from "../services/budgetConfigService";
+import currencyData from "../data/currencies.json";
+import * as currencyCodes from "currency-codes/index.js";
 
 const parseStoredList = (value) => {
   if (!value) return [];
@@ -29,6 +31,69 @@ const parseStoredList = (value) => {
   }
   return [value];
 };
+
+const getCurrencyOptionsFromLibrary = () => {
+  const data = currencyCodes?.data;
+  if (Array.isArray(data) && data.length) {
+    return data.map((item) => ({
+      value: item.code,
+      label: `${item.code} - ${item.currency}`,
+    }));
+  }
+
+  if (typeof currencyCodes?.codes === "function") {
+    const codes = currencyCodes.codes();
+    if (Array.isArray(codes) && codes.length) {
+      return codes.map((code) => {
+        const info = currencyCodes.code ? currencyCodes.code(code) : null;
+        const currencyName = info?.currency || code;
+        return { value: code, label: `${code} - ${currencyName}` };
+      });
+    }
+  }
+
+  return [];
+};
+
+const getCurrencyOptionsFromJson = (data) => {
+  if (!Array.isArray(data)) return [];
+  return data
+    .map((item) => {
+      const code = item?.code || item?.value;
+      if (!code) return null;
+      if (item?.label) {
+        return { value: code, label: item.label };
+      }
+      const name = item?.name || item?.currency;
+      const label = name ? `${code} - ${name}` : code;
+      return { value: code, label };
+    })
+    .filter(Boolean);
+};
+
+const buildCurrencyOptions = () => {
+  const libraryOptions = getCurrencyOptionsFromLibrary();
+  const jsonOptions = getCurrencyOptionsFromJson(currencyData);
+
+  if (!libraryOptions.length) {
+    return jsonOptions;
+  }
+
+  if (!jsonOptions.length) {
+    return libraryOptions;
+  }
+
+  const libraryMap = new Map(libraryOptions.map((option) => [option.value, option]));
+  jsonOptions.forEach((option) => {
+    if (libraryMap.has(option.value)) {
+      libraryMap.set(option.value, { ...libraryMap.get(option.value), ...option });
+    }
+  });
+
+  return Array.from(libraryMap.values()).sort((a, b) => a.value.localeCompare(b.value));
+};
+
+const currencyOptions = buildCurrencyOptions();
 
 const getApprovalStatusInfo = (status) => {
   switch (status) {
@@ -200,55 +265,409 @@ function ConfigurationList() {
               </div>
             </div>
 
+            <div className="grid gap-4 lg:grid-cols-12">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5 min-h-[420px]">
+                <h4 className="font-medium text-white">Organization</h4>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-white text-sm">Affected OUs</Label>
+                    <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
+                      {organizationsLoading ? (
+                        <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
+                      ) : parentOrgs.length === 0 ? (
+                        <div className="text-gray-400 text-sm p-2">No organizations available</div>
+                      ) : (
+                        parentOrgs.map((parent) => {
+                          const isParentSelected = formData.affectedOUPaths.some((path) => path[0] === parent.org_id);
+
+                          const togglePath = (newPath) => {
+                            const pathExists = formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
+                            if (pathExists) {
+                              updateField("affectedOUPaths", formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                            } else {
+                              const nextPaths = [...formData.affectedOUPaths, newPath];
+                              if (newPath.length > 1) {
+                                const parentPath = [newPath[0]];
+                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
+                                if (!parentExists) nextPaths.push(parentPath);
+                              }
+                              updateField("affectedOUPaths", nextPaths);
+                            }
+                          };
+
+                          return (
+                            <div key={parent.org_id} className="space-y-0">
+                              <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                <Checkbox
+                                  id={`ou-${parent.org_id}`}
+                                  checked={isParentSelected}
+                                  onCheckedChange={() => togglePath([parent.org_id])}
+                                  className="border-pink-400 bg-slate-600 h-4 w-4"
+                                />
+                                <span className="text-white text-xs">{parent.org_name}</span>
+                              </div>
+
+                              {childOrgMap[parent.org_id] && (
+                                <div className="ml-4 space-y-0">
+                                  {childOrgMap[parent.org_id].map((child) => {
+                                    const isChildSelected = formData.affectedOUPaths.some((path) => path[1] === child.org_id);
+                                    return (
+                                      <div key={child.org_id} className="space-y-0">
+                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                          <Checkbox
+                                            id={`ou-${child.org_id}`}
+                                            checked={isChildSelected}
+                                            onCheckedChange={() => togglePath([parent.org_id, child.org_id])}
+                                            className="border-pink-400 bg-slate-600 h-4 w-4"
+                                          />
+                                          <span className="text-slate-400 text-xs">↳</span>
+                                          <span className="text-gray-300 text-xs">{child.org_name}</span>
+                                        </div>
+
+                                        {grandchildOrgMap[child.org_id] && (
+                                          <div className="ml-4 space-y-0">
+                                            {grandchildOrgMap[child.org_id].map((grandchild) => {
+                                              const isGrandchildSelected = formData.affectedOUPaths.some((path) => path[2] === grandchild.org_id);
+                                              return (
+                                                <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                  <Checkbox
+                                                    id={`ou-${grandchild.org_id}`}
+                                                    checked={isGrandchildSelected}
+                                                    onCheckedChange={() => togglePath([parent.org_id, child.org_id, grandchild.org_id])}
+                                                    className="border-pink-400 bg-slate-600 h-4 w-4"
+                                                  />
+                                                  <span className="text-slate-500 text-xs">↳</span>
+                                                  <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {formData.affectedOUPaths.length > 0 && (
+                      <div className="bg-pink-900/20 border border-pink-700/50 rounded p-2 space-y-1">
+                        {buildAffectedPreviewLines().map((line) => (
+                          <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
+                            <span>{line.text}</span>
+                            <button
+                              onClick={() => removeAffectedByScope(line.scope)}
+                              className="text-red-400 hover:text-red-300"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-white text-sm">Accessible OUs</Label>
+                    <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
+                      {organizationsLoading ? (
+                        <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
+                      ) : parentOrgs.length === 0 ? (
+                        <div className="text-gray-400 text-sm p-2">No organizations available</div>
+                      ) : (
+                        parentOrgs.map((parent) => {
+                          const isParentSelected = formData.accessibleOUPaths.some((path) => path[0] === parent.org_id);
+
+                          const toggleAccessPath = (newPath) => {
+                            const pathExists = formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
+                            if (pathExists) {
+                              updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                            } else {
+                              const nextPaths = [...formData.accessibleOUPaths, newPath];
+                              if (newPath.length > 1) {
+                                const parentPath = [newPath[0]];
+                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
+                                if (!parentExists) nextPaths.push(parentPath);
+                              }
+                              updateField("accessibleOUPaths", nextPaths);
+                            }
+                          };
+
+                          return (
+                            <div key={parent.org_id} className="space-y-0">
+                              <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                <Checkbox
+                                  id={`access-ou-${parent.org_id}`}
+                                  checked={isParentSelected}
+                                  onCheckedChange={() => toggleAccessPath([parent.org_id])}
+                                  className="border-blue-400 bg-slate-600 h-4 w-4"
+                                />
+                                <span className="text-white text-xs">{parent.org_name}</span>
+                              </div>
+
+                              {childOrgMap[parent.org_id] && (
+                                <div className="ml-4 space-y-0">
+                                  {childOrgMap[parent.org_id].map((child) => {
+                                    const isChildSelected = formData.accessibleOUPaths.some((path) => path[1] === child.org_id);
+                                    return (
+                                      <div key={child.org_id} className="space-y-0">
+                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                          <Checkbox
+                                            id={`access-ou-${child.org_id}`}
+                                            checked={isChildSelected}
+                                            onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id])}
+                                            className="border-blue-400 bg-slate-600 h-4 w-4"
+                                          />
+                                          <span className="text-slate-400 text-xs">↳</span>
+                                          <span className="text-gray-300 text-xs">{child.org_name}</span>
+                                        </div>
+
+                                        {grandchildOrgMap[child.org_id] && (
+                                          <div className="ml-4 space-y-0">
+                                            {grandchildOrgMap[child.org_id].map((grandchild) => {
+                                              const isGrandchildSelected = formData.accessibleOUPaths.some((path) => path[2] === grandchild.org_id);
+                                              return (
+                                                <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                  <Checkbox
+                                                    id={`access-ou-${grandchild.org_id}`}
+                                                    checked={isGrandchildSelected}
+                                                    onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id, grandchild.org_id])}
+                                                    className="border-blue-400 bg-slate-600 h-4 w-4"
+                                                  />
+                                                  <span className="text-slate-500 text-xs">↳</span>
+                                                  <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {formData.accessibleOUPaths.length > 0 && (
+                      <div className="bg-blue-900/20 border border-blue-700/50 rounded p-2 space-y-1">
+                        {buildAccessiblePreviewLines().map((line) => (
+                          <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
+                            <span>{line.text}</span>
+                            <button
+                              onClick={() => removeAccessibleByScope(line.scope)}
+                              className="text-red-400 hover:text-red-300"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-2 min-h-[420px]">
+                <div className="space-y-3">
+                  <h4 className="font-medium text-white">Location & Client Scope</h4>
+                  <div className="space-y-2">
+                    <Label className="text-white text-xs">Geo (Country/Region)</Label>
+                    <SearchableSelect
+                      value={formData.countries.length > 0 ? formData.countries[0] : ""}
+                      onValueChange={(value) => {
+                        updateField("countries", value ? [value] : []);
+                        updateField("siteLocation", []);
+                        updateField("clients", []);
+                      }}
+                      options={availableGeoOptions}
+                      disabled={!hasAffectedOu || orgScopeLoading || availableGeoOptions.length === 0}
+                      placeholder={
+                        !hasAffectedOu
+                          ? "Select Affected OU"
+                          : orgScopeLoading
+                            ? "Loading geo..."
+                            : availableGeoOptions.length
+                              ? "Select country"
+                              : "No geo available"
+                      }
+                      searchPlaceholder="Search geo..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white text-xs">Site Location</Label>
+                    <SearchableSelect
+                      value={formData.siteLocation.length > 0 ? formData.siteLocation[0] : ""}
+                      onValueChange={(value) => {
+                        updateField("siteLocation", value ? [value] : []);
+                        updateField("clients", []);
+                      }}
+                      options={availableLocationOptions}
+                      disabled={!hasCountries || orgScopeLoading || availableLocationOptions.length === 0}
+                      placeholder={
+                        !hasCountries
+                          ? "Select Geo"
+                          : orgScopeLoading
+                            ? "Loading locations..."
+                            : availableLocationOptions.length
+                              ? "Select location"
+                              : "No locations available"
+                      }
+                      searchPlaceholder="Search location..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white text-xs">Clients</Label>
+                    <MultiSelect
+                      options={availableClientOptions}
+                      selected={formData.clients}
+                      onChange={(selected) => updateField("clients", selected)}
+                      placeholder={
+                        !hasLocation
+                          ? "Select Location"
+                          : orgScopeLoading
+                            ? "Loading clients..."
+                            : availableClientOptions.length
+                              ? "Select clients"
+                              : "No clients available"
+                      }
+                      hasAllOption={true}
+                      disabled={!hasLocation || orgScopeLoading || availableClientOptions.length === 0}
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-600/60 space-y-3">
+                  <h4 className="font-medium text-white">Tenure Group</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
+                      <div key={value} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={value}
+                          checked={formData.selectedTenureGroups.includes(value)}
+                          className="border-blue-400 bg-slate-600"
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              updateField("selectedTenureGroups", [...formData.selectedTenureGroups, value]);
+                            } else {
+                              updateField("selectedTenureGroups", formData.selectedTenureGroups.filter((t) => t !== value));
+                            }
+                          }}
+                        />
+                        <Label htmlFor={value} className="cursor-pointer text-white text-sm font-medium">
+                          {value === "0-6months" && "0-6 Months"}
+                          {value === "6-12months" && "6-12 Months"}
+                          {value === "1-2years" && "1-2 Years"}
+                          {value === "2-5years" && "2-5 Years"}
+                          {value === "5plus-years" && "5+ Years"}
+                        </Label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-5 lg:col-span-5 min-h-[420px]">
+                <h4 className="font-medium text-white">Approval Hierarchy</h4>
+
+                {[1, 2, 3].map((level) => {
+                  const approvers = level === 1 ? approvalsL1 : level === 2 ? approvalsL2 : approvalsL3;
+                  const primaryField = level === 1 ? "approverL1" : level === 2 ? "approverL2" : "approverL3";
+                  const backupField = level === 1 ? "backupApproverL1" : level === 2 ? "backupApproverL2" : "backupApproverL3";
+
+                  return (
+                    <div key={level} className="space-y-3">
+                      <h5 className="font-medium text-white">Level {level}</h5>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label className="text-white text-sm">Primary *</Label>
+                          <SearchableSelect
+                            value={formData[primaryField]}
+                            onValueChange={(value) => {
+                              updateField(primaryField, value);
+                              if (formData[backupField] === value) {
+                                updateField(backupField, "");
+                              }
+                            }}
+                            options={approvers.map((approver) => ({
+                              value: approver.user_id,
+                              label: `${approver.first_name} ${approver.last_name}`,
+                            }))}
+                            disabled={approvalsLoading}
+                            placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                            searchPlaceholder="Search approver..."
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-white text-sm">Backup *</Label>
+                          <SearchableSelect
+                            value={formData[backupField]}
+                            onValueChange={(value) => updateField(backupField, value)}
+                            options={approvers
+                              .filter((approver) => approver.user_id !== formData[primaryField])
+                              .map((approver) => ({
+                                value: approver.user_id,
+                                label: `${approver.first_name} ${approver.last_name}`,
+                              }))}
+                            disabled={approvalsLoading}
+                            placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                            searchPlaceholder="Search backup..."
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="md:col-span-2 space-y-2">
               <Label className="text-white">Geo</Label>
-              <Select value={filterGeo} onValueChange={setFilterGeo}>
-                <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                  <SelectValue placeholder="All" />
-                </SelectTrigger>
-                <SelectContent className="bg-slate-800 border-gray-300">
-                  <SelectItem value="all" className="text-white">All</SelectItem>
-                  {geoOptions.map((geo) => (
-                    <SelectItem key={geo} value={geo} className="text-white">
-                      {geo}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={filterGeo}
+                onValueChange={setFilterGeo}
+                options={[
+                  { value: "all", label: "All" },
+                  ...geoOptions.map((geo) => ({ value: geo, label: geo })),
+                ]}
+                placeholder="All"
+                searchPlaceholder="Search geo..."
+              />
             </div>
 
             <div className="md:col-span-2 space-y-2">
               <Label className="text-white">Location</Label>
-              <Select value={filterLocation} onValueChange={setFilterLocation}>
-                <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                  <SelectValue placeholder="All" />
-                </SelectTrigger>
-                <SelectContent className="bg-slate-800 border-gray-300">
-                  <SelectItem value="all" className="text-white">All</SelectItem>
-                  {locationOptions.map((location) => (
-                    <SelectItem key={location} value={location} className="text-white">
-                      {location}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={filterLocation}
+                onValueChange={setFilterLocation}
+                options={[
+                  { value: "all", label: "All" },
+                  ...locationOptions.map((location) => ({ value: location, label: location })),
+                ]}
+                placeholder="All"
+                searchPlaceholder="Search location..."
+              />
             </div>
 
             <div className="md:col-span-2 space-y-2">
               <Label className="text-white">Client</Label>
-              <Select value={filterClient} onValueChange={setFilterClient}>
-                <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                  <SelectValue placeholder="All" />
-                </SelectTrigger>
-                <SelectContent className="bg-slate-800 border-gray-300">
-                  <SelectItem value="all" className="text-white">All</SelectItem>
-                  {clientOptions.map((client) => (
-                    <SelectItem key={client} value={client} className="text-white">
-                      {client}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={filterClient}
+                onValueChange={setFilterClient}
+                options={[
+                  { value: "all", label: "All" },
+                  ...clientOptions.map((client) => ({ value: client, label: client })),
+                ]}
+                placeholder="All"
+                searchPlaceholder="Search client..."
+              />
             </div>
           </div>
         </CardContent>
@@ -396,12 +815,16 @@ function CreateConfiguration() {
   const [stepError, setStepError] = useState(null);
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successCountdown, setSuccessCountdown] = useState(5);
+  const [viewStep, setViewStep] = useState("form");
   const [approvalsL1, setApprovalsL1] = useState([]);
   const [approvalsL2, setApprovalsL2] = useState([]);
   const [approvalsL3, setApprovalsL3] = useState([]);
   const [approvalsLoading, setApprovalsLoading] = useState(true);
   const [organizations, setOrganizations] = useState([]);
   const [organizationsLoading, setOrganizationsLoading] = useState(true);
+  const [orgGeoLocations, setOrgGeoLocations] = useState([]);
+  const [orgClients, setOrgClients] = useState([]);
+  const [orgScopeLoading, setOrgScopeLoading] = useState(false);
   const [formData, setFormData] = useState({
     budgetName: "",
     startDate: "",
@@ -410,6 +833,7 @@ function CreateConfiguration() {
     dataControlEnabled: true,
     limitMin: "",
     limitMax: "",
+    currency: "",
     budgetControlEnabled: false,
     budgetControlLimit: "",
     payCycle: "",
@@ -470,6 +894,42 @@ function CreateConfiguration() {
 
     fetchOrganizations();
   }, [token]);
+
+  const selectedParentOrgIds = useMemo(() => {
+    const ids = new Set();
+    (formData.affectedOUPaths || []).forEach((path) => {
+      if (path?.[0]) ids.add(path[0]);
+    });
+    return Array.from(ids);
+  }, [formData.affectedOUPaths]);
+
+  useEffect(() => {
+    const fetchOrgScopeOptions = async () => {
+      if (!selectedParentOrgIds.length) {
+        setOrgGeoLocations([]);
+        setOrgClients([]);
+        return;
+      }
+
+      try {
+        setOrgScopeLoading(true);
+        const [geoLocations, clients] = await Promise.all([
+          budgetConfigService.getOrganizationGeoLocationsByOrg(selectedParentOrgIds, token),
+          budgetConfigService.getClientsByParentOrg(selectedParentOrgIds, token),
+        ]);
+        setOrgGeoLocations(geoLocations || []);
+        setOrgClients((clients || []).filter((client) => client.client_status !== "INACTIVE"));
+      } catch (err) {
+        console.error("Error fetching org scope options:", err);
+        setOrgGeoLocations([]);
+        setOrgClients([]);
+      } finally {
+        setOrgScopeLoading(false);
+      }
+    };
+
+    fetchOrgScopeOptions();
+  }, [selectedParentOrgIds, token]);
 
   const buildOrgHierarchy = () => {
     if (!organizations.length) return { parents: [], childOUs: {}, grandchildOUs: {} };
@@ -555,7 +1015,7 @@ function CreateConfiguration() {
       if (!children.length || (parentSelected && childSelections.size === 0) || allChildrenFullySelected) {
         lines.push({
           key: `${parentId}-all`,
-          text: `${getOrgName(parentId)} → All`,
+          text: `${getOrgName(parentId)}`,
           scope: { parentId },
         });
         return;
@@ -571,7 +1031,7 @@ function CreateConfiguration() {
         if (allGrandchildrenSelected) {
           lines.push({
             key: `${parentId}-${childId}-all`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → All`,
+            text: `${getOrgName(parentId)} → ${getOrgName(childId)}`,
             scope: { parentId, childId },
           });
           return;
@@ -738,6 +1198,42 @@ function CreateConfiguration() {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  const getCurrencyLabel = (code) => {
+    if (!code) return "Not specified";
+    const match = currencyOptions.find((option) => option.value === code);
+    return match ? match.label : code;
+  };
+
+  const getPayCycleLabel = (value) => {
+    switch (value) {
+      case "MONTHLY":
+        return "Monthly (End of Month)";
+      case "SEMI_MONTHLY":
+        return "Semi-Monthly (15 & 30)";
+      case "BI_WEEKLY":
+        return "Bi-Weekly (Every 14 Days)";
+      default:
+        return "Not specified";
+    }
+  };
+
+  useEffect(() => {
+    if (!formData.startDate || !formData.endDate) return;
+    const start = new Date(formData.startDate);
+    const end = new Date(formData.endDate);
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end <= start) {
+      updateField("endDate", "");
+    }
+  }, [formData.startDate]);
+
+  const minEndDate = useMemo(() => {
+    if (!formData.startDate) return undefined;
+    const start = new Date(formData.startDate);
+    if (Number.isNaN(start.getTime())) return undefined;
+    start.setDate(start.getDate() + 1);
+    return start.toISOString().split("T")[0];
+  }, [formData.startDate]);
+
   const validateForm = () => {
     if (!formData.budgetName?.trim()) return "Budget name is required.";
     if (!formData.startDate) return "Start date is required.";
@@ -745,6 +1241,7 @@ function CreateConfiguration() {
     if (!formData.limitMin) return "Min limit is required.";
     if (!formData.limitMax) return "Max limit is required.";
     if (!formData.payCycle) return "Payroll cycle is required.";
+    if (!formData.currency) return "Currency is required.";
     if (formData.budgetControlEnabled && !formData.budgetControlLimit) {
       return "Budget limit is required when budget control is enabled.";
     }
@@ -761,6 +1258,16 @@ function CreateConfiguration() {
     if (!formData.approverL3) return "Primary L3 approver is required.";
     if (!formData.backupApproverL3) return "Backup L3 approver is required.";
     return null;
+  };
+
+  const handleNext = () => {
+    setStepError(null);
+    const validationError = validateForm();
+    if (validationError) {
+      setStepError(validationError);
+      return;
+    }
+    setViewStep("review");
   };
 
   const handleSubmit = async () => {
@@ -784,6 +1291,7 @@ function CreateConfiguration() {
         description: formData.description || "",
         minLimit: formData.limitMin ? parseFloat(formData.limitMin) : 0,
         maxLimit: formData.limitMax ? parseFloat(formData.limitMax) : 0,
+        currency: formData.currency || null,
         payCycle: formData.payCycle,
         budgetControlEnabled: formData.budgetControlEnabled,
         budgetControlLimit: formData.budgetControlEnabled ? parseFloat(formData.budgetControlLimit) : null,
@@ -820,6 +1328,7 @@ function CreateConfiguration() {
       setSubmitSuccess(true);
       setSuccessCountdown(5);
       setSuccessModalOpen(true);
+      setViewStep("form");
 
       setFormData({
         budgetName: "",
@@ -829,6 +1338,7 @@ function CreateConfiguration() {
         dataControlEnabled: true,
         limitMin: "",
         limitMax: "",
+        currency: "",
         budgetControlEnabled: false,
         budgetControlLimit: "",
         payCycle: "",
@@ -875,6 +1385,76 @@ function CreateConfiguration() {
   const hasAffectedOu = formData.affectedOUPaths.length > 0;
   const hasCountries = formData.countries.length > 0;
   const hasLocation = formData.siteLocation.length > 0;
+
+  const availableGeoOptions = useMemo(() => {
+    const map = new Map();
+    orgGeoLocations
+      .filter((row) => selectedParentOrgIds.includes(row.org_id))
+      .forEach((row) => {
+        const value = row.geo_name || row.geo_id;
+        const label = row.geo_name || row.geo_code || row.geo_id;
+        if (!map.has(value)) map.set(value, { value, label });
+      });
+    return Array.from(map.values());
+  }, [orgGeoLocations, selectedParentOrgIds]);
+
+  const selectedGeoValue = formData.countries?.[0] || "";
+
+  const availableLocationOptions = useMemo(() => {
+    if (!selectedGeoValue) return [];
+    const map = new Map();
+    orgGeoLocations
+      .filter((row) => selectedParentOrgIds.includes(row.org_id))
+      .filter((row) => (row.geo_name || row.geo_id) === selectedGeoValue)
+      .forEach((row) => {
+        const value = row.location_name || row.location_id;
+        const label = row.location_name || row.location_code || row.location_id;
+        if (!map.has(value)) map.set(value, { value, label });
+      });
+    return Array.from(map.values());
+  }, [orgGeoLocations, selectedParentOrgIds, selectedGeoValue]);
+
+  const availableClientOptions = useMemo(() => {
+    const map = new Map();
+    orgClients
+      .filter((row) => selectedParentOrgIds.includes(row.parent_org_id))
+      .forEach((row) => {
+        const value = row.client_name || row.client_code;
+        const label = row.client_name || row.client_code;
+        if (!map.has(value)) map.set(value, { value, label });
+      });
+    return Array.from(map.values());
+  }, [orgClients, selectedParentOrgIds]);
+
+  useEffect(() => {
+    const allowed = new Set(availableGeoOptions.map((option) => option.value));
+    if (formData.countries.length && !allowed.has(formData.countries[0])) {
+      updateField("countries", []);
+      updateField("siteLocation", []);
+      updateField("clients", []);
+    }
+  }, [availableGeoOptions, formData.countries]);
+
+  useEffect(() => {
+    const allowed = new Set(availableLocationOptions.map((option) => option.value));
+    if (formData.siteLocation.length && !allowed.has(formData.siteLocation[0])) {
+      updateField("siteLocation", []);
+      updateField("clients", []);
+    }
+  }, [availableLocationOptions, formData.siteLocation]);
+
+  useEffect(() => {
+    const allowed = new Set(availableClientOptions.map((option) => option.value));
+    if (formData.clients.length && formData.clients.some((client) => !allowed.has(client))) {
+      updateField(
+        "clients",
+        formData.clients.filter((client) => allowed.has(client))
+      );
+    }
+  }, [availableClientOptions, formData.clients]);
+
+  const affectedPreviewLines = buildAffectedPreviewLines();
+  const accessiblePreviewLines = buildAccessiblePreviewLines();
 
   return (
     <div className="space-y-6">
@@ -926,559 +1506,395 @@ function CreateConfiguration() {
             <div>
               <CardTitle className="text-white">Create Configuration</CardTitle>
               <CardDescription className="text-gray-400">
-                Complete all required fields on one page
+                {viewStep === "review" ? "Review details before creating" : "Complete all required fields"}
               </CardDescription>
             </div>
-            <span className="text-sm font-medium text-pink-300">Review</span>
+            <span className="text-sm font-medium text-pink-300">
+              {viewStep === "review" ? "Review" : "Step 1 of 2"}
+            </span>
           </div>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <div className="grid gap-4 lg:grid-cols-12">
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-6">
-              <h4 className="font-medium text-white">Setup Configuration</h4>
-              <div className="grid gap-4 md:grid-cols-12 items-end">
-                <div className="space-y-2 md:col-span-6">
-                  <Label htmlFor="budgetName" className="text-white">Budget Name *</Label>
-                  <Input
-                    id="budgetName"
-                    placeholder="e.g., Q1 2024 Performance Bonus"
-                    value={formData.budgetName}
-                    onChange={(e) => updateField("budgetName", e.target.value)}
-                    className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
-                  />
-                </div>
-                <div className="space-y-2 md:col-span-6">
-                  <Label className="text-white">Budget Period *</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="startDate" className="text-xs text-gray-300 whitespace-nowrap">Start Date</Label>
-                      <Input
-                        id="startDate"
-                        type="date"
-                        value={formData.startDate}
-                        onChange={(e) => updateField("startDate", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="endDate" className="text-xs text-gray-300 whitespace-nowrap">End Date</Label>
-                      <Input
-                        id="endDate"
-                        type="date"
-                        value={formData.endDate}
-                        onChange={(e) => updateField("endDate", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="budgetDescription" className="text-white">Description</Label>
-                <textarea
-                  id="budgetDescription"
-                  placeholder="Describe the purpose and details of this budget configuration..."
-                  value={formData.description || ""}
-                  onChange={(e) => updateField("description", e.target.value)}
-                  rows={4}
-                  className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400"
-                />
-              </div>
-            </div>
-
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-              <div className="flex items-center justify-between">
-                <h4 className="font-medium text-white">Data Control</h4>
-                <Badge className="bg-green-500 text-white">Enabled</Badge>
-              </div>
-              <p className="text-xs text-gray-400">Set min and max limits per employee</p>
-              <div className="bg-blue-500/10 border border-blue-500/30 rounded p-2">
-                <p className="text-xs text-blue-300">
-                  Min and Max limits apply to both positive and negative amounts.
-                </p>
-              </div>
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <Label htmlFor="limitMin" className="text-white">Min Limit *</Label>
-                  <Input
-                    id="limitMin"
-                    type="number"
-                    placeholder="0"
-                    value={formData.limitMin}
-                    onChange={(e) => updateField("limitMin", e.target.value)}
-                    className="bg-slate-700 border-gray-300 text-white"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="limitMax" className="text-white">Max Limit *</Label>
-                  <Input
-                    id="limitMax"
-                    type="number"
-                    placeholder="10000"
-                    value={formData.limitMax}
-                    onChange={(e) => updateField("limitMax", e.target.value)}
-                    className="bg-slate-700 border-gray-300 text-white"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-              <div className="flex items-center justify-between">
-                <h4 className="font-medium text-white">Payroll Cycle & Budget Control</h4>
-              </div>
-              <p className="text-xs text-gray-400">Define the configuration's payroll period.</p>
-              <div className="space-y-2">
-                <Label className="text-white">Cycle *</Label>
-                <Select value={formData.payCycle} onValueChange={(value) => updateField("payCycle", value)}>
-                  <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                    <SelectValue placeholder="Select payroll cycle" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-800 border-gray-300">
-                    <SelectItem value="MONTHLY" className="text-white">Monthly (End of Month)</SelectItem>
-                    <SelectItem value="SEMI_MONTHLY" className="text-white">Semi-Monthly (15 & 30)</SelectItem>
-                    <SelectItem value="BI_WEEKLY" className="text-white">Bi-Weekly (Every 14 Days)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="pt-2 space-y-3 border-t border-slate-600/60">
-                <div className="flex items-center justify-between">
-                  <h5 className="font-medium text-white">Budget Control</h5>
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="budgetControl"
-                      checked={formData.budgetControlEnabled}
-                      onCheckedChange={(checked) => updateField("budgetControlEnabled", checked)}
-                      className="border-blue-400 bg-slate-600"
-                    />
-                    <Label htmlFor="budgetControl" className="cursor-pointer text-white text-sm">
-                      Enable
-                    </Label>
-                  </div>
-                </div>
-
-                {formData.budgetControlEnabled ? (
-                  <div className="space-y-2">
-                    <Label htmlFor="budgetControlLimit" className="text-white">Budget Limit *</Label>
+          {viewStep === "form" ? (
+            <div className="grid gap-4 lg:grid-cols-12">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-6">
+                <h4 className="font-medium text-white">Setup Configuration</h4>
+                <div className="grid gap-4 md:grid-cols-12 items-end">
+                  <div className="space-y-2 md:col-span-6">
+                    <Label htmlFor="budgetName" className="text-white">Budget Name *</Label>
                     <Input
-                      id="budgetControlLimit"
+                      id="budgetName"
+                      placeholder="e.g., Q1 2024 Performance Bonus"
+                      value={formData.budgetName}
+                      onChange={(e) => updateField("budgetName", e.target.value)}
+                      className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-6">
+                    <Label className="text-white">Budget Period *</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex items-center gap-2">
+                        <Label htmlFor="startDate" className="text-xs text-gray-300 whitespace-nowrap">Start Date</Label>
+                        <Input
+                          id="startDate"
+                          type="date"
+                          value={formData.startDate}
+                          onChange={(e) => updateField("startDate", e.target.value)}
+                          className="bg-slate-700 border-gray-300 text-white"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Label htmlFor="endDate" className="text-xs text-gray-300 whitespace-nowrap">End Date</Label>
+                        <Input
+                          id="endDate"
+                          type="date"
+                          value={formData.endDate}
+                          onChange={(e) => updateField("endDate", e.target.value)}
+                          min={minEndDate}
+                          className="bg-slate-700 border-gray-300 text-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="budgetDescription" className="text-white">Description</Label>
+                  <textarea
+                    id="budgetDescription"
+                    placeholder="Describe the purpose and details of this budget configuration..."
+                    value={formData.description || ""}
+                    onChange={(e) => updateField("description", e.target.value)}
+                    rows={4}
+                    className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium text-white">Data Control</h4>
+                  <Badge className="bg-green-500 text-white">Enabled</Badge>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Set min and max limits per employee (applies to both positive and negative amounts).
+                </p>
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <Label className="text-white">Currency *</Label>
+                    <SearchableSelect
+                      value={formData.currency}
+                      onValueChange={(value) => updateField("currency", value)}
+                      options={currencyOptions}
+                      placeholder="Select currency"
+                      searchPlaceholder="Search currency..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="limitMin" className="text-white">Min Limit *</Label>
+                    <Input
+                      id="limitMin"
                       type="number"
-                      placeholder="100000"
-                      value={formData.budgetControlLimit}
-                      onChange={(e) => updateField("budgetControlLimit", e.target.value)}
+                      placeholder="0"
+                      value={formData.limitMin}
+                      onChange={(e) => updateField("limitMin", e.target.value)}
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
-                ) : (
-                  <p className="text-sm text-gray-400">Enable to set budget limits</p>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-12">
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5 min-h-[420px]">
-              <h4 className="font-medium text-white">Organization</h4>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label className="text-white text-sm">Affected OUs</Label>
-                  <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
-                    {organizationsLoading ? (
-                      <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
-                    ) : parentOrgs.length === 0 ? (
-                      <div className="text-gray-400 text-sm p-2">No organizations available</div>
-                    ) : (
-                      parentOrgs.map((parent) => {
-                        const isParentSelected = formData.affectedOUPaths.some((path) => path[0] === parent.org_id);
-
-                        const togglePath = (newPath) => {
-                          const pathExists = formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
-                          if (pathExists) {
-                            updateField("affectedOUPaths", formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
-                          } else {
-                            const nextPaths = [...formData.affectedOUPaths, newPath];
-                            if (newPath.length > 1) {
-                              const parentPath = [newPath[0]];
-                              const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                              if (!parentExists) nextPaths.push(parentPath);
-                            }
-                            updateField("affectedOUPaths", nextPaths);
-                          }
-                        };
-
-                        return (
-                          <div key={parent.org_id} className="space-y-0">
-                            <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                              <Checkbox
-                                id={`ou-${parent.org_id}`}
-                                checked={isParentSelected}
-                                onCheckedChange={() => togglePath([parent.org_id])}
-                                className="border-pink-400 bg-slate-600 h-4 w-4"
-                              />
-                              <span className="text-white text-xs">{parent.org_name}</span>
-                            </div>
-
-                            {childOrgMap[parent.org_id] && (
-                              <div className="ml-4 space-y-0">
-                                {childOrgMap[parent.org_id].map((child) => {
-                                  const isChildSelected = formData.affectedOUPaths.some((path) => path[1] === child.org_id);
-                                  return (
-                                    <div key={child.org_id} className="space-y-0">
-                                      <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                        <Checkbox
-                                          id={`ou-${child.org_id}`}
-                                          checked={isChildSelected}
-                                          onCheckedChange={() => togglePath([parent.org_id, child.org_id])}
-                                          className="border-pink-400 bg-slate-600 h-4 w-4"
-                                        />
-                                        <span className="text-slate-400 text-xs">↳</span>
-                                        <span className="text-gray-300 text-xs">{child.org_name}</span>
-                                      </div>
-
-                                      {grandchildOrgMap[child.org_id] && (
-                                        <div className="ml-4 space-y-0">
-                                          {grandchildOrgMap[child.org_id].map((grandchild) => {
-                                            const isGrandchildSelected = formData.affectedOUPaths.some((path) => path[2] === grandchild.org_id);
-                                            return (
-                                              <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                                <Checkbox
-                                                  id={`ou-${grandchild.org_id}`}
-                                                  checked={isGrandchildSelected}
-                                                  onCheckedChange={() => togglePath([parent.org_id, child.org_id, grandchild.org_id])}
-                                                  className="border-pink-400 bg-slate-600 h-4 w-4"
-                                                />
-                                                <span className="text-slate-500 text-xs">↳</span>
-                                                <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })
-                    )}
+                  <div className="space-y-2">
+                    <Label htmlFor="limitMax" className="text-white">Max Limit *</Label>
+                    <Input
+                      id="limitMax"
+                      type="number"
+                      placeholder="10000"
+                      value={formData.limitMax}
+                      onChange={(e) => updateField("limitMax", e.target.value)}
+                      className="bg-slate-700 border-gray-300 text-white"
+                    />
                   </div>
-
-                  {formData.affectedOUPaths.length > 0 && (
-                    <div className="bg-pink-900/20 border border-pink-700/50 rounded p-2 space-y-1">
-                      {buildAffectedPreviewLines().map((line) => (
-                        <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
-                          <span>{line.text}</span>
-                          <button
-                            onClick={() => removeAffectedByScope(line.scope)}
-                            className="text-red-400 hover:text-red-300"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-white text-sm">Accessible OUs</Label>
-                  <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
-                    {organizationsLoading ? (
-                      <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
-                    ) : parentOrgs.length === 0 ? (
-                      <div className="text-gray-400 text-sm p-2">No organizations available</div>
-                    ) : (
-                      parentOrgs.map((parent) => {
-                        const isParentSelected = formData.accessibleOUPaths.some((path) => path[0] === parent.org_id);
-
-                        const toggleAccessPath = (newPath) => {
-                          const pathExists = formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
-                          if (pathExists) {
-                            updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
-                          } else {
-                            const nextPaths = [...formData.accessibleOUPaths, newPath];
-                            if (newPath.length > 1) {
-                              const parentPath = [newPath[0]];
-                              const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                              if (!parentExists) nextPaths.push(parentPath);
-                            }
-                            updateField("accessibleOUPaths", nextPaths);
-                          }
-                        };
-
-                        return (
-                          <div key={parent.org_id} className="space-y-0">
-                            <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                              <Checkbox
-                                id={`access-ou-${parent.org_id}`}
-                                checked={isParentSelected}
-                                onCheckedChange={() => toggleAccessPath([parent.org_id])}
-                                className="border-blue-400 bg-slate-600 h-4 w-4"
-                              />
-                              <span className="text-white text-xs">{parent.org_name}</span>
-                            </div>
-
-                            {childOrgMap[parent.org_id] && (
-                              <div className="ml-4 space-y-0">
-                                {childOrgMap[parent.org_id].map((child) => {
-                                  const isChildSelected = formData.accessibleOUPaths.some((path) => path[1] === child.org_id);
-                                  return (
-                                    <div key={child.org_id} className="space-y-0">
-                                      <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                        <Checkbox
-                                          id={`access-ou-${child.org_id}`}
-                                          checked={isChildSelected}
-                                          onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id])}
-                                          className="border-blue-400 bg-slate-600 h-4 w-4"
-                                        />
-                                        <span className="text-slate-400 text-xs">↳</span>
-                                        <span className="text-gray-300 text-xs">{child.org_name}</span>
-                                      </div>
-
-                                      {grandchildOrgMap[child.org_id] && (
-                                        <div className="ml-4 space-y-0">
-                                          {grandchildOrgMap[child.org_id].map((grandchild) => {
-                                            const isGrandchildSelected = formData.accessibleOUPaths.some((path) => path[2] === grandchild.org_id);
-                                            return (
-                                              <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                                <Checkbox
-                                                  id={`access-ou-${grandchild.org_id}`}
-                                                  checked={isGrandchildSelected}
-                                                  onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id, grandchild.org_id])}
-                                                  className="border-blue-400 bg-slate-600 h-4 w-4"
-                                                />
-                                                <span className="text-slate-500 text-xs">↳</span>
-                                                <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-
-                  {formData.accessibleOUPaths.length > 0 && (
-                    <div className="bg-blue-900/20 border border-blue-700/50 rounded p-2 space-y-1">
-                      {buildAccessiblePreviewLines().map((line) => (
-                        <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
-                          <span>{line.text}</span>
-                          <button
-                            onClick={() => removeAccessibleByScope(line.scope)}
-                            className="text-red-400 hover:text-red-300"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </div>
-            </div>
 
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-2 min-h-[420px]">
-              <div className="space-y-3">
-                <h4 className="font-medium text-white">Location & Client Scope</h4>
-                <div className="space-y-2">
-                  <Label className="text-white text-xs">Geo (Country/Region)</Label>
-                  <Select
-                    value={formData.countries.length > 0 ? formData.countries[0] : ""}
-                    onValueChange={(value) => updateField("countries", value ? [value] : [])}
-                    disabled={!hasAffectedOu}
-                  >
-                    <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                      <SelectValue placeholder={hasAffectedOu ? "Select country" : "Select Affected OU"} />
-                    </SelectTrigger>
-                    <SelectContent className="bg-slate-800 border-gray-300">
-                      <SelectItem value="ph" className="text-white">Philippines</SelectItem>
-                      <SelectItem value="sg" className="text-white">Singapore</SelectItem>
-                      <SelectItem value="my" className="text-white">Malaysia</SelectItem>
-                      <SelectItem value="th" className="text-white">Thailand</SelectItem>
-                      <SelectItem value="id" className="text-white">Indonesia</SelectItem>
-                    </SelectContent>
-                  </Select>
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium text-white">Payroll Cycle & Budget Control</h4>
                 </div>
+                <p className="text-xs text-gray-400">Define the configuration's payroll period.</p>
                 <div className="space-y-2">
-                  <Label className="text-white text-xs">Site Location</Label>
-                  <Select
-                    value={formData.siteLocation.length > 0 ? formData.siteLocation[0] : ""}
-                    onValueChange={(value) => updateField("siteLocation", value ? [value] : [])}
-                    disabled={!hasCountries}
-                  >
-                    <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                      <SelectValue placeholder={hasCountries ? "Select location" : "Select Geo"} />
-                    </SelectTrigger>
-                    <SelectContent className="bg-slate-800 border-gray-300">
-                      <SelectItem value="metro-manila" className="text-white">Metro Manila</SelectItem>
-                      <SelectItem value="cebu" className="text-white">Cebu</SelectItem>
-                      <SelectItem value="davao" className="text-white">Davao</SelectItem>
-                      <SelectItem value="singapore-central" className="text-white">Singapore Central</SelectItem>
-                      <SelectItem value="kuala-lumpur" className="text-white">Kuala Lumpur</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-white text-xs">Clients</Label>
-                  <MultiSelect
+                  <Label className="text-white">Cycle *</Label>
+                  <SearchableSelect
+                    value={formData.payCycle}
+                    onValueChange={(value) => updateField("payCycle", value)}
                     options={[
-                      { value: "pldt", label: "PLDT" },
-                      { value: "globe", label: "Globe Telecom" },
-                      { value: "smart", label: "Smart Communications" },
-                      { value: "converge", label: "Converge ICT" },
-                      { value: "dito", label: "DITO Telecommunity" },
+                      { value: "MONTHLY", label: "Monthly (End of Month)" },
+                      { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
+                      { value: "BI_WEEKLY", label: "Bi-Weekly (Every 14 Days)" },
                     ]}
-                    selected={formData.clients}
-                    onChange={(selected) => updateField("clients", selected)}
-                    placeholder={hasLocation ? "Select clients" : "Select Location"}
-                    hasAllOption={true}
-                    disabled={!hasLocation}
+                    placeholder="Select payroll cycle"
+                    searchPlaceholder="Search payroll cycle..."
                   />
                 </div>
-              </div>
 
-              <div className="pt-3 border-t border-slate-600/60 space-y-3">
-                <h4 className="font-medium text-white">Tenure Group</h4>
-                <div className="grid grid-cols-2 gap-2">
-                  {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
-                    <div key={value} className="flex items-center space-x-2">
+                <div className="pt-2 space-y-3 border-t border-slate-600/60">
+                  <div className="flex items-center justify-between">
+                    <h5 className="font-medium text-white">Budget Control</h5>
+                    <div className="flex items-center space-x-2">
                       <Checkbox
-                        id={value}
-                        checked={formData.selectedTenureGroups.includes(value)}
+                        id="budgetControl"
+                        checked={formData.budgetControlEnabled}
+                        onCheckedChange={(checked) => updateField("budgetControlEnabled", checked)}
                         className="border-blue-400 bg-slate-600"
-                        onCheckedChange={(checked) => {
-                          if (checked) {
-                            updateField("selectedTenureGroups", [...formData.selectedTenureGroups, value]);
-                          } else {
-                            updateField("selectedTenureGroups", formData.selectedTenureGroups.filter((t) => t !== value));
-                          }
-                        }}
                       />
-                      <Label htmlFor={value} className="cursor-pointer text-white text-sm font-medium">
-                        {value === "0-6months" && "0-6 Months"}
-                        {value === "6-12months" && "6-12 Months"}
-                        {value === "1-2years" && "1-2 Years"}
-                        {value === "2-5years" && "2-5 Years"}
-                        {value === "5plus-years" && "5+ Years"}
+                      <Label htmlFor="budgetControl" className="cursor-pointer text-white text-sm">
+                        Enable
                       </Label>
                     </div>
-                  ))}
+                  </div>
+
+                  {formData.budgetControlEnabled ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="budgetControlLimit" className="text-white">Budget Limit *</Label>
+                      <Input
+                        id="budgetControlLimit"
+                        type="number"
+                        placeholder="100000"
+                        value={formData.budgetControlLimit}
+                        onChange={(e) => updateField("budgetControlLimit", e.target.value)}
+                        className="bg-slate-700 border-gray-300 text-white"
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">Enable to set budget limits</p>
+                  )}
                 </div>
               </div>
             </div>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-12">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-6">
+                <h4 className="font-medium text-white">Configuration Summary</h4>
+                <div className="space-y-3 text-sm text-gray-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Budget Name</span>
+                    <span className="text-white font-medium">{formData.budgetName || "Not specified"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Budget Period</span>
+                    <span>{formData.startDate && formData.endDate ? `${formData.startDate} → ${formData.endDate}` : "Not specified"}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Description</span>
+                    <p className="mt-1 text-gray-200">{formData.description || "No description provided."}</p>
+                  </div>
+                </div>
+              </div>
 
-            <div className="bg-slate-700/50 rounded-lg p-4 space-y-5 lg:col-span-5 min-h-[420px]">
-              <h4 className="font-medium text-white">Approval Hierarchy</h4>
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
+                <h4 className="font-medium text-white">Data Control</h4>
+                <div className="space-y-3 text-sm text-gray-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Currency</span>
+                    <span>{getCurrencyLabel(formData.currency)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Min Limit</span>
+                    <span>{formData.limitMin || "Not specified"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Max Limit</span>
+                    <span>{formData.limitMax || "Not specified"}</span>
+                  </div>
+                </div>
+              </div>
 
-              {[1, 2, 3].map((level) => {
-                const approvers = level === 1 ? approvalsL1 : level === 2 ? approvalsL2 : approvalsL3;
-                const primaryField = level === 1 ? "approverL1" : level === 2 ? "approverL2" : "approverL3";
-                const backupField = level === 1 ? "backupApproverL1" : level === 2 ? "backupApproverL2" : "backupApproverL3";
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
+                <h4 className="font-medium text-white">Payroll & Budget Control</h4>
+                <div className="space-y-3 text-sm text-gray-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Payroll Cycle</span>
+                    <span>{getPayCycleLabel(formData.payCycle)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Budget Control</span>
+                    <span>{formData.budgetControlEnabled ? "Enabled" : "Disabled"}</span>
+                  </div>
+                  {formData.budgetControlEnabled && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400">Budget Limit</span>
+                      <span>{formData.budgetControlLimit || "Not specified"}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
 
-                return (
-                  <div key={level} className="space-y-3">
-                    <h5 className="font-medium text-white">Level {level}</h5>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label className="text-white text-sm">Primary *</Label>
-                        <Select
-                          value={formData[primaryField]}
-                          onValueChange={(value) => {
-                            updateField(primaryField, value);
-                            if (formData[backupField] === value) {
-                              updateField(backupField, "");
-                            }
-                          }}
-                          disabled={approvalsLoading}
-                        >
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                            <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"} />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-gray-300">
-                            {approvers.map((approver) => (
-                              <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
-                                {approver.first_name} {approver.last_name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-white text-sm">Backup *</Label>
-                        <Select
-                          value={formData[backupField]}
-                          onValueChange={(value) => updateField(backupField, value)}
-                          disabled={approvalsLoading}
-                        >
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                            <SelectValue placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"} />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-gray-300">
-                            {approvers
-                              .filter((approver) => approver.user_id !== formData[primaryField])
-                              .map((approver) => (
-                                <SelectItem key={approver.user_id} value={approver.user_id} className="text-white">
-                                  {approver.first_name} {approver.last_name}
-                                </SelectItem>
-                              ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5">
+                <h4 className="font-medium text-white">Organization Scope</h4>
+                <div className="space-y-3">
+                  <div>
+                    <span className="text-xs text-gray-400 uppercase">Affected OUs</span>
+                    <div className="mt-2 space-y-1">
+                      {affectedPreviewLines.length ? (
+                        affectedPreviewLines.map((line) => (
+                          <div key={line.key} className="text-xs text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
+                            {line.text}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-xs text-gray-400">Not specified</div>
+                      )}
                     </div>
                   </div>
-                );
-              })}
+                  <div>
+                    <span className="text-xs text-gray-400 uppercase">Accessible OUs</span>
+                    <div className="mt-2 space-y-1">
+                      {accessiblePreviewLines.length ? (
+                        accessiblePreviewLines.map((line) => (
+                          <div key={line.key} className="text-xs text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
+                            {line.text}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-xs text-gray-400">Not specified</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-4">
+                <h4 className="font-medium text-white">Location & Client Scope</h4>
+                <div className="space-y-3 text-sm text-gray-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Geo</span>
+                    <span>{formData.countries?.[0] || "Not specified"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Site Location</span>
+                    <span>{formData.siteLocation?.[0] || "Not specified"}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Clients</span>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {formData.clients?.length ? (
+                        formData.clients.map((client) => (
+                          <span key={client} className="text-xs bg-slate-800/60 px-2 py-1 rounded">
+                            {client}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-xs text-gray-400">Not specified</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Tenure Groups</span>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {formData.selectedTenureGroups?.length ? (
+                        formData.selectedTenureGroups.map((tenure) => (
+                          <span key={tenure} className="text-xs bg-slate-800/60 px-2 py-1 rounded">
+                            {tenure}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-xs text-gray-400">Not specified</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
+                <h4 className="font-medium text-white">Approval Hierarchy</h4>
+                <div className="space-y-3 text-sm text-gray-200">
+                  <div>
+                    <span className="text-xs text-gray-400 uppercase">L1</span>
+                    <p className="mt-1">Primary: {getApproverName(formData.approverL1)}</p>
+                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL1)}</p>
+                  </div>
+                  <div>
+                    <span className="text-xs text-gray-400 uppercase">L2</span>
+                    <p className="mt-1">Primary: {getApproverName(formData.approverL2)}</p>
+                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL2)}</p>
+                  </div>
+                  <div>
+                    <span className="text-xs text-gray-400 uppercase">L3</span>
+                    <p className="mt-1">Primary: {getApproverName(formData.approverL3)}</p>
+                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL3)}</p>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </CardContent>
       </Card>
 
       <Card className="bg-slate-800 border-slate-700">
         <CardContent className="py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-gray-400">All required fields must be completed before submitting.</div>
-            <Button onClick={handleSubmit} disabled={isSubmitting} className="bg-green-600 hover:bg-green-700 text-white">
-              {isSubmitting ? (
+            <div className="text-sm text-gray-400">
+              {viewStep === "review"
+                ? "Review the details before creating the configuration."
+                : "All required fields must be completed before continuing."}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {viewStep === "review" ? (
                 <>
-                  <Loader className="mr-2 h-4 w-4 animate-spin" />
-                  Creating...
+                  <Button
+                    variant="outline"
+                    onClick={() => setViewStep("form")}
+                    className="border-slate-500 text-white"
+                  >
+                    Back to Edit
+                  </Button>
+                  <Button onClick={handleSubmit} disabled={isSubmitting} className="bg-green-600 hover:bg-green-700 text-white">
+                    {isSubmitting ? (
+                      <>
+                        <Loader className="mr-2 h-4 w-4 animate-spin" />
+                        Creating...
+                      </>
+                    ) : (
+                      <>
+                        <Check className="mr-2 h-4 w-4" />
+                        Create Configuration
+                      </>
+                    )}
+                  </Button>
                 </>
               ) : (
-                <>
-                  <Check className="mr-2 h-4 w-4" />
-                  Create Configuration
-                </>
+                <Button onClick={handleNext} className="bg-pink-500 hover:bg-pink-600 text-white">
+                  Next: Review
+                </Button>
               )}
-            </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
 
       <Dialog open={successModalOpen} onOpenChange={setSuccessModalOpen}>
         <DialogContent className="bg-slate-800 border-slate-600 text-white max-w-md">
-          <button
-            onClick={() => setSuccessModalOpen(false)}
-            className="absolute right-4 top-4 text-sm text-gray-300 hover:text-white"
-          >
-            Close ({successCountdown}s)
-          </button>
-          <DialogHeader>
-            <DialogTitle className="text-white">Configuration Created</DialogTitle>
-            <DialogDescription className="text-gray-400">
-              The budget configuration was created successfully.
-            </DialogDescription>
-          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 rounded-full bg-green-500/20 flex items-center justify-center">
+                <CheckCircle2 className="h-5 w-5 text-green-400" />
+              </div>
+              <div>
+                <DialogTitle className="text-white">Configuration Created</DialogTitle>
+                <DialogDescription className="text-gray-400">
+                  The budget configuration was created successfully.
+                </DialogDescription>
+              </div>
+            </div>
+            <div className="flex items-center justify-between text-xs text-gray-400">
+              <span>Auto-closing in {successCountdown}s</span>
+              <Button
+                variant="outline"
+                onClick={() => setSuccessModalOpen(false)}
+                className="border-slate-500 text-white"
+              >
+                Close now
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

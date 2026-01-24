@@ -39,6 +39,7 @@ export {
 export { Input } from './input';
 export { Label } from './label';
 export { MultiSelect } from './multi-select';
+export { SearchableSelect } from './searchable-select';
 export { Popover, PopoverTrigger, PopoverContent } from './popover';
 export { Progress } from './progress';
 export { 

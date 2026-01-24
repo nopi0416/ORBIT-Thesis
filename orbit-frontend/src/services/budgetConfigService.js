@@ -501,6 +501,54 @@ export const getOrganizationGeoLocations = async (token) => {
 };
 
 /**
+ * GET - Get organization geo/location mappings by org IDs
+ */
+export const getOrganizationGeoLocationsByOrg = async (orgIds = [], token) => {
+  try {
+    const query = orgIds.length ? `?org_id=${encodeURIComponent(orgIds.join(','))}` : '';
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/organization-geo-location/by-org${query}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch organization geo/location mappings');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching organization geo/location mappings by org:', error);
+    throw error;
+  }
+};
+
+/**
+ * GET - Get clients by parent org IDs
+ */
+export const getClientsByParentOrg = async (orgIds = [], token) => {
+  try {
+    const query = orgIds.length ? `?org_id=${encodeURIComponent(orgIds.join(','))}` : '';
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/clients/by-org${query}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch clients by organization');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching clients by organization:', error);
+    throw error;
+  }
+};
+
+/**
  * GET - Get all approvers grouped by level (L1, L2, L3)
  */
 export const getAllApprovers = async (token) => {
@@ -599,6 +647,8 @@ export default {
   getGeoList,
   getLocations,
   getOrganizationGeoLocations,
+  getOrganizationGeoLocationsByOrg,
+  getClientsByParentOrg,
   
   // Real Approvers Data
   getAllApprovers,

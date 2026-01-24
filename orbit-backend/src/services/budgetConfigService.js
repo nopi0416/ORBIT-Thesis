@@ -1056,6 +1056,87 @@ export class BudgetConfigService {
   }
 
   /**
+   * Get organization to geo/location mapping filtered by org IDs
+   */
+  static async getOrganizationGeoLocationsByOrgIds(orgIds = []) {
+    try {
+      if (!orgIds.length) {
+        return { success: true, data: [] };
+      }
+
+      const { data, error } = await supabase
+        .from('tblorganization_to_geo_location')
+        .select(`
+          org_geo_loc_id,
+          org_id,
+          geo_id,
+          location_id,
+          tblorganization!inner ( org_id, org_name ),
+          tblgeo!inner ( geo_id, geo_code, geo_name ),
+          tbllocation!inner ( location_id, location_code, location_name )
+        `)
+        .in('org_id', orgIds);
+
+      if (error) throw error;
+
+      const normalized = (data || []).map((row) => ({
+        org_geo_loc_id: row.org_geo_loc_id,
+        org_id: row.org_id,
+        org_name: row.tblorganization?.org_name,
+        geo_id: row.geo_id,
+        geo_code: row.tblgeo?.geo_code,
+        geo_name: row.tblgeo?.geo_name,
+        location_id: row.location_id,
+        location_code: row.tbllocation?.location_code,
+        location_name: row.tbllocation?.location_name,
+      }));
+
+      return {
+        success: true,
+        data: normalized,
+      };
+    } catch (error) {
+      console.error('Error fetching organization geo/location mapping by org IDs:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
+   * Get clients by parent organization IDs
+   */
+  static async getClientsByParentOrgIds(parentOrgIds = []) {
+    try {
+      if (!parentOrgIds.length) {
+        return { success: true, data: [] };
+      }
+
+      const { data, error } = await supabase
+        .from('tblclient_organization')
+        .select('client_org_id, parent_org_id, client_code, client_name, client_status')
+        .in('parent_org_id', parentOrgIds)
+        .order('client_name', { ascending: true });
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: data || [],
+      };
+    } catch (error) {
+      console.error('Error fetching clients by parent org IDs:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
    * Fetch organizations by level for hierarchical display
    * Level 0 = Parent orgs, Level 1 = Children, Level 2 = Grandchildren, etc.
    */
