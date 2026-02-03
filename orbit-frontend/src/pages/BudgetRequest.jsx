@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useAuth } from "../context/AuthContext";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
 import budgetConfigService from "../services/budgetConfigService";
+import { connectWebSocket, addWebSocketListener } from "../services/realtimeService";
 import currencyData from "../data/currencies.json";
 import * as currencyCodes from "currency-codes/index.js";
 
@@ -122,6 +123,7 @@ const getApprovalStatusInfo = (status) => {
 export default function BudgetConfigurationPage() {
   const { user } = useAuth();
   const userRole = user?.role || "requestor";
+  const [activeTab, setActiveTab] = useState("list");
 
   return (
     <div className="flex flex-col h-full">
@@ -131,7 +133,7 @@ export default function BudgetConfigurationPage() {
       />
 
       <div className="flex-1 p-6">
-        <Tabs defaultValue="list" className="space-y-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="bg-slate-800 border-slate-700 p-1">
             <TabsTrigger
               value="list"
@@ -148,11 +150,11 @@ export default function BudgetConfigurationPage() {
           </TabsList>
 
           <TabsContent value="list">
-            <ConfigurationList userRole={userRole} />
+            {activeTab === "list" && <ConfigurationList userRole={userRole} />}
           </TabsContent>
 
           <TabsContent value="create">
-            <CreateConfiguration />
+            {activeTab === "create" && <CreateConfiguration />}
           </TabsContent>
         </Tabs>
       </div>
@@ -178,6 +180,38 @@ function ConfigurationList() {
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
+  const transformConfig = (config) => {
+    const startDate = config.start_date || config.startDate || null;
+    const endDate = config.end_date || config.endDate || null;
+    const dateRangeLabel = startDate && endDate ? `${startDate} → ${endDate}` : "Not specified";
+
+    return {
+      id: config.budget_id || config.id,
+      name: config.budget_name || config.name || "Unnamed Configuration",
+      description: config.description || config.budget_description || "No description provided",
+      startDate,
+      endDate,
+      dateRangeLabel,
+      limitMin: config.min_limit || config.limitMin || 0,
+      limitMax: config.max_limit || config.limitMax || 0,
+      budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
+      budgetLimit: config.budget_limit || config.budgetLimit || config.max_limit || 0,
+      payCycle: config.pay_cycle || config.payCycle || "—",
+      currency: config.currency || config.currency_code || config.currencyCode || "—",
+      geo: parseStoredList(config.geo || config.countries),
+      location: parseStoredList(config.location || config.siteLocation),
+      clients: parseStoredList(config.client || config.clients),
+      approvers: config.approvers || config.approval_hierarchy || [],
+      approverL1: config.approver_l1 || config.approverL1 || config.approver_l1_id || "",
+      backupApproverL1: config.backup_approver_l1 || config.backupApproverL1 || config.backup_approver_l1_id || "",
+      approverL2: config.approver_l2 || config.approverL2 || config.approver_l2_id || "",
+      backupApproverL2: config.backup_approver_l2 || config.backupApproverL2 || config.backup_approver_l2_id || "",
+      approverL3: config.approver_l3 || config.approverL3 || config.approver_l3_id || "",
+      backupApproverL3: config.backup_approver_l3 || config.backupApproverL3 || config.backup_approver_l3_id || "",
+      approvalStatus: config.approvalStatus || "no_submission",
+    };
+  };
+
   useEffect(() => {
     const fetchConfigurations = async () => {
       setLoading(true);
@@ -185,38 +219,7 @@ function ConfigurationList() {
       try {
         const token = user?.token || localStorage.getItem("authToken") || "";
         const data = await budgetConfigService.getBudgetConfigurations({}, token);
-        const transformed = (data || []).map((config) => {
-          const startDate = config.start_date || config.startDate || null;
-          const endDate = config.end_date || config.endDate || null;
-          const dateRangeLabel = startDate && endDate ? `${startDate} → ${endDate}` : "Not specified";
-
-          return {
-            id: config.budget_id || config.id,
-            name: config.budget_name || config.name || "Unnamed Configuration",
-            description: config.description || config.budget_description || "No description provided",
-            startDate,
-            endDate,
-            dateRangeLabel,
-            limitMin: config.min_limit || config.limitMin || 0,
-            limitMax: config.max_limit || config.limitMax || 0,
-            budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
-            budgetLimit: config.budget_limit || config.budgetLimit || config.max_limit || 0,
-            payCycle: config.pay_cycle || config.payCycle || "—",
-            currency: config.currency || config.currency_code || config.currencyCode || "—",
-            geo: parseStoredList(config.geo || config.countries),
-            location: parseStoredList(config.location || config.siteLocation),
-            clients: parseStoredList(config.client || config.clients),
-            approvers: config.approvers || config.approval_hierarchy || [],
-            approverL1: config.approver_l1 || config.approverL1 || config.approver_l1_id || "",
-            backupApproverL1: config.backup_approver_l1 || config.backupApproverL1 || config.backup_approver_l1_id || "",
-            approverL2: config.approver_l2 || config.approverL2 || config.approver_l2_id || "",
-            backupApproverL2: config.backup_approver_l2 || config.backupApproverL2 || config.backup_approver_l2_id || "",
-            approverL3: config.approver_l3 || config.approverL3 || config.approver_l3_id || "",
-            backupApproverL3: config.backup_approver_l3 || config.backupApproverL3 || config.backup_approver_l3_id || "",
-            approvalStatus: config.approvalStatus || "no_submission",
-          };
-        });
-        setConfigurations(transformed);
+        setConfigurations((data || []).map(transformConfig));
       } catch (err) {
         console.error("Error fetching configurations:", err);
         setError(err.message || "Failed to load configurations");
@@ -228,6 +231,46 @@ function ConfigurationList() {
 
     fetchConfigurations();
   }, [user]);
+
+  useEffect(() => {
+    connectWebSocket();
+    const unsubscribe = addWebSocketListener(async (message) => {
+      if (message?.event !== "budget_config_updated") return;
+      const payload = message?.payload || {};
+      const budgetId = payload.budget_id;
+
+      if (payload.action === "deleted" && budgetId) {
+        setConfigurations((prev) => prev.filter((config) => config.id !== budgetId));
+        if (selectedConfig?.id === budgetId) {
+          setSelectedConfig(null);
+          setDetailsOpen(false);
+        }
+        return;
+      }
+
+      if (!budgetId) return;
+      try {
+        const updated = await budgetConfigService.getBudgetConfigurationById(budgetId, token);
+        if (!updated) return;
+        const normalized = transformConfig(updated);
+        setConfigurations((prev) => {
+          const exists = prev.some((config) => config.id === normalized.id);
+          if (!exists) return [normalized, ...prev];
+          return prev.map((config) => (config.id === normalized.id ? normalized : config));
+        });
+
+        if (selectedConfig?.id === normalized.id) {
+          setSelectedConfig((prev) => ({ ...prev, ...normalized }));
+        }
+      } catch (err) {
+        console.error("Realtime config update failed:", err);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [token, selectedConfig?.id]);
 
   useEffect(() => {
     if (!selectedConfig) return;
@@ -404,369 +447,6 @@ function ConfigurationList() {
               </div>
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-12">
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5 min-h-[420px]">
-                <h4 className="font-medium text-white">Organization</h4>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label className="text-white text-sm">Affected OUs</Label>
-                    <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
-                      {organizationsLoading ? (
-                        <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
-                      ) : parentOrgs.length === 0 ? (
-                        <div className="text-gray-400 text-sm p-2">No organizations available</div>
-                      ) : (
-                        parentOrgs.map((parent) => {
-                          const isParentSelected = formData.affectedOUPaths.some((path) => path[0] === parent.org_id);
-
-                          const togglePath = (newPath) => {
-                            const pathExists = formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
-                            if (pathExists) {
-                              updateField("affectedOUPaths", formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
-                            } else {
-                              const nextPaths = [...formData.affectedOUPaths, newPath];
-                              if (newPath.length > 1) {
-                                const parentPath = [newPath[0]];
-                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                                if (!parentExists) nextPaths.push(parentPath);
-                              }
-                              updateField("affectedOUPaths", nextPaths);
-                            }
-                          };
-
-                          return (
-                            <div key={parent.org_id} className="space-y-0">
-                              <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                <Checkbox
-                                  id={`ou-${parent.org_id}`}
-                                  checked={isParentSelected}
-                                  onCheckedChange={() => togglePath([parent.org_id])}
-                                  className="border-pink-400 bg-slate-600 h-4 w-4"
-                                />
-                                <span className="text-white text-xs">{parent.org_name}</span>
-                              </div>
-
-                              {childOrgMap[parent.org_id] && (
-                                <div className="ml-4 space-y-0">
-                                  {childOrgMap[parent.org_id].map((child) => {
-                                    const isChildSelected = formData.affectedOUPaths.some((path) => path[1] === child.org_id);
-                                    return (
-                                      <div key={child.org_id} className="space-y-0">
-                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                          <Checkbox
-                                            id={`ou-${child.org_id}`}
-                                            checked={isChildSelected}
-                                            onCheckedChange={() => togglePath([parent.org_id, child.org_id])}
-                                            className="border-pink-400 bg-slate-600 h-4 w-4"
-                                          />
-                                          <span className="text-slate-400 text-xs">↳</span>
-                                          <span className="text-gray-300 text-xs">{child.org_name}</span>
-                                        </div>
-
-                                        {grandchildOrgMap[child.org_id] && (
-                                          <div className="ml-4 space-y-0">
-                                            {grandchildOrgMap[child.org_id].map((grandchild) => {
-                                              const isGrandchildSelected = formData.affectedOUPaths.some((path) => path[2] === grandchild.org_id);
-                                              return (
-                                                <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                                  <Checkbox
-                                                    id={`ou-${grandchild.org_id}`}
-                                                    checked={isGrandchildSelected}
-                                                    onCheckedChange={() => togglePath([parent.org_id, child.org_id, grandchild.org_id])}
-                                                    className="border-pink-400 bg-slate-600 h-4 w-4"
-                                                  />
-                                                  <span className="text-slate-500 text-xs">↳</span>
-                                                  <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
-                                                </div>
-                                              );
-                                            })}
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-
-                    {formData.affectedOUPaths.length > 0 && (
-                      <div className="bg-pink-900/20 border border-pink-700/50 rounded p-2 space-y-1">
-                        {buildAffectedPreviewLines().map((line) => (
-                          <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
-                            <span>{line.text}</span>
-                            <button
-                              onClick={() => removeAffectedByScope(line.scope)}
-                              className="text-red-400 hover:text-red-300"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label className="text-white text-sm">Accessible OUs</Label>
-                    <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
-                      {organizationsLoading ? (
-                        <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
-                      ) : parentOrgs.length === 0 ? (
-                        <div className="text-gray-400 text-sm p-2">No organizations available</div>
-                      ) : (
-                        parentOrgs.map((parent) => {
-                          const isParentSelected = formData.accessibleOUPaths.some((path) => path[0] === parent.org_id);
-
-                          const toggleAccessPath = (newPath) => {
-                            const pathExists = formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
-                            if (pathExists) {
-                              updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
-                            } else {
-                              const nextPaths = [...formData.accessibleOUPaths, newPath];
-                              if (newPath.length > 1) {
-                                const parentPath = [newPath[0]];
-                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                                if (!parentExists) nextPaths.push(parentPath);
-                              }
-                              updateField("accessibleOUPaths", nextPaths);
-                            }
-                          };
-
-                          return (
-                            <div key={parent.org_id} className="space-y-0">
-                              <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                <Checkbox
-                                  id={`access-ou-${parent.org_id}`}
-                                  checked={isParentSelected}
-                                  onCheckedChange={() => toggleAccessPath([parent.org_id])}
-                                  className="border-blue-400 bg-slate-600 h-4 w-4"
-                                />
-                                <span className="text-white text-xs">{parent.org_name}</span>
-                              </div>
-
-                              {childOrgMap[parent.org_id] && (
-                                <div className="ml-4 space-y-0">
-                                  {childOrgMap[parent.org_id].map((child) => {
-                                    const isChildSelected = formData.accessibleOUPaths.some((path) => path[1] === child.org_id);
-                                    return (
-                                      <div key={child.org_id} className="space-y-0">
-                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                          <Checkbox
-                                            id={`access-ou-${child.org_id}`}
-                                            checked={isChildSelected}
-                                            onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id])}
-                                            className="border-blue-400 bg-slate-600 h-4 w-4"
-                                          />
-                                          <span className="text-slate-400 text-xs">↳</span>
-                                          <span className="text-gray-300 text-xs">{child.org_name}</span>
-                                        </div>
-
-                                        {grandchildOrgMap[child.org_id] && (
-                                          <div className="ml-4 space-y-0">
-                                            {grandchildOrgMap[child.org_id].map((grandchild) => {
-                                              const isGrandchildSelected = formData.accessibleOUPaths.some((path) => path[2] === grandchild.org_id);
-                                              return (
-                                                <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
-                                                  <Checkbox
-                                                    id={`access-ou-${grandchild.org_id}`}
-                                                    checked={isGrandchildSelected}
-                                                    onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id, grandchild.org_id])}
-                                                    className="border-blue-400 bg-slate-600 h-4 w-4"
-                                                  />
-                                                  <span className="text-slate-500 text-xs">↳</span>
-                                                  <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
-                                                </div>
-                                              );
-                                            })}
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-
-                    {formData.accessibleOUPaths.length > 0 && (
-                      <div className="bg-blue-900/20 border border-blue-700/50 rounded p-2 space-y-1">
-                        {buildAccessiblePreviewLines().map((line) => (
-                          <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
-                            <span>{line.text}</span>
-                            <button
-                              onClick={() => removeAccessibleByScope(line.scope)}
-                              className="text-red-400 hover:text-red-300"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-2 min-h-[420px]">
-                <div className="space-y-3">
-                  <h4 className="font-medium text-white">Location & Client Scope</h4>
-                  <div className="space-y-2">
-                    <Label className="text-white text-xs">Geo (Country/Region)</Label>
-                    <SearchableSelect
-                      value={formData.countries.length > 0 ? formData.countries[0] : ""}
-                      onValueChange={(value) => {
-                        updateField("countries", value ? [value] : []);
-                        updateField("siteLocation", []);
-                        updateField("clients", []);
-                      }}
-                      options={availableGeoOptions}
-                      disabled={!hasAffectedOu || orgScopeLoading || availableGeoOptions.length === 0}
-                      placeholder={
-                        !hasAffectedOu
-                          ? "Select Affected OU"
-                          : orgScopeLoading
-                            ? "Loading geo..."
-                            : availableGeoOptions.length
-                              ? "Select country"
-                              : "No geo available"
-                      }
-                      searchPlaceholder="Search geo..."
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-white text-xs">Site Location</Label>
-                    <SearchableSelect
-                      value={formData.siteLocation.length > 0 ? formData.siteLocation[0] : ""}
-                      onValueChange={(value) => {
-                        updateField("siteLocation", value ? [value] : []);
-                        updateField("clients", []);
-                      }}
-                      options={availableLocationOptions}
-                      disabled={!hasCountries || orgScopeLoading || availableLocationOptions.length === 0}
-                      placeholder={
-                        !hasCountries
-                          ? "Select Geo"
-                          : orgScopeLoading
-                            ? "Loading locations..."
-                            : availableLocationOptions.length
-                              ? "Select location"
-                              : "No locations available"
-                      }
-                      searchPlaceholder="Search location..."
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-white text-xs">Clients</Label>
-                    <MultiSelect
-                      options={availableClientOptions}
-                      selected={formData.clients}
-                      onChange={(selected) => updateField("clients", selected)}
-                      placeholder={
-                        !hasLocation
-                          ? "Select Location"
-                          : orgScopeLoading
-                            ? "Loading clients..."
-                            : availableClientOptions.length
-                              ? "Select clients"
-                              : "No clients available"
-                      }
-                      hasAllOption={true}
-                      disabled={!hasLocation || orgScopeLoading || availableClientOptions.length === 0}
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-slate-600/60 space-y-3">
-                  <h4 className="font-medium text-white">Tenure Group</h4>
-                  <div className="grid grid-cols-2 gap-2">
-                    {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
-                      <div key={value} className="flex items-center space-x-2">
-                        <Checkbox
-                          id={value}
-                          checked={formData.selectedTenureGroups.includes(value)}
-                          className="border-blue-400 bg-slate-600"
-                          onCheckedChange={(checked) => {
-                            if (checked) {
-                              updateField("selectedTenureGroups", [...formData.selectedTenureGroups, value]);
-                            } else {
-                              updateField("selectedTenureGroups", formData.selectedTenureGroups.filter((t) => t !== value));
-                            }
-                          }}
-                        />
-                        <Label htmlFor={value} className="cursor-pointer text-white text-sm font-medium">
-                          {value === "0-6months" && "0-6 Months"}
-                          {value === "6-12months" && "6-12 Months"}
-                          {value === "1-2years" && "1-2 Years"}
-                          {value === "2-5years" && "2-5 Years"}
-                          {value === "5plus-years" && "5+ Years"}
-                        </Label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-5 lg:col-span-5 min-h-[420px]">
-                <h4 className="font-medium text-white">Approval Hierarchy</h4>
-
-                {[1, 2, 3].map((level) => {
-                  const approvers = level === 1 ? approvalsL1 : level === 2 ? approvalsL2 : approvalsL3;
-                  const primaryField = level === 1 ? "approverL1" : level === 2 ? "approverL2" : "approverL3";
-                  const backupField = level === 1 ? "backupApproverL1" : level === 2 ? "backupApproverL2" : "backupApproverL3";
-
-                  return (
-                    <div key={level} className="space-y-3">
-                      <h5 className="font-medium text-white">Level {level}</h5>
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div className="space-y-2">
-                          <Label className="text-white text-sm">Primary *</Label>
-                          <SearchableSelect
-                            value={formData[primaryField]}
-                            onValueChange={(value) => {
-                              updateField(primaryField, value);
-                              if (formData[backupField] === value) {
-                                updateField(backupField, "");
-                              }
-                            }}
-                            options={approvers.map((approver) => ({
-                              value: approver.user_id,
-                              label: `${approver.first_name} ${approver.last_name}`,
-                            }))}
-                            disabled={approvalsLoading}
-                            placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
-                            searchPlaceholder="Search approver..."
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-white text-sm">Backup *</Label>
-                          <SearchableSelect
-                            value={formData[backupField]}
-                            onValueChange={(value) => updateField(backupField, value)}
-                            options={approvers
-                              .filter((approver) => approver.user_id !== formData[primaryField])
-                              .map((approver) => ({
-                                value: approver.user_id,
-                                label: `${approver.first_name} ${approver.last_name}`,
-                              }))}
-                            disabled={approvalsLoading}
-                            placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
-                            searchPlaceholder="Search backup..."
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
             <div className="md:col-span-2 space-y-2">
               <Label className="text-white">Geo</Label>
               <SearchableSelect
@@ -898,7 +578,7 @@ function ConfigurationList() {
       </Card>
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="bg-slate-800 border-slate-600 text-white max-w-2xl">
+        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[90vw] max-w-2xl">
           <DialogHeader>
             <DialogTitle className="text-white">{selectedConfig?.name || "Configuration"}</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -1852,7 +1532,8 @@ function CreateConfiguration() {
         </CardHeader>
         <CardContent className="grid gap-4">
           {viewStep === "form" ? (
-            <div className="grid gap-4 lg:grid-cols-12">
+            <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-12">
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-6">
                 <h4 className="font-medium text-white">Setup Configuration</h4>
                 <div className="grid gap-4 md:grid-cols-12 items-end">
@@ -2003,6 +1684,369 @@ function CreateConfiguration() {
                     <p className="text-sm text-gray-400">Enable to set budget limits</p>
                   )}
                 </div>
+              </div>
+              </div>
+              <div className="grid gap-4 lg:grid-cols-12">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5 min-h-[420px]">
+                <h4 className="font-medium text-white">Organization</h4>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-white text-sm">Affected OUs</Label>
+                    <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
+                      {organizationsLoading ? (
+                        <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
+                      ) : parentOrgs.length === 0 ? (
+                        <div className="text-gray-400 text-sm p-2">No organizations available</div>
+                      ) : (
+                        parentOrgs.map((parent) => {
+                          const isParentSelected = formData.affectedOUPaths.some((path) => path[0] === parent.org_id);
+
+                          const togglePath = (newPath) => {
+                            const pathExists = formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
+                            if (pathExists) {
+                              updateField("affectedOUPaths", formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                            } else {
+                              const nextPaths = [...formData.affectedOUPaths, newPath];
+                              if (newPath.length > 1) {
+                                const parentPath = [newPath[0]];
+                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
+                                if (!parentExists) nextPaths.push(parentPath);
+                              }
+                              updateField("affectedOUPaths", nextPaths);
+                            }
+                          };
+
+                          return (
+                            <div key={parent.org_id} className="space-y-0">
+                              <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                <Checkbox
+                                  id={`ou-${parent.org_id}`}
+                                  checked={isParentSelected}
+                                  onCheckedChange={() => togglePath([parent.org_id])}
+                                  className="border-pink-400 bg-slate-600 h-4 w-4"
+                                />
+                                <span className="text-white text-xs">{parent.org_name}</span>
+                              </div>
+
+                              {childOrgMap[parent.org_id] && (
+                                <div className="ml-4 space-y-0">
+                                  {childOrgMap[parent.org_id].map((child) => {
+                                    const isChildSelected = formData.affectedOUPaths.some((path) => path[1] === child.org_id);
+                                    return (
+                                      <div key={child.org_id} className="space-y-0">
+                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                          <Checkbox
+                                            id={`ou-${child.org_id}`}
+                                            checked={isChildSelected}
+                                            onCheckedChange={() => togglePath([parent.org_id, child.org_id])}
+                                            className="border-pink-400 bg-slate-600 h-4 w-4"
+                                          />
+                                          <span className="text-slate-400 text-xs">↳</span>
+                                          <span className="text-gray-300 text-xs">{child.org_name}</span>
+                                        </div>
+
+                                        {grandchildOrgMap[child.org_id] && (
+                                          <div className="ml-4 space-y-0">
+                                            {grandchildOrgMap[child.org_id].map((grandchild) => {
+                                              const isGrandchildSelected = formData.affectedOUPaths.some((path) => path[2] === grandchild.org_id);
+                                              return (
+                                                <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                  <Checkbox
+                                                    id={`ou-${grandchild.org_id}`}
+                                                    checked={isGrandchildSelected}
+                                                    onCheckedChange={() => togglePath([parent.org_id, child.org_id, grandchild.org_id])}
+                                                    className="border-pink-400 bg-slate-600 h-4 w-4"
+                                                  />
+                                                  <span className="text-slate-500 text-xs">↳</span>
+                                                  <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {formData.affectedOUPaths.length > 0 && (
+                      <div className="bg-pink-900/20 border border-pink-700/50 rounded p-2 space-y-1">
+                        {buildAffectedPreviewLines().map((line) => (
+                          <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
+                            <span>{line.text}</span>
+                            <button
+                              onClick={() => removeAffectedByScope(line.scope)}
+                              className="text-red-400 hover:text-red-300"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-white text-sm">Accessible OUs</Label>
+                    <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
+                      {organizationsLoading ? (
+                        <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
+                      ) : parentOrgs.length === 0 ? (
+                        <div className="text-gray-400 text-sm p-2">No organizations available</div>
+                      ) : (
+                        parentOrgs.map((parent) => {
+                          const isParentSelected = formData.accessibleOUPaths.some((path) => path[0] === parent.org_id);
+
+                          const toggleAccessPath = (newPath) => {
+                            const pathExists = formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
+                            if (pathExists) {
+                              updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                            } else {
+                              const nextPaths = [...formData.accessibleOUPaths, newPath];
+                              if (newPath.length > 1) {
+                                const parentPath = [newPath[0]];
+                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
+                                if (!parentExists) nextPaths.push(parentPath);
+                              }
+                              updateField("accessibleOUPaths", nextPaths);
+                            }
+                          };
+
+                          return (
+                            <div key={parent.org_id} className="space-y-0">
+                              <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                <Checkbox
+                                  id={`access-ou-${parent.org_id}`}
+                                  checked={isParentSelected}
+                                  onCheckedChange={() => toggleAccessPath([parent.org_id])}
+                                  className="border-blue-400 bg-slate-600 h-4 w-4"
+                                />
+                                <span className="text-white text-xs">{parent.org_name}</span>
+                              </div>
+
+                              {childOrgMap[parent.org_id] && (
+                                <div className="ml-4 space-y-0">
+                                  {childOrgMap[parent.org_id].map((child) => {
+                                    const isChildSelected = formData.accessibleOUPaths.some((path) => path[1] === child.org_id);
+                                    return (
+                                      <div key={child.org_id} className="space-y-0">
+                                        <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                          <Checkbox
+                                            id={`access-ou-${child.org_id}`}
+                                            checked={isChildSelected}
+                                            onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id])}
+                                            className="border-blue-400 bg-slate-600 h-4 w-4"
+                                          />
+                                          <span className="text-slate-400 text-xs">↳</span>
+                                          <span className="text-gray-300 text-xs">{child.org_name}</span>
+                                        </div>
+
+                                        {grandchildOrgMap[child.org_id] && (
+                                          <div className="ml-4 space-y-0">
+                                            {grandchildOrgMap[child.org_id].map((grandchild) => {
+                                              const isGrandchildSelected = formData.accessibleOUPaths.some((path) => path[2] === grandchild.org_id);
+                                              return (
+                                                <div key={grandchild.org_id} className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
+                                                  <Checkbox
+                                                    id={`access-ou-${grandchild.org_id}`}
+                                                    checked={isGrandchildSelected}
+                                                    onCheckedChange={() => toggleAccessPath([parent.org_id, child.org_id, grandchild.org_id])}
+                                                    className="border-blue-400 bg-slate-600 h-4 w-4"
+                                                  />
+                                                  <span className="text-slate-500 text-xs">↳</span>
+                                                  <span className="text-gray-400 text-xs">{grandchild.org_name}</span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {formData.accessibleOUPaths.length > 0 && (
+                      <div className="bg-blue-900/20 border border-blue-700/50 rounded p-2 space-y-1">
+                        {buildAccessiblePreviewLines().map((line) => (
+                          <div key={line.key} className="flex items-center justify-between text-xs text-gray-300 bg-slate-700/50 px-2 py-1 rounded">
+                            <span>{line.text}</span>
+                            <button
+                              onClick={() => removeAccessibleByScope(line.scope)}
+                              className="text-red-400 hover:text-red-300"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-2 min-h-[420px]">
+                <div className="space-y-3">
+                  <h4 className="font-medium text-white">Location & Client Scope</h4>
+                  <div className="space-y-2">
+                    <Label className="text-white text-xs">Geo (Country/Region)</Label>
+                    <SearchableSelect
+                      value={formData.countries.length > 0 ? formData.countries[0] : ""}
+                      onValueChange={(value) => {
+                        updateField("countries", value ? [value] : []);
+                        updateField("siteLocation", []);
+                        updateField("clients", []);
+                      }}
+                      options={availableGeoOptions}
+                      disabled={!hasAffectedOu || orgScopeLoading || availableGeoOptions.length === 0}
+                      placeholder={
+                        !hasAffectedOu
+                          ? "Select Affected OU"
+                          : orgScopeLoading
+                            ? "Loading geo..."
+                            : availableGeoOptions.length
+                              ? "Select country"
+                              : "No geo available"
+                      }
+                      searchPlaceholder="Search geo..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white text-xs">Site Location</Label>
+                    <SearchableSelect
+                      value={formData.siteLocation.length > 0 ? formData.siteLocation[0] : ""}
+                      onValueChange={(value) => {
+                        updateField("siteLocation", value ? [value] : []);
+                        updateField("clients", []);
+                      }}
+                      options={availableLocationOptions}
+                      disabled={!hasCountries || orgScopeLoading || availableLocationOptions.length === 0}
+                      placeholder={
+                        !hasCountries
+                          ? "Select Geo"
+                          : orgScopeLoading
+                            ? "Loading locations..."
+                            : availableLocationOptions.length
+                              ? "Select location"
+                              : "No locations available"
+                      }
+                      searchPlaceholder="Search location..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white text-xs">Clients</Label>
+                    <MultiSelect
+                      options={availableClientOptions}
+                      selected={formData.clients}
+                      onChange={(selected) => updateField("clients", selected)}
+                      placeholder={
+                        !hasLocation
+                          ? "Select Location"
+                          : orgScopeLoading
+                            ? "Loading clients..."
+                            : availableClientOptions.length
+                              ? "Select clients"
+                              : "No clients available"
+                      }
+                      hasAllOption={true}
+                      disabled={!hasLocation || orgScopeLoading || availableClientOptions.length === 0}
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-600/60 space-y-3">
+                  <h4 className="font-medium text-white">Tenure Group</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
+                      <div key={value} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={value}
+                          checked={formData.selectedTenureGroups.includes(value)}
+                          className="border-blue-400 bg-slate-600"
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              updateField("selectedTenureGroups", [...formData.selectedTenureGroups, value]);
+                            } else {
+                              updateField("selectedTenureGroups", formData.selectedTenureGroups.filter((t) => t !== value));
+                            }
+                          }}
+                        />
+                        <Label htmlFor={value} className="cursor-pointer text-white text-sm font-medium">
+                          {value === "0-6months" && "0-6 Months"}
+                          {value === "6-12months" && "6-12 Months"}
+                          {value === "1-2years" && "1-2 Years"}
+                          {value === "2-5years" && "2-5 Years"}
+                          {value === "5plus-years" && "5+ Years"}
+                        </Label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-5 lg:col-span-5 min-h-[420px]">
+                <h4 className="font-medium text-white">Approval Hierarchy</h4>
+
+                {[1, 2, 3].map((level) => {
+                  const approvers = level === 1 ? approvalsL1 : level === 2 ? approvalsL2 : approvalsL3;
+                  const primaryField = level === 1 ? "approverL1" : level === 2 ? "approverL2" : "approverL3";
+                  const backupField = level === 1 ? "backupApproverL1" : level === 2 ? "backupApproverL2" : "backupApproverL3";
+
+                  return (
+                    <div key={level} className="space-y-3">
+                      <h5 className="font-medium text-white">Level {level}</h5>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label className="text-white text-sm">Primary *</Label>
+                          <SearchableSelect
+                            value={formData[primaryField]}
+                            onValueChange={(value) => {
+                              updateField(primaryField, value);
+                              if (formData[backupField] === value) {
+                                updateField(backupField, "");
+                              }
+                            }}
+                            options={approvers.map((approver) => ({
+                              value: approver.user_id,
+                              label: `${approver.first_name} ${approver.last_name}`,
+                            }))}
+                            disabled={approvalsLoading}
+                            placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                            searchPlaceholder="Search approver..."
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-white text-sm">Backup *</Label>
+                          <SearchableSelect
+                            value={formData[backupField]}
+                            onValueChange={(value) => updateField(backupField, value)}
+                            options={approvers
+                              .filter((approver) => approver.user_id !== formData[primaryField])
+                              .map((approver) => ({
+                                value: approver.user_id,
+                                label: `${approver.first_name} ${approver.last_name}`,
+                              }))}
+                            disabled={approvalsLoading}
+                            placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                            searchPlaceholder="Search backup..."
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
               </div>
             </div>
           ) : (
@@ -2207,7 +2251,7 @@ function CreateConfiguration() {
       </Card>
 
       <Dialog open={successModalOpen} onOpenChange={setSuccessModalOpen}>
-        <DialogContent className="bg-slate-800 border-slate-600 text-white max-w-md">
+        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[90vw] max-w-md">
           <div className="space-y-4">
             <div className="flex items-start gap-3">
               <div className="h-10 w-10 rounded-full bg-green-500/20 flex items-center justify-center">

@@ -12,7 +12,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Badge } from '../components/ui/badge';
 import { useAuth } from '../context/AuthContext';
 import approvalRequestService from '../services/approvalRequestService';
-import { getApproversByLevel, getBudgetConfigurations, getOrganizations, getUserById } from '../services/budgetConfigService';
+import { getApproversByLevel, getBudgetConfigurationById, getBudgetConfigurations, getOrganizations, getUserById } from '../services/budgetConfigService';
+import { connectWebSocket, addWebSocketListener } from '../services/realtimeService';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -44,22 +45,32 @@ const normalizeConfig = (config) => ({
   department: config.department || config.budget_department || 'All',
   description: config.budget_description || config.description || '',
   maxAmount: config.max_limit || config.maxAmount || config.budgetControlLimit || config.total_budget || 0,
+  totalBudget: config.total_budget || config.totalBudget || config.total_budget_amount || config.budget_total || 0,
   usedAmount: config.budget_used || config.usedAmount || 0,
+  minLimit: config.min_limit || config.limitMin || 0,
+  maxLimit: config.max_limit || config.limitMax || config.maxAmount || 0,
   clients: parseStoredList(config.client || config.clients),
   clientSponsored: config.client_sponsored ?? config.clientSponsored ?? config.is_client_sponsored ?? null,
   approvers: Array.isArray(config.approvers) ? config.approvers : [],
   affectedOUPaths: parseStoredPaths(config.affected_ou || config.affectedOUPaths),
 });
 
-const normalizeRequest = (request) => ({
-  id: request.approval_request_id || request.id || request.request_id,
-  description: request.description || request.request_description || '',
-  amount: request.total_request_amount || request.amount || 0,
-  status: request.status || 'draft',
-  submittedAt: request.submitted_at || request.created_at || '',
-  budgetName: request.budget_name || request.configName || 'Budget Configuration',
-  requestNumber: request.request_number || request.requestNumber || null,
-});
+const normalizeRequest = (request) => {
+  const rawStatus = request.overall_status || request.status || request.submission_status || 'draft';
+  const submittedAt = request.submitted_at || request.created_at || '';
+  const status = rawStatus === 'draft' && submittedAt ? 'submitted' : rawStatus;
+
+  return {
+    id: request.approval_request_id || request.id || request.request_id,
+    budgetId: request.budget_id || request.budgetId || null,
+    description: request.description || request.request_description || '',
+    amount: request.total_request_amount || request.amount || 0,
+    status,
+    submittedAt,
+    budgetName: request.budget_name || request.configName || 'Budget Configuration',
+    requestNumber: request.request_number || request.requestNumber || null,
+  };
+};
 
 const getStatusBadgeClass = (status) => {
   switch (status) {
@@ -137,7 +148,10 @@ export default function ApprovalPage() {
     </div>
   );
 }
+
 function SubmitApproval({ userId, onRefresh, refreshKey }) {
+  const { user } = useAuth();
+  const userRole = user?.role || 'requestor';
   const [configurations, setConfigurations] = useState([]);
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState(null);
@@ -150,6 +164,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [myRequests, setMyRequests] = useState([]);
   const [requestsLoading, setRequestsLoading] = useState(false);
   const [requestsError, setRequestsError] = useState(null);
+
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState(null);
+  const [selectedRequest, setSelectedRequest] = useState(null);
+  const [requestDetailsData, setRequestDetailsData] = useState(null);
+  const [requestConfigDetails, setRequestConfigDetails] = useState(null);
+  const [detailSearch, setDetailSearch] = useState('');
 
   const [showModal, setShowModal] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
@@ -181,6 +203,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [submitError, setSubmitError] = useState(null);
   const [submitSuccess, setSubmitSuccess] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [amountWarning, setAmountWarning] = useState(null);
 
   const token = useMemo(() => getToken(), [refreshKey]);
   const companyId = 'caaa0000-0000-0000-0000-000000000001';
@@ -307,6 +330,68 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     fetchRequests();
   }, [userId, token, refreshKey]);
 
+  const applyRequestUpdate = async (requestId, action, submittedBy) => {
+    if (!requestId || !userId) return;
+    if (action === 'deleted') {
+      setMyRequests((prev) => prev.filter((item) => item.id !== requestId));
+      if (selectedRequest?.id === requestId) {
+        setDetailsOpen(false);
+      }
+      return;
+    }
+
+    if (submittedBy && submittedBy !== userId) return;
+
+    try {
+      const data = await approvalRequestService.getApprovalRequest(requestId, token);
+      if (!data || data.submitted_by !== userId) return;
+      const normalized = normalizeRequest(data);
+
+      setMyRequests((prev) => {
+        const exists = prev.some((item) => item.id === normalized.id);
+        if (!exists) return [normalized, ...prev];
+        return prev.map((item) => (item.id === normalized.id ? normalized : item));
+      });
+
+      if (selectedRequest?.id === requestId) {
+        setRequestDetailsData(data || null);
+        if (normalized.budgetId) {
+          const config = await getBudgetConfigurationById(normalized.budgetId, token);
+          setRequestConfigDetails(config || null);
+        }
+      }
+    } catch (error) {
+      console.error('Realtime request update failed:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (!userId) return;
+    connectWebSocket();
+    const unsubscribe = addWebSocketListener((message) => {
+      if (message?.event !== 'approval_request_updated') return;
+      const payload = message?.payload || {};
+      applyRequestUpdate(payload.request_id, payload.action, payload.submitted_by);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [userId, token, selectedRequest?.id]);
+
+  const getOrgName = (orgId) => {
+    const org = organizations.find((item) => item.org_id === orgId);
+    return org ? org.org_name : orgId;
+  };
+
+  const formatOuPaths = (paths) => {
+    if (!Array.isArray(paths) || paths.length === 0) return 'Not specified';
+    const readable = paths
+      .map((path) => (Array.isArray(path) ? path.map((id) => getOrgName(id)).join(' → ') : getOrgName(path)))
+      .filter(Boolean);
+    return readable.length ? readable.join(', ') : 'Not specified';
+  };
+
   useEffect(() => {
     const employeeId = individualRequest.employeeId?.trim();
     if (!employeeId) {
@@ -331,17 +416,100 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setEmployeeLookupError(null);
       try {
         const data = await approvalRequestService.getEmployeeByEid(employeeId, companyId, token);
+
+        const normalizeText = (value) => String(value || '').trim().toLowerCase();
+
+        const employeeDepartment =
+          data?.department || data?.dept || data?.department_name || data?.dept_name || data?.org_name || data?.ou_name || '';
+        const employeeOrgId = normalizeText(
+          data?.org_id || data?.ou_id || data?.org_unit_id || data?.department_id || ''
+        );
+        const employeeOrgName = employeeOrgId ? getOrgName(employeeOrgId) : '';
+
+        const employeeDeptCandidates = [
+          employeeDepartment,
+          data?.org_name || '',
+          data?.ou_name || '',
+          employeeOrgName || '',
+        ]
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+
+        const rawConfigDepartments =
+          selectedConfig?.departments ||
+          selectedConfig?.department ||
+          selectedConfig?.budget_department ||
+          selectedConfig?.budgetDepartment ||
+          '';
+
+        const configDepartmentNames = parseStoredList(rawConfigDepartments)
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+
+        const configOuPaths = parseStoredPaths(
+          selectedConfig?.affectedOUPaths || selectedConfig?.affected_ou || []
+        );
+        const configOuIds = new Set(
+          configOuPaths.flat().map((value) => normalizeText(value)).filter(Boolean)
+        );
+        const configOuNames = new Set(
+          configOuPaths
+            .map((path) => (Array.isArray(path) ? path[path.length - 1] : path))
+            .map((value) => normalizeText(getOrgName(value) || value))
+            .filter(Boolean)
+        );
+
+        const allowedDepartments = Array.from(
+          new Set([...configDepartmentNames, ...Array.from(configOuNames)])
+        );
+        const hasAllDepartments = allowedDepartments.includes('all');
+        const hasDepartmentFilter = allowedDepartments.length > 0 && !hasAllDepartments;
+        const departmentAllowed =
+          !hasDepartmentFilter || employeeDeptCandidates.some((value) => allowedDepartments.includes(value));
+
+        const employeePathRaw =
+          data?.ou_path || data?.org_path || data?.ou_hierarchy || data?.org_hierarchy || '';
+        const employeePath = parseStoredList(employeePathRaw).map((value) => normalizeText(value));
+
+        const hasOuFilter = configOuIds.size > 0 || configOuPaths.length > 0;
+        const ouAllowed =
+          !hasOuFilter ||
+          (employeeOrgId && configOuIds.has(employeeOrgId)) ||
+          (employeePath.length > 0 &&
+            configOuPaths.some((path) => {
+              const normalizedPath = path.map((value) => normalizeText(value)).filter(Boolean);
+              if (!normalizedPath.length) return false;
+              return normalizedPath.every((id, index) => employeePath[index] === id);
+            }));
+
+        if (!departmentAllowed || !ouAllowed) {
+          setEmployeeLookupError('Employee is not within the selected budget scope.');
+          setIndividualRequest((prev) => ({
+            ...prev,
+            employeeName: '',
+            email: '',
+            position: '',
+            employeeStatus: '',
+            geo: '',
+            location: '',
+            department: '',
+            hireDate: '',
+            terminationDate: '',
+          }));
+          return;
+        }
+
         setIndividualRequest((prev) => ({
           ...prev,
-          employeeName: data.name || '',
-          email: data.email || '',
-          position: data.position || '',
-          employeeStatus: data.employee_status || '',
-          geo: data.geo || '',
-          location: data.location || '',
-          department: data.department || '',
-          hireDate: data.hire_date || '',
-          terminationDate: data.termination_date || '',
+          employeeName: data?.employee_name || data?.fullname || data?.full_name || '',
+          email: data?.email || '',
+          position: data?.position || data?.job_title || '',
+          employeeStatus: data?.employment_status || data?.status || '',
+          geo: data?.geo || data?.region || '',
+          location: data?.location || data?.site || '',
+          department: employeeDepartment || employeeOrgName || '',
+          hireDate: data?.hire_date || data?.date_hired || '',
+          terminationDate: data?.termination_date || data?.end_date || '',
         }));
       } catch (error) {
         setEmployeeLookupError(error.message || 'Employee not found.');
@@ -363,8 +531,103 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [individualRequest.employeeId, companyId, token]);
+  }, [
+    individualRequest.employeeId,
+    companyId,
+    token,
+    selectedConfig?.id,
+    selectedConfig?.department,
+    selectedConfig?.departments,
+    selectedConfig?.budget_department,
+    selectedConfig?.affectedOUPaths,
+    selectedConfig?.affected_ou,
+    organizations,
+  ]);
 
+  useEffect(() => {
+    const fetchApprovers = async () => {
+      try {
+        const [l1Data, l2Data, l3Data] = await Promise.all([
+          getApproversByLevel('L1', token),
+          getApproversByLevel('L2', token),
+          getApproversByLevel('L3', token),
+        ]);
+        setApprovalsL1(l1Data || []);
+        setApprovalsL2(l2Data || []);
+        setApprovalsL3(l3Data || []);
+      } catch (error) {
+        console.error('Error fetching approvers:', error);
+        setApprovalsL1([]);
+        setApprovalsL2([]);
+        setApprovalsL3([]);
+      }
+    };
+
+    const fetchOrganizations = async () => {
+      try {
+        const data = await getOrganizations(token);
+        setOrganizations(data || []);
+      } catch (error) {
+        console.error('Error fetching organizations:', error);
+        setOrganizations([]);
+      }
+    };
+
+    fetchApprovers();
+    fetchOrganizations();
+  }, [token]);
+
+  useEffect(() => {
+    const hydrateApprovers = async () => {
+      if (!selectedConfig?.approvers?.length) return;
+
+      const needsHydration = selectedConfig.approvers.some(
+        (approver) =>
+          !approver.approver_name ||
+          !approver.approver_email ||
+          (approver.backup_approver && (!approver.backup_approver_name || !approver.backup_approver_email))
+      );
+
+      if (!needsHydration) return;
+
+      const loadUser = async (userId) => {
+        if (!userId || userDetailsCache[userId]) return userDetailsCache[userId] || null;
+        try {
+          const data = await getUserById(userId, token);
+          if (data) {
+            setUserDetailsCache((prev) => ({ ...prev, [userId]: data }));
+          }
+          return data || null;
+        } catch (error) {
+          console.error('Error fetching user details:', error);
+          return null;
+        }
+      };
+
+      const enriched = await Promise.all(
+        selectedConfig.approvers.map(async (approver) => {
+          const primaryDetails = await loadUser(approver.primary_approver);
+          const backupDetails = approver.backup_approver ? await loadUser(approver.backup_approver) : null;
+
+          return {
+            ...approver,
+            approver_name:
+              approver.approver_name ||
+              (primaryDetails ? `${primaryDetails.first_name || ''} ${primaryDetails.last_name || ''}`.trim() : null),
+            approver_email: approver.approver_email || primaryDetails?.email || null,
+            backup_approver_name:
+              approver.backup_approver_name ||
+              (backupDetails ? `${backupDetails.first_name || ''} ${backupDetails.last_name || ''}`.trim() : null),
+            backup_approver_email: approver.backup_approver_email || backupDetails?.email || null,
+          };
+        })
+      );
+
+      setSelectedConfig((prev) => (prev ? { ...prev, approvers: enriched } : prev));
+    };
+
+    hydrateApprovers();
+  }, [selectedConfig?.id, token]);
   const handleOpenModal = (config) => {
     setSelectedConfig(config);
     setRequestMode('individual');
@@ -392,6 +655,65 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     setSubmitError(null);
     setSubmitSuccess(null);
     setShowModal(true);
+  };
+
+  const handleOpenRequestDetails = async (request) => {
+    setSelectedRequest(request);
+    setDetailsOpen(true);
+    setDetailsLoading(true);
+    setDetailsError(null);
+    setRequestDetailsData(null);
+    setRequestConfigDetails(null);
+
+    try {
+      const data = await approvalRequestService.getApprovalRequest(request.id, token);
+      setRequestDetailsData(data || null);
+
+      if (request.budgetId) {
+        const config = await getBudgetConfigurationById(request.budgetId, token);
+        setRequestConfigDetails(config || null);
+      }
+    } catch (error) {
+      setDetailsError(error.message || 'Failed to load request details.');
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const refreshSelectedRequestDetails = async () => {
+    if (!selectedRequest?.id) return;
+    try {
+      const data = await approvalRequestService.getApprovalRequest(selectedRequest.id, token);
+      setRequestDetailsData(data || null);
+
+      if (selectedRequest.budgetId) {
+        const config = await getBudgetConfigurationById(selectedRequest.budgetId, token);
+        setRequestConfigDetails(config || null);
+      }
+    } catch (error) {
+      setDetailsError(error.message || 'Failed to refresh request details.');
+    }
+  };
+
+  useEffect(() => {
+    if (!detailsOpen) return undefined;
+    refreshSelectedRequestDetails();
+    return undefined;
+  }, [detailsOpen, selectedRequest?.id, token]);
+
+  const getApprovalBadgeClass = (status) => {
+    switch (status) {
+      case 'approved':
+        return 'bg-green-600 text-white';
+      case 'rejected':
+        return 'bg-red-600 text-white';
+      case 'pending':
+        return 'bg-yellow-500 text-white';
+      case 'escalated':
+        return 'bg-purple-500 text-white';
+      default:
+        return 'bg-slate-600 text-white';
+    }
   };
 
   const getValidUserId = (value) => {
@@ -438,18 +760,41 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       .join(' • ');
   };
 
-  const getOrgName = (orgId) => {
-    const org = organizations.find((item) => item.org_id === orgId);
-    return org ? org.org_name : orgId;
+  const workflowStages = ['L1', 'L2', 'L3', 'P'];
+  const getWorkflowStage = (status) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized.includes('l1')) return 'L1';
+    if (normalized.includes('l2')) return 'L2';
+    if (normalized.includes('l3')) return 'L3';
+    if (normalized.includes('payroll')) return 'P';
+    if (normalized === 'approved') return 'APPROVED';
+    if (normalized === 'rejected') return 'REJECTED';
+    return 'L1';
   };
-
-  const formatOuPaths = (paths) => {
-    if (!Array.isArray(paths) || paths.length === 0) return 'Not specified';
-    const readable = paths
-      .map((path) => (Array.isArray(path) ? path.map((id) => getOrgName(id)).join(' → ') : getOrgName(path)))
-      .filter(Boolean);
-    return readable.length ? readable.join(', ') : 'Not specified';
+  const getWorkflowBadgeClass = (stage, status) => {
+    const currentStage = getWorkflowStage(status);
+    if (currentStage === 'APPROVED') return 'bg-emerald-500 text-white';
+    if (currentStage === 'REJECTED' && stage === 'L1') return 'bg-red-500 text-white';
+    if (stage === currentStage) return 'bg-blue-500 text-white';
+    return 'bg-slate-700 text-slate-200';
   };
+  const renderWorkflowSummary = (status) => (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className="flex items-center gap-1">
+        {workflowStages.map((stage, index) => (
+          <React.Fragment key={stage}>
+            <span className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${getWorkflowBadgeClass(stage, status)}`}>
+              {stage}
+            </span>
+            {index < workflowStages.length - 1 && <span className="h-px w-3 bg-slate-600" />}
+          </React.Fragment>
+        ))}
+      </div>
+      <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${getStatusBadgeClass(status)}`}>
+        {String(status || 'submitted').replace(/_/g, ' ')}
+      </span>
+    </div>
+  );
 
   const handleDownloadTemplate = async () => {
     if (!bulkRewardType) {
@@ -579,6 +924,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return;
     }
 
+    const minLimitValue = Number(selectedConfig?.minLimit || 0);
+    const maxLimitValue = Number(selectedConfig?.maxLimit || 0);
+    const hasLimits = maxLimitValue > 0 || minLimitValue > 0;
+    const isOutOfRange =
+      hasLimits &&
+      ((minLimitValue > 0 && amountValue < minLimitValue) ||
+        (maxLimitValue > 0 && amountValue > maxLimitValue));
+
+    if (isOutOfRange && !individualRequest.notes?.trim()) {
+      setSubmitError('Amount is outside the configured range. Please add notes to proceed.');
+      return;
+    }
+
     const totalAmount = amountValue;
 
     setSubmitting(true);
@@ -685,8 +1043,137 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }
   };
 
+  const detailRecord = requestDetailsData || selectedRequest || {};
+  const detailStatus =
+    detailRecord.overall_status || detailRecord.status || selectedRequest?.status || 'draft';
+  const detailSubmittedAt =
+    detailRecord.submitted_at || detailRecord.created_at || selectedRequest?.submittedAt || '';
+  const detailAmount = detailRecord.total_request_amount || selectedRequest?.amount || 0;
+  const detailBudgetName =
+    detailRecord.budget_name ||
+    selectedRequest?.budgetName ||
+    requestConfigDetails?.budget_name ||
+    requestConfigDetails?.name ||
+    'Budget Configuration';
+  const detailDescription = detailRecord.description || selectedRequest?.description || '';
+  const detailRequestNumber =
+    detailRecord.request_number || selectedRequest?.requestNumber || detailRecord.requestNumber || '—';
+  const detailLineItems = requestDetailsData?.line_items || [];
+  const approvalsForDetail = requestDetailsData?.approvals || [];
+  const pendingApprovalForUser = approvalsForDetail.find(
+    (approval) =>
+      String(approval.status || '').toLowerCase() === 'pending' &&
+      (approval.assigned_to_primary === user?.id || approval.assigned_to_backup === user?.id)
+  );
+  const roleLevelMap = {
+    l1: 1,
+    l2: 2,
+    l3: 3,
+    payroll: 4,
+  };
+  const fallbackLevel = roleLevelMap[userRole];
+  const currentApprovalLevel = pendingApprovalForUser?.approval_level || fallbackLevel || null;
+  const canActOnRequest = Boolean(currentApprovalLevel && userRole !== 'requestor');
+  const detailApprovals = requestDetailsData?.approvals || [];
+  const filteredLineItems = detailLineItems.filter((item) => {
+    if (!detailSearch.trim()) return true;
+    const term = detailSearch.toLowerCase();
+    return [
+      item.employee_id,
+      item.employee_name,
+      item.department,
+      item.position,
+      item.item_description,
+      item.notes,
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(term));
+  });
+  const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
+  const budgetUsed = Number(requestConfigDetails?.budget_used || requestConfigDetails?.usedAmount || 0);
+  const budgetMax = Number(
+    requestConfigDetails?.total_budget ||
+      requestConfigDetails?.totalBudget ||
+      requestConfigDetails?.total_budget_amount ||
+      requestConfigDetails?.budget_total ||
+      0
+  );
+  const hasTotalBudget = budgetMax > 0;
+  const projectedUsed = budgetUsed + Number(detailAmount || 0);
+  const budgetPercent = hasTotalBudget ? Math.min(100, (projectedUsed / budgetMax) * 100) : 0;
+
+  const handleApprove = async () => {
+    if (!selectedRequest?.id || !currentApprovalLevel) return;
+    setActionSubmitting(true);
+    setActionError(null);
+    try {
+      await approvalRequestService.approveRequest(
+        selectedRequest.id,
+        {
+          approval_level: currentApprovalLevel,
+          approver_name: user?.name || user?.full_name || user?.email || 'Approver',
+          approver_title: user?.role || 'approver',
+          approval_notes: decisionNotes || '',
+          user_id: user?.id,
+        },
+        getToken()
+      );
+
+      await refreshDetails();
+      await fetchApprovals();
+      setDecisionNotes('');
+    } catch (error) {
+      setActionError(error.message || 'Failed to approve request.');
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!selectedRequest?.id || !currentApprovalLevel) return;
+    if (!decisionNotes.trim()) {
+      setActionError('Rejection reason is required.');
+      return;
+    }
+    setActionSubmitting(true);
+    setActionError(null);
+    try {
+      await approvalRequestService.rejectRequest(
+        selectedRequest.id,
+        {
+          approval_level: currentApprovalLevel,
+          approver_name: user?.name || user?.full_name || user?.email || 'Approver',
+          rejection_reason: decisionNotes,
+          user_id: user?.id,
+        },
+        getToken()
+      );
+
+      await refreshDetails();
+      await fetchApprovals();
+      setDecisionNotes('');
+    } catch (error) {
+      setActionError(error.message || 'Failed to reject request.');
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+  const getApproverForLevel = (level) => {
+    const approvers = requestConfigDetails?.approvers || [];
+    if (level === 'P') {
+      return approvers.find((approver) => String(approver.approval_level || '').toLowerCase().includes('payroll')) || null;
+    }
+    return approvers.find((approver) => String(approver.approval_level) === String(level)) || null;
+  };
+  const getApprovalForLevel = (level) => {
+    if (level === 'P') {
+      return detailApprovals.find((approval) => String(approval.approval_level || '').toLowerCase().includes('payroll')) || null;
+    }
+    return detailApprovals.find((approval) => String(approval.approval_level) === String(level)) || null;
+  };
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[520px_1fr] items-stretch min-h-[calc(100vh-260px)]">
+    <div className="grid gap-6 xl:grid-cols-[520px_1fr] items-start">
       <Card className="bg-slate-800 border-slate-700 flex flex-col min-h-[420px] w-full justify-self-start">
         <CardHeader>
           <CardTitle className="text-white">Submit New Approval Request</CardTitle>
@@ -763,11 +1250,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <th className="px-4 py-3 text-left font-medium text-slate-200 whitespace-nowrap">Submitted</th>
                     <th className="px-4 py-3 text-right font-medium text-slate-200 whitespace-nowrap">Amount</th>
                     <th className="px-4 py-3 text-left font-medium text-slate-200">Summary</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-200 whitespace-nowrap">Workflow</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-600">
                   {myRequests.map((request) => (
-                    <tr key={request.id} className="hover:bg-slate-700/30">
+                    <tr
+                      key={request.id}
+                      className="hover:bg-slate-700/30 cursor-pointer"
+                      onClick={() => handleOpenRequestDetails(request)}
+                    >
                       <td className="px-4 py-3">
                         <Badge className={getStatusBadgeClass(request.status)}>
                           {request.status.replace(/_/g, ' ')}
@@ -788,6 +1280,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       <td className="px-4 py-3 text-slate-300 max-w-xs">
                         {request.description || 'No summary provided.'}
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        {renderWorkflowSummary(request.status)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -798,7 +1293,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       </Card>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white w-full max-w-5xl p-4">
+        <DialogContent className="bg-slate-800 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[60vw] max-w-none max-h-[90vh] overflow-y-auto p-4">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Submit Approval Request</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -813,43 +1308,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           )}
 
           <div className="grid gap-4">
-            <div className="border border-slate-600 rounded-lg p-4 bg-slate-900/50">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <p className="text-xs text-slate-400">Budget Configuration</p>
-                  <p className="text-white font-semibold">{selectedConfig?.name}</p>
-                  <p className="text-xs text-slate-400">{selectedConfig?.description || 'No description provided.'}</p>
-                  <div className="text-sm text-slate-300">
-                    <span className="text-slate-400">Total Budget:</span>{' '}
-                    ₱{Number(selectedConfig?.usedAmount || 0).toLocaleString()} / ₱{Number(selectedConfig?.maxAmount || 0).toLocaleString()}
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  <p className="text-xs text-slate-400">Approval Hierarchy</p>
-                  <div className="space-y-2">
-                    {(selectedConfig?.approvers || []).map((approver) => (
-                      <div key={approver.approver_id} className="text-sm text-slate-200">
-                        <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-slate-700 text-xs font-semibold text-white mr-2">
-                          L{approver.approval_level}
-                        </span>
-                        <span className="font-medium">
-                          {approver.approver_name || getApproverDisplayName(approver.primary_approver)}
-                        </span>
-                        {approver.backup_approver || approver.backup_approver_name ? (
-                          <span className="block text-xs text-slate-400 ml-7">
-                            Backup: {approver.backup_approver_name || getApproverDisplayName(approver.backup_approver)}
-                          </span>
-                        ) : null}
-                      </div>
-                    ))}
-                    {!selectedConfig?.approvers?.length && (
-                      <p className="text-xs text-slate-400">No approvers configured.</p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
             <Tabs value={requestMode} onValueChange={setRequestMode} className="space-y-3">
               <TabsList className="bg-slate-700 border-slate-600 p-1">
                 <TabsTrigger
@@ -867,14 +1325,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               </TabsList>
 
               <TabsContent value="individual" className="space-y-4">
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="space-y-2">
                     <Label className="text-white">Employee ID *</Label>
                     <Input
                       value={individualRequest.employeeId}
                       onChange={(e) => setIndividualRequest((prev) => ({ ...prev, employeeId: e.target.value }))}
                       placeholder="e.g., EMP001"
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-600 border-gray-300 text-white"
                     />
                     {employeeLookupLoading && (
                       <p className="text-xs text-slate-400">Fetching employee details...</p>
@@ -888,7 +1346,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.employeeName}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -896,7 +1354,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.email}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -904,7 +1362,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.position}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -912,7 +1370,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.employeeStatus}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -920,7 +1378,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.geo}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -928,7 +1386,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.location}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -936,7 +1394,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.department}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -945,7 +1403,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="date"
                       value={individualRequest.hireDate || ''}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -954,18 +1412,38 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="date"
                       value={individualRequest.terminationDate || ''}
                       disabled
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-800/60 border-gray-300 text-white"
                     />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-white">Amount *</Label>
                     <Input
                       type="number"
+                      min={0}
                       value={individualRequest.amount}
                       onChange={(e) => setIndividualRequest((prev) => ({ ...prev, amount: e.target.value }))}
                       placeholder="e.g., 2500"
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-600 border-gray-300 text-white"
                     />
+                    {(() => {
+                      const amountValue = Number(individualRequest.amount);
+                      const minLimitValue = Number(selectedConfig?.minLimit || 0);
+                      const maxLimitValue = Number(selectedConfig?.maxLimit || 0);
+                      const hasLimits = maxLimitValue > 0 || minLimitValue > 0;
+                      const isOutOfRange =
+                        hasLimits &&
+                        !Number.isNaN(amountValue) &&
+                        amountValue !== 0 &&
+                        ((minLimitValue > 0 && amountValue < minLimitValue) ||
+                          (maxLimitValue > 0 && amountValue > maxLimitValue));
+
+                      return isOutOfRange ? (
+                        <p className="text-xs text-amber-300">
+                          Amount is outside the configured range ({minLimitValue || '—'} - {maxLimitValue || '—'}).
+                          Notes are required to proceed.
+                        </p>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -977,17 +1455,29 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   />
                   <Label htmlFor="isDeduction" className="text-white text-sm">Deduction?</Label>
                 </div>
-                <div className="space-y-2">
-                  <Label className="text-white">Notes</Label>
-                  <Textarea
-                    value={individualRequest.notes}
-                    onChange={(e) => setIndividualRequest((prev) => ({ ...prev, notes: e.target.value }))}
-                    rows={3}
-                    className="bg-slate-700 border-gray-300 text-white"
-                  />
-                  <p className="text-xs text-slate-400">
-                    Use this only if there is an exception, special handling, or additional context needed.
-                  </p>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-white">Notes</Label>
+                    <Textarea
+                      value={individualRequest.notes}
+                      onChange={(e) => setIndividualRequest((prev) => ({ ...prev, notes: e.target.value }))}
+                      rows={3}
+                      className="bg-slate-600 border-gray-300 text-white"
+                    />
+                    <p className="text-xs text-slate-400">
+                      Use this only if there is an exception, special handling, or additional context needed.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-white">Approval Description *</Label>
+                    <Textarea
+                      value={requestDetails.details}
+                      onChange={(e) => setRequestDetails((prev) => ({ ...prev, details: e.target.value }))}
+                      rows={3}
+                      className="bg-slate-600 border-gray-300 text-white"
+                      placeholder="Describe the request details, purpose, and any important context."
+                    />
+                  </div>
                 </div>
               </TabsContent>
 
@@ -1045,16 +1535,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               </TabsContent>
             </Tabs>
 
-            <div className="space-y-2">
-              <Label className="text-white">Approval Description *</Label>
-              <Textarea
-                value={requestDetails.details}
-                onChange={(e) => setRequestDetails((prev) => ({ ...prev, details: e.target.value }))}
-                rows={3}
-                className="bg-slate-700 border-gray-300 text-white"
-                placeholder="Describe the request details, purpose, and any important context."
-              />
-            </div>
           </div>
 
           <DialogFooter className="flex justify-end gap-2">
@@ -1085,72 +1565,827 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={detailsOpen}
+        onOpenChange={(open) => {
+          setDetailsOpen(open);
+          if (!open) {
+            setSelectedRequest(null);
+            setDetailsError(null);
+            setRequestDetailsData(null);
+            setRequestConfigDetails(null);
+            setDetailSearch('');
+            setDecisionNotes('');
+            setActionError(null);
+            setActionSubmitting(false);
+          }
+        }}
+      >
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[90vw] max-w-none max-h-[90vh] overflow-y-auto p-5">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">Request Details</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              {detailBudgetName}
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailsLoading ? (
+            <div className="text-sm text-gray-400">Loading request details...</div>
+          ) : detailsError ? (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+              {detailsError}
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="grid gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-[2fr_1fr]">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className={getStatusBadgeClass(detailStatus)}>
+                      {String(detailStatus || 'draft').replace(/_/g, ' ')}
+                    </Badge>
+                    <span className="text-xs text-slate-300">{detailRequestNumber}</span>
+                    <span className="text-xs text-slate-500">Submitted: {detailSubmittedAt || '—'}</span>
+                  </div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget Configuration</div>
+                  <div className="text-lg font-semibold text-white">{detailBudgetName}</div>
+                  <div className="text-sm text-slate-400">
+                    {requestConfigDetails?.description || requestConfigDetails?.budget_description || 'No configuration description.'}
+                  </div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Approval Description</div>
+                  <div className="text-sm text-slate-300">{detailDescription || 'No description provided.'}</div>
+                </div>
+                <div className="space-y-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
+                  <div className="text-sm text-slate-200">
+                    {hasTotalBudget
+                      ? `₱${Number(budgetUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      : 'No limit'}
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-700">
+                    <div
+                      className="h-2 rounded-full bg-blue-500"
+                      style={{ width: `${budgetPercent}%` }}
+                    />
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    {hasTotalBudget
+                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      : 'After approval: No limit'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-white">Uploaded Data</div>
+                  {warningCount > 0 && (
+                    <Badge className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
+                  )}
+                </div>
+                <div className="mt-3">
+                  <Input
+                    placeholder="Search employees by name, ID, department, or position..."
+                    value={detailSearch}
+                    onChange={(e) => setDetailSearch(e.target.value)}
+                    className="bg-slate-700 border-gray-300 text-white"
+                  />
+                </div>
+                <div className="mt-3 overflow-x-auto rounded-lg border border-slate-700">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-800">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-slate-300">Employee ID</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Full Name</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Department</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Position</th>
+                        <th className="px-3 py-2 text-right text-slate-300">Amount</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {filteredLineItems.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
+                            No line items found.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredLineItems.map((item) => {
+                          const amountValue = Number(item.amount || 0);
+                          const isWarning = item.has_warning || amountValue < 0;
+                          return (
+                            <tr key={item.line_item_id || item.item_number} className={isWarning ? 'bg-amber-500/10' : ''}>
+                              <td className="px-3 py-2 text-slate-300">{item.employee_id || '—'}</td>
+                              <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
+                              <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                ₱{Math.abs(amountValue).toLocaleString()}
+                              </td>
+                              <td className="px-3 py-2 text-slate-300">
+                                {item.notes || item.item_description || (item.is_deduction ? 'Deduction' : '—')}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                <div className="text-sm font-semibold text-white">Approval Workflow Status</div>
+                <div className="mt-3 space-y-3">
+                  {[{ level: 1, label: 'Level 1 Approval' }, { level: 2, label: 'Level 2 Approval' }, { level: 3, label: 'Level 3 Approval' }, { level: 'P', label: 'Payroll Completion' }].map((entry) => {
+                    const approver = getApproverForLevel(entry.level);
+                    const approval = getApprovalForLevel(entry.level);
+                    const status = approval?.status || 'pending';
+                    return (
+                      <div key={entry.label} className="rounded-lg border border-amber-500/40 bg-slate-900/40 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-semibold text-white">{entry.label}</div>
+                          <Badge className={getApprovalBadgeClass(status)}>{String(status).replace(/_/g, ' ')}</Badge>
+                        </div>
+                        <div className="mt-2 text-xs text-slate-400">Waiting for approval from:</div>
+                        <div className="text-sm text-slate-200">
+                          Main Approver: {approver?.approver_name || getApproverDisplayName(approver?.primary_approver) || 'Not assigned'}
+                        </div>
+                        <div className="text-sm text-slate-200">
+                          Backup Approver: {approver?.backup_approver_name || getApproverDisplayName(approver?.backup_approver) || 'Not assigned'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="flex justify-end">
+            <Button
+              variant="outline"
+              onClick={() => setDetailsOpen(false)}
+              className="border-slate-600 text-white hover:bg-slate-800"
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 function ApprovalRequests({ refreshKey }) {
+  const { user } = useAuth();
+  const userRole = user?.role || 'requestor';
   const [approvals, setApprovals] = useState([]);
+  const [approvalStatusMap, setApprovalStatusMap] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('submitted');
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState(null);
+  const [selectedRequest, setSelectedRequest] = useState(null);
+  const [requestDetailsData, setRequestDetailsData] = useState(null);
+  const [requestConfigDetails, setRequestConfigDetails] = useState(null);
+  const [detailSearch, setDetailSearch] = useState('');
+  const [decisionNotes, setDecisionNotes] = useState('');
+  const [actionError, setActionError] = useState(null);
+  const [actionSubmitting, setActionSubmitting] = useState(false);
 
   useEffect(() => {
-    const fetchApprovals = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await approvalRequestService.getPendingApprovals(getToken());
-        setApprovals((data || []).map(normalizeRequest));
-      } catch (error) {
-        setError(error.message || 'Failed to load approvals');
-        setApprovals([]);
-      } finally {
-        setLoading(false);
-      }
-    };
+    if (userRole === 'requestor') {
+      setStatusFilter('submitted');
+    } else {
+      setStatusFilter('pending');
+    }
+  }, [userRole]);
 
+  const getApprovalBadgeClass = (status) => {
+    switch (String(status || '').toLowerCase()) {
+      case 'approved':
+        return 'bg-green-600 text-white';
+      case 'rejected':
+        return 'bg-red-600 text-white';
+      case 'pending':
+        return 'bg-yellow-500 text-white';
+      case 'escalated':
+        return 'bg-purple-500 text-white';
+      default:
+        return 'bg-slate-600 text-white';
+    }
+  };
+
+  const fetchApprovals = async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    setError(null);
+    try {
+      if (userRole === 'requestor') {
+        const filters = {
+          ...(statusFilter === 'all' ? {} : { status: statusFilter }),
+          submitted_by: user.id,
+        };
+        const data = await approvalRequestService.getApprovalRequests(filters, getToken());
+        setApprovals((data || []).map(normalizeRequest));
+        setApprovalStatusMap({});
+      } else {
+        const pendingApprovals = await approvalRequestService.getPendingApprovals(user.id, getToken());
+        const requestIds = Array.from(new Set((pendingApprovals || []).map((entry) => entry.request_id).filter(Boolean)));
+        const requestDetails = await Promise.all(
+          requestIds.map((requestId) => approvalRequestService.getApprovalRequest(requestId, getToken()))
+        );
+
+        const normalizedRequests = requestDetails
+          .filter(Boolean)
+          .map((request) => normalizeRequest(request));
+
+        const normalizedFilter = String(statusFilter || '').toLowerCase();
+        const filteredByStatus = (normalizedFilter === 'all' || normalizedFilter === 'pending')
+          ? normalizedRequests
+          : normalizedRequests.filter((request) => String(request.status || '').toLowerCase() === normalizedFilter);
+
+        const statusMap = requestDetails.reduce((acc, request) => {
+          if (!request?.request_id) return acc;
+          acc[request.request_id] = request.approvals || [];
+          return acc;
+        }, {});
+
+        setApprovals(filteredByStatus);
+        setApprovalStatusMap(statusMap);
+      }
+    } catch (error) {
+      setError(error.message || 'Failed to load approvals');
+      setApprovals([]);
+      setApprovalStatusMap({});
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchApprovals();
-  }, [refreshKey]);
+  }, [refreshKey, statusFilter, user?.id, userRole]);
+
+  const applyRequestUpdate = async (requestId, action) => {
+    if (!requestId) return;
+    if (action === 'deleted') {
+      setApprovals((prev) => prev.filter((item) => item.id !== requestId));
+      setApprovalStatusMap((prev) => {
+        const next = { ...prev };
+        delete next[requestId];
+        return next;
+      });
+      if (selectedRequest?.id === requestId) {
+        setDetailsOpen(false);
+      }
+      return;
+    }
+
+    try {
+      const data = await approvalRequestService.getApprovalRequest(requestId, getToken());
+      if (!data) return;
+
+      const isRequestorOwner = userRole === 'requestor' && data.submitted_by === user?.id;
+      if (userRole === 'requestor' && !isRequestorOwner) return;
+
+      const normalized = normalizeRequest(data);
+      setApprovals((prev) => {
+        const exists = prev.some((item) => item.id === normalized.id);
+        if (!exists) return [normalized, ...prev];
+        return prev.map((item) => (item.id === normalized.id ? normalized : item));
+      });
+
+      if (userRole !== 'requestor') {
+        setApprovalStatusMap((prev) => ({
+          ...prev,
+          [requestId]: data.approvals || [],
+        }));
+      }
+
+      if (selectedRequest?.id === requestId) {
+        setRequestDetailsData(data);
+        if (normalized.budgetId) {
+          const config = await getBudgetConfigurationById(normalized.budgetId, getToken());
+          setRequestConfigDetails(config || null);
+        }
+      }
+    } catch (error) {
+      console.error('Realtime update failed:', error);
+    }
+  };
+
+  useEffect(() => {
+    connectWebSocket();
+    const unsubscribe = addWebSocketListener((message) => {
+      if (message?.event !== 'approval_request_updated') return;
+      const payload = message?.payload || {};
+      applyRequestUpdate(payload.request_id, payload.action);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [userRole, user?.id, selectedRequest?.id]);
+
+  const filteredApprovals = approvals.filter((approval) => {
+    const term = searchTerm.toLowerCase();
+    if (!term) return true;
+    return [approval.requestNumber, approval.budgetName, approval.description]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(term));
+  });
+
+  const handleOpenDetails = async (approval) => {
+    setSelectedRequest(approval);
+    setDetailsOpen(true);
+    setDetailsLoading(true);
+    setDetailsError(null);
+    setRequestDetailsData(null);
+    setRequestConfigDetails(null);
+    setDecisionNotes('');
+    setActionError(null);
+
+    try {
+      const data = await approvalRequestService.getApprovalRequest(approval.id, getToken());
+      setRequestDetailsData(data || null);
+
+      if (approval.budgetId) {
+        const config = await getBudgetConfigurationById(approval.budgetId, getToken());
+        setRequestConfigDetails(config || null);
+      }
+    } catch (error) {
+      setDetailsError(error.message || 'Failed to load request details.');
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const refreshDetails = async () => {
+    if (!selectedRequest?.id) return;
+    try {
+      const data = await approvalRequestService.getApprovalRequest(selectedRequest.id, getToken());
+      setRequestDetailsData(data || null);
+
+      if (selectedRequest.budgetId) {
+        const config = await getBudgetConfigurationById(selectedRequest.budgetId, getToken());
+        setRequestConfigDetails(config || null);
+      }
+    } catch (error) {
+      setDetailsError(error.message || 'Failed to refresh request details.');
+    }
+  };
+
+  useEffect(() => {
+    if (!detailsOpen) return undefined;
+    refreshDetails();
+    return undefined;
+  }, [detailsOpen, selectedRequest?.id]);
+
+  const workflowStages = ['L1', 'L2', 'L3', 'P'];
+  const getApprovalStatusForLevel = (requestId, level) => {
+    const approvalsForRequest = approvalStatusMap[requestId] || [];
+    const match = approvalsForRequest.find((item) => Number(item.approval_level) === Number(level));
+    return match?.status || 'pending';
+  };
+  const getLevelStatusLabel = (status) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'approved') return 'Approved';
+    if (normalized === 'rejected') return 'Rejected';
+    if (normalized === 'pending') return 'Pending';
+    return normalized ? normalized.replace(/_/g, ' ') : 'Pending';
+  };
+  const getWorkflowStage = (status) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized.includes('l1')) return 'L1';
+    if (normalized.includes('l2')) return 'L2';
+    if (normalized.includes('l3')) return 'L3';
+    if (normalized.includes('payroll')) return 'P';
+    if (normalized === 'approved') return 'APPROVED';
+    if (normalized === 'rejected') return 'REJECTED';
+    return 'L1';
+  };
+  const getWorkflowBadgeClass = (stage, status) => {
+    const currentStage = getWorkflowStage(status);
+    if (currentStage === 'APPROVED') return 'bg-emerald-500 text-white';
+    if (currentStage === 'REJECTED' && stage === 'L1') return 'bg-red-500 text-white';
+    if (stage === currentStage) return 'bg-blue-500 text-white';
+    return 'bg-slate-700 text-slate-200';
+  };
+  const renderWorkflowSummary = (status) => (
+    <div className="flex items-center gap-1">
+      {workflowStages.map((stage, index) => (
+        <React.Fragment key={stage}>
+          <span className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${getWorkflowBadgeClass(stage, status)}`}>
+            {stage}
+          </span>
+          {index < workflowStages.length - 1 && <span className="h-px w-3 bg-slate-600" />}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+  const getReviewLabel = (status) => {
+    const stage = getWorkflowStage(status);
+    if (stage === 'APPROVED') return 'Approved';
+    if (stage === 'REJECTED') return 'Rejected';
+    if (stage === 'P') return 'Payroll Review';
+    return `Level ${stage.replace('L', '')} Review`;
+  };
+
+  const detailRecord = requestDetailsData || selectedRequest || {};
+  const detailStatus = detailRecord.overall_status || detailRecord.status || selectedRequest?.status || 'draft';
+  const detailSubmittedAt = detailRecord.submitted_at || detailRecord.created_at || selectedRequest?.submittedAt || '';
+  const detailAmount = detailRecord.total_request_amount || selectedRequest?.amount || 0;
+  const detailBudgetName =
+    detailRecord.budget_name || selectedRequest?.budgetName || requestConfigDetails?.budget_name || requestConfigDetails?.name || 'Budget Configuration';
+  const detailDescription = detailRecord.description || selectedRequest?.description || '';
+  const detailRequestNumber = detailRecord.request_number || selectedRequest?.requestNumber || detailRecord.requestNumber || '—';
+  const detailLineItems = requestDetailsData?.line_items || [];
+  const approvalsForDetail = requestDetailsData?.approvals || [];
+  const pendingApprovalForUser = approvalsForDetail.find(
+    (approval) =>
+      String(approval.status || '').toLowerCase() === 'pending' &&
+      (approval.assigned_to_primary === user?.id || approval.assigned_to_backup === user?.id)
+  );
+  const roleLevelMap = {
+    l1: 1,
+    l2: 2,
+    l3: 3,
+    payroll: 4,
+  };
+  const fallbackLevel = roleLevelMap[userRole];
+  const currentApprovalLevel = pendingApprovalForUser?.approval_level || fallbackLevel || null;
+  const canActOnRequest = Boolean(currentApprovalLevel && userRole !== 'requestor');
+  const filteredLineItems = detailLineItems.filter((item) => {
+    if (!detailSearch.trim()) return true;
+    const term = detailSearch.toLowerCase();
+    return [
+      item.employee_id,
+      item.employee_name,
+      item.department,
+      item.position,
+      item.item_description,
+      item.notes,
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(term));
+  });
+  const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
+  const budgetUsed = Number(requestConfigDetails?.budget_used || requestConfigDetails?.usedAmount || 0);
+  const budgetMax = Number(
+    requestConfigDetails?.total_budget ||
+      requestConfigDetails?.totalBudget ||
+      requestConfigDetails?.total_budget_amount ||
+      requestConfigDetails?.budget_total ||
+      0
+  );
+  const hasTotalBudget = budgetMax > 0;
+  const projectedUsed = budgetUsed + Number(detailAmount || 0);
+  const budgetPercent = hasTotalBudget ? Math.min(100, (projectedUsed / budgetMax) * 100) : 0;
+
+  const handleApprove = async () => {
+    if (!selectedRequest?.id || !currentApprovalLevel) return;
+    setActionSubmitting(true);
+    setActionError(null);
+    try {
+      await approvalRequestService.approveRequest(
+        selectedRequest.id,
+        {
+          approval_level: currentApprovalLevel,
+          approver_name: user?.name || user?.full_name || user?.email || 'Approver',
+          approver_title: user?.role || 'approver',
+          approval_notes: decisionNotes || '',
+          user_id: user?.id,
+        },
+        getToken()
+      );
+
+      await refreshDetails();
+      await fetchApprovals();
+      setDecisionNotes('');
+    } catch (error) {
+      setActionError(error.message || 'Failed to approve request.');
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!selectedRequest?.id || !currentApprovalLevel) return;
+    if (!decisionNotes.trim()) {
+      setActionError('Rejection reason is required.');
+      return;
+    }
+    setActionSubmitting(true);
+    setActionError(null);
+    try {
+      await approvalRequestService.rejectRequest(
+        selectedRequest.id,
+        {
+          approval_level: currentApprovalLevel,
+          approver_name: user?.name || user?.full_name || user?.email || 'Approver',
+          rejection_reason: decisionNotes,
+          user_id: user?.id,
+        },
+        getToken()
+      );
+
+      await refreshDetails();
+      await fetchApprovals();
+      setDecisionNotes('');
+    } catch (error) {
+      setActionError(error.message || 'Failed to reject request.');
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
 
   return (
     <Card className="bg-slate-800 border-slate-700">
       <CardHeader>
-        <CardTitle className="text-white">Pending Approval Requests</CardTitle>
+        <CardTitle className="text-white">Approval Requests</CardTitle>
         <CardDescription className="text-gray-400">
-          Review approvals assigned to you
+          Review and approve budget requests requiring your attention
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap gap-3">
+          <div className="flex-1 min-w-[240px]">
+            <Input
+              placeholder="Search by request number, budget, or description..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="bg-slate-700 border-gray-300 text-white"
+            />
+          </div>
+          <div className="min-w-[180px]">
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-800 border-gray-300">
+                <SelectItem value="all" className="text-white">All</SelectItem>
+                <SelectItem value="submitted" className="text-white">Submitted</SelectItem>
+                <SelectItem value="approved" className="text-white">Approved</SelectItem>
+                <SelectItem value="rejected" className="text-white">Rejected</SelectItem>
+                <SelectItem value="pending" className="text-white">Pending</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
         {loading ? (
           <div className="text-sm text-gray-400">Loading approvals...</div>
         ) : error ? (
           <div className="text-sm text-red-400">{error}</div>
-        ) : approvals.length === 0 ? (
-          <div className="text-sm text-gray-400">No pending approvals.</div>
+        ) : filteredApprovals.length === 0 ? (
+          <div className="text-sm text-gray-400">No approval requests found.</div>
         ) : (
-          <div className="space-y-3">
-            {approvals.map((approval) => (
-              <div key={approval.id} className="bg-slate-700/50 border border-slate-600 rounded-lg p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Badge className={getStatusBadgeClass(approval.status)}>
-                        {approval.status.replace(/_/g, ' ')}
-                      </Badge>
-                      <span className="text-xs text-gray-400">{approval.id}</span>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            {filteredApprovals.map((approval) => (
+              <div key={approval.id} className="bg-slate-700/50 border border-slate-600 rounded-lg p-4 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex rounded-full bg-blue-600 px-2 py-1 text-[10px] font-semibold text-white">
+                    {approval.requestNumber || approval.id}
+                  </span>
+                  <Badge className="bg-blue-500 text-white">{getReviewLabel(approval.status)}</Badge>
+                </div>
+                <div className="text-sm font-semibold text-white">{approval.budgetName}</div>
+                <div className="text-xs text-slate-300">Employee: {approval.employeeName || '—'}</div>
+                <div className="text-2xl font-semibold text-white">₱{Number(approval.amount || 0).toLocaleString()}</div>
+                <div className="space-y-2">
+                  <div className="text-[11px] text-slate-400">Approval Progress:</div>
+                  <div className="space-y-1 text-xs text-slate-300">
+                    <div className="rounded-md bg-slate-800/60 px-2 py-1">
+                      L1: {getLevelStatusLabel(getApprovalStatusForLevel(approval.id, 1))}
                     </div>
-                    <h4 className="text-white font-medium">{approval.title}</h4>
-                    <p className="text-xs text-gray-300">{approval.budgetName}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-lg font-semibold text-white">₱{Number(approval.amount || 0).toLocaleString()}</p>
-                    <p className="text-xs text-gray-400">{approval.description || 'No summary provided.'}</p>
+                    <div className="rounded-md bg-slate-800/60 px-2 py-1">
+                      L2: {getLevelStatusLabel(getApprovalStatusForLevel(approval.id, 2))}
+                    </div>
+                    <div className="rounded-md bg-slate-800/60 px-2 py-1">
+                      L3: {getLevelStatusLabel(getApprovalStatusForLevel(approval.id, 3))}
+                    </div>
+                    <div className="rounded-md bg-slate-800/60 px-2 py-1">
+                      Payroll: {getLevelStatusLabel(getApprovalStatusForLevel(approval.id, 4))}
+                    </div>
                   </div>
                 </div>
+                <div className="text-xs text-slate-300 line-clamp-2">{approval.description || 'No summary provided.'}</div>
+                <div className="text-xs text-slate-400">Submitted: {approval.submittedAt || '—'}</div>
+                <Button
+                  size="sm"
+                  onClick={() => handleOpenDetails(approval)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  View Details
+                </Button>
               </div>
             ))}
           </div>
         )}
       </CardContent>
+
+      <Dialog
+        open={detailsOpen}
+        onOpenChange={(open) => {
+          setDetailsOpen(open);
+          if (!open) {
+            setSelectedRequest(null);
+            setDetailsError(null);
+            setRequestDetailsData(null);
+            setRequestConfigDetails(null);
+            setDetailSearch('');
+          }
+        }}
+      >
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[90vw] lg:w-[80vw] xl:w-[60vw] max-w-none max-h-[85vh] overflow-y-auto p-5">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">Approval Request Details</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              {detailBudgetName}
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailsLoading ? (
+            <div className="text-sm text-gray-400">Loading request details...</div>
+          ) : detailsError ? (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+              {detailsError}
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="grid gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-[2fr_1fr]">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className={getStatusBadgeClass(detailStatus)}>
+                      {String(detailStatus || 'draft').replace(/_/g, ' ')}
+                    </Badge>
+                    <span className="text-xs text-slate-300">{detailRequestNumber}</span>
+                    <span className="text-xs text-slate-500">Submitted: {detailSubmittedAt || '—'}</span>
+                  </div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget Configuration</div>
+                  <div className="text-lg font-semibold text-white">{detailBudgetName}</div>
+                  <div className="text-sm text-slate-400">
+                    {requestConfigDetails?.description || requestConfigDetails?.budget_description || 'No configuration description.'}
+                  </div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Approval Description</div>
+                  <div className="text-sm text-slate-300">{detailDescription || 'No description provided.'}</div>
+                </div>
+                <div className="space-y-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
+                  <div className="text-sm text-slate-200">
+                    {hasTotalBudget
+                      ? `₱${Number(budgetUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      : 'No limit'}
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-700">
+                    <div className="h-2 rounded-full bg-blue-500" style={{ width: `${budgetPercent}%` }} />
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    {hasTotalBudget
+                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      : 'After approval: No limit'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-white">Uploaded Data</div>
+                  {warningCount > 0 && (
+                    <Badge className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
+                  )}
+                </div>
+                <div className="mt-3">
+                  <Input
+                    placeholder="Search employees by name, ID, department, or position..."
+                    value={detailSearch}
+                    onChange={(e) => setDetailSearch(e.target.value)}
+                    className="bg-slate-700 border-gray-300 text-white"
+                  />
+                </div>
+                <div className="mt-3 overflow-x-auto rounded-lg border border-slate-700">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-800">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-slate-300">Employee ID</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Full Name</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Department</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Position</th>
+                        <th className="px-3 py-2 text-right text-slate-300">Amount</th>
+                        <th className="px-3 py-2 text-left text-slate-300">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {filteredLineItems.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
+                            No line items found.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredLineItems.map((item) => {
+                          const amountValue = Number(item.amount || 0);
+                          const isWarning = item.has_warning || amountValue < 0;
+                          return (
+                            <tr key={item.line_item_id || item.item_number} className={isWarning ? 'bg-amber-500/10' : ''}>
+                              <td className="px-3 py-2 text-slate-300">{item.employee_id || '—'}</td>
+                              <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
+                              <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                ₱{Math.abs(amountValue).toLocaleString()}
+                              </td>
+                              <td className="px-3 py-2 text-slate-300">
+                                {item.notes || item.item_description || (item.is_deduction ? 'Deduction' : '—')}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                <div className="text-sm font-semibold text-white">Approval Workflow Status</div>
+                <div className="mt-3 space-y-3">
+                  {[{ level: 1, label: 'Level 1 Approval' }, { level: 2, label: 'Level 2 Approval' }, { level: 3, label: 'Level 3 Approval' }, { level: 'P', label: 'Payroll Completion' }].map((entry) => {
+                    const approver = requestConfigDetails?.approvers?.find((item) => String(item.approval_level) === String(entry.level) || (entry.level === 'P' && String(item.approval_level || '').toLowerCase().includes('payroll')));
+                    const approval = requestDetailsData?.approvals?.find((item) => String(item.approval_level) === String(entry.level) || (entry.level === 'P' && String(item.approval_level || '').toLowerCase().includes('payroll')));
+                    const status = approval?.status || 'pending';
+                    return (
+                      <div key={entry.label} className="rounded-lg border border-amber-500/40 bg-slate-900/40 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-semibold text-white">{entry.label}</div>
+                          <Badge className={getApprovalBadgeClass(status)}>{String(status).replace(/_/g, ' ')}</Badge>
+                        </div>
+                        <div className="mt-2 text-xs text-slate-400">Waiting for approval from:</div>
+                        <div className="text-sm text-slate-200">
+                          Main Approver: {approver?.approver_name || 'Not assigned'}
+                        </div>
+                        <div className="text-sm text-slate-200">
+                          Backup Approver: {approver?.backup_approver_name || 'Not assigned'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4 space-y-2">
+                <Label className="text-white">Approval/Rejection Description</Label>
+                {actionError && (
+                  <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {actionError}
+                  </div>
+                )}
+                <Textarea
+                  rows={3}
+                  className="bg-slate-700 border-gray-300 text-white"
+                  placeholder="Enter your comments, notes, or reasons for approval/rejection..."
+                  value={decisionNotes}
+                  onChange={(e) => setDecisionNotes(e.target.value)}
+                />
+                <p className="text-xs text-slate-400">This description will be included with your approval/rejection decision.</p>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="flex justify-end gap-3">
+            <Button variant="outline" className="border-slate-600 text-white hover:bg-slate-800" onClick={() => setDetailsOpen(false)}>
+              Close
+            </Button>
+            {canActOnRequest && (
+              <>
+                <Button
+                  className="bg-rose-600 hover:bg-rose-700 text-white"
+                  onClick={handleReject}
+                  disabled={actionSubmitting}
+                >
+                  Reject
+                </Button>
+                <Button
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  onClick={handleApprove}
+                  disabled={actionSubmitting}
+                >
+                  Approve
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

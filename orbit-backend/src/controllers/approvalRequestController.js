@@ -1,5 +1,6 @@
 import ApprovalRequestService from '../services/approvalRequestService.js';
 import { sendSuccess, sendError } from '../utils/response.js';
+import { broadcast } from '../realtime/websocketServer.js';
 
 /**
  * Approval Request Controller
@@ -57,6 +58,13 @@ export class ApprovalRequestController {
       if (!result.success) {
         return sendError(res, result.error, 500);
       }
+
+      broadcast('approval_request_updated', {
+        action: 'created',
+        request_id: result.data?.request_id || result.data?.id,
+        budget_id,
+        submitted_by: userId,
+      });
 
       sendSuccess(res, result.data, result.message, 201);
     } catch (error) {
@@ -133,6 +141,11 @@ export class ApprovalRequestController {
         return sendError(res, result.error, 500);
       }
 
+        broadcast('approval_request_updated', {
+          action: 'updated',
+          request_id: result.data?.request_id || id,
+        });
+
       sendSuccess(res, result.data, result.message, 200);
     } catch (error) {
       console.error('Error in updateApprovalRequest:', error);
@@ -154,6 +167,11 @@ export class ApprovalRequestController {
       if (!result.success) {
         return sendError(res, result.error, 500);
       }
+
+        broadcast('approval_request_updated', {
+          action: 'submitted',
+          request_id: result.data?.request_id || id,
+        });
 
       sendSuccess(res, result.data, result.message, 200);
     } catch (error) {
@@ -240,11 +258,15 @@ export class ApprovalRequestController {
   static async approveRequest(req, res) {
     try {
       const { id } = req.params;
-      const { id: userId } = req.user;
-      const { approval_level, approver_name, approver_title, approval_notes, conditions_applied } = req.body;
+      const { approval_level, approver_name, approver_title, approval_notes, conditions_applied, user_id } = req.body;
+      const userId = req.user?.id || user_id;
 
       if (!approval_level) {
-        return sendSuccess(res, 400, false, 'approval_level is required');
+        return sendError(res, 'approval_level is required', 400);
+      }
+
+      if (!userId) {
+        return sendError(res, 'user_id is required', 400);
       }
 
       const result = await ApprovalRequestService.approveRequestAtLevel(id, approval_level, {
@@ -256,13 +278,19 @@ export class ApprovalRequestController {
       });
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, result.message, result.data);
+      broadcast('approval_request_updated', {
+        action: 'approved',
+        request_id: result.data?.request_id || id,
+        approval_level,
+      });
+
+      sendSuccess(res, result.data, result.message, 200);
     } catch (error) {
       console.error('Error in approveRequest:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -273,11 +301,15 @@ export class ApprovalRequestController {
   static async rejectRequest(req, res) {
     try {
       const { id } = req.params;
-      const { id: userId } = req.user;
-      const { approval_level, approver_name, rejection_reason } = req.body;
+      const { approval_level, approver_name, rejection_reason, user_id } = req.body;
+      const userId = req.user?.id || user_id;
 
       if (!approval_level || !rejection_reason) {
-        return sendSuccess(res, 400, false, 'approval_level and rejection_reason are required');
+        return sendError(res, 'approval_level and rejection_reason are required', 400);
+      }
+
+      if (!userId) {
+        return sendError(res, 'user_id is required', 400);
       }
 
       const result = await ApprovalRequestService.rejectRequestAtLevel(id, approval_level, {
@@ -287,13 +319,19 @@ export class ApprovalRequestController {
       });
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, result.message, result.data);
+      broadcast('approval_request_updated', {
+        action: 'rejected',
+        request_id: result.data?.request_id || id,
+        approval_level,
+      });
+
+      sendSuccess(res, result.data, result.message, 200);
     } catch (error) {
       console.error('Error in rejectRequest:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -385,13 +423,13 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getActivityLogByRequestId(id);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, 'Activity log retrieved', result.data);
+      sendSuccess(res, result.data, 'Activity log retrieved', 200);
     } catch (error) {
       console.error('Error in getActivityLog:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -401,18 +439,22 @@ export class ApprovalRequestController {
    */
   static async getPendingApprovals(req, res) {
     try {
-      const { id: userId } = req.user;
+      const userId = req.user?.id || req.query.user_id;
+
+      if (!userId) {
+        return sendError(res, 'user_id is required', 400);
+      }
 
       const result = await ApprovalRequestService.getPendingApprovalsForUser(userId);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, 'Pending approvals retrieved', result.data);
+      sendSuccess(res, result.data, 'Pending approvals retrieved', 200);
     } catch (error) {
       console.error('Error in getPendingApprovals:', error);
-      sendError(res, 500, error.message);
+      sendError(res, error.message, 500);
     }
   }
 
@@ -431,6 +473,11 @@ export class ApprovalRequestController {
       }
 
       sendSuccess(res, 200, true, result.message);
+
+        broadcast('approval_request_updated', {
+          action: 'deleted',
+          request_id: id,
+        });
     } catch (error) {
       console.error('Error in deleteApprovalRequest:', error);
       sendError(res, 500, error.message);

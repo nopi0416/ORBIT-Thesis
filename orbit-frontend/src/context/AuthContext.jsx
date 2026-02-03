@@ -20,16 +20,18 @@ export function AuthProvider({ children }) {
     // Simulate checking for existing auth token
     const checkAuth = async () => {
       try {
-        const token = localStorage.getItem('authToken');
-        if (token) {
-          // Mock: Replace with actual API call to verify token
-          const mockUser = {
-            id: '1',
-            name: 'John Doe',
-            email: 'john.doe@example.com',
-            role: 'requestor', // can be: 'requestor', 'l1', 'l2', 'l3', 'payroll'
-          };
-          setUser(mockUser);
+        let token = localStorage.getItem('authToken');
+        if (!token) {
+          token = `demo-token-${Date.now()}`;
+          localStorage.setItem('authToken', token);
+        }
+
+        const storedDemoUser = localStorage.getItem('demoUser');
+        if (storedDemoUser) {
+          const parsedUser = JSON.parse(storedDemoUser);
+          if (parsedUser?.id) {
+            setUser(parsedUser);
+          }
         }
       } catch (error) {
         console.error('Auth check failed:', error);
@@ -68,6 +70,7 @@ export function AuthProvider({ children }) {
     setUser(null);
     // Clear any stored tokens
     localStorage.removeItem('authToken');
+    localStorage.removeItem('demoUser');
   };
 
   const value = {

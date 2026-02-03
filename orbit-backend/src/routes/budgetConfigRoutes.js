@@ -43,6 +43,9 @@ router.get('/approvers/level/:level', BudgetConfigController.getApproversByLevel
 
 // ==================== User Lookup Endpoints (MUST BE BEFORE :id) ====================
 
+// GET - Get all users
+router.get('/users/list/all', BudgetConfigController.getAllUsers);
+
 // GET - Get user by ID
 router.get('/users/get/:userId', BudgetConfigController.getUserById);
 

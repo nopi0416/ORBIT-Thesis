@@ -94,43 +94,7 @@ export class BudgetConfigService {
         console.log('No approvers to insert');
       }
 
-      // Step 5: Create initial budget tracking record for current period
-      const now = new Date();
-      const currentPeriod = `${now.toLocaleString('default', { month: 'long' })} ${now.getFullYear()}`;
-      const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-      const trackingStart = start_date ? new Date(start_date) : periodStart;
-      const trackingEnd = end_date ? new Date(end_date) : periodEnd;
-      const trackingLabel = start_date && end_date
-        ? `${trackingStart.toISOString().split('T')[0]} - ${trackingEnd.toISOString().split('T')[0]}`
-        : currentPeriod;
-      const normalizedBudgetLimit = budget_limit ? parseFloat(budget_limit) : null;
-      const normalizedMaxLimit = max_limit ? parseFloat(max_limit) : null;
-
-      const { error: trackingError } = await supabase
-        .from('tblbudgetconfig_budget_tracking')
-        .insert([
-          {
-            budget_id,
-            period_start: trackingStart.toISOString().split('T')[0],
-            period_end: trackingEnd.toISOString().split('T')[0],
-            period_label: trackingLabel,
-            total_budget: normalizedBudgetLimit ?? normalizedMaxLimit ?? 0,
-            budget_used: 0,
-            budget_carryover: 0,
-            approval_count_total: 0,
-            approval_count_approved: 0,
-            approval_count_rejected: 0,
-            approval_count_pending: 0,
-          },
-        ]);
-
-      if (trackingError) {
-        console.error('Budget Tracking Insert Error:', trackingError);
-        throw trackingError;
-      }
-      console.log('Budget tracking record created successfully');
+      // Budget tracking table removed; skip tracking initialization.
 
       // Return complete configuration with related data
       const completeConfig = await this.getBudgetConfigById(budget_id);
@@ -180,15 +144,14 @@ export class BudgetConfigService {
       // Fetch related data for each config
       const configsWithRelations = await Promise.all(
         data.map(async (config) => {
-          const [approvers, budgetTracking] = await Promise.all([
+          const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
-            this.getBudgetTrackingByBudgetId(config.budget_id),
           ]);
 
           return {
             ...config,
             approvers: approvers.data || [],
-            budget_tracking: budgetTracking.data || [],
+            budget_tracking: [],
           };
         })
       );
@@ -862,17 +825,9 @@ export class BudgetConfigService {
    */
   static async getBudgetTrackingByBudgetId(budgetId) {
     try {
-      const { data, error } = await supabase
-        .from('tblbudgetconfig_budget_tracking')
-        .select('*')
-        .eq('budget_id', budgetId)
-        .order('period_start', { ascending: false });
-
-      if (error) throw error;
-
       return {
         success: true,
-        data,
+        data: [],
       };
     } catch (error) {
       console.error('Error fetching budget tracking:', error);
@@ -1334,6 +1289,69 @@ export class BudgetConfigService {
         success: false,
         error: error.message,
         data: null,
+      };
+    }
+  }
+
+  /**
+   * Get all users with their active roles
+   */
+  static async getAllUsers() {
+    try {
+      const { data, error } = await supabase
+        .from('tblusers')
+        .select(`
+          user_id,
+          employee_id,
+          first_name,
+          last_name,
+          email,
+          department,
+          status,
+          tbluserroles (
+            is_active,
+            tblroles (
+              role_id,
+              role_name
+            )
+          )
+        `)
+        .order('first_name', { ascending: true });
+
+      if (error) throw error;
+
+      const formatted = (data || []).map((user) => {
+        const roles = (user.tbluserroles || [])
+          .filter((role) => role.is_active !== false)
+          .map((role) => {
+            const roleObj = Array.isArray(role.tblroles) ? role.tblroles[0] : role.tblroles;
+            return roleObj?.role_name || null;
+          })
+          .filter(Boolean);
+
+        return {
+          user_id: user.user_id,
+          employee_id: user.employee_id,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          email: user.email,
+          department: user.department,
+          status: user.status,
+          roles,
+          full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+        };
+      });
+
+      return {
+        success: true,
+        data: formatted,
+      };
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
       };
     }
   }

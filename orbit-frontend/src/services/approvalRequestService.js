@@ -34,10 +34,43 @@ const getApprovalRequests = async (filters = {}, token) => {
   return parseResponse(response);
 };
 
-const getPendingApprovals = async (token) => {
-  const response = await fetch(`${API_BASE_URL}/approval-requests/my-approvals/pending`, {
+const getApprovalRequest = async (requestId, token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}`, {
     method: 'GET',
     headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
+const getPendingApprovals = async (userId, token) => {
+  const queryParams = new URLSearchParams();
+  if (userId) queryParams.append('user_id', userId);
+  const url = `${API_BASE_URL}/approval-requests/my-approvals/pending${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
+const approveRequest = async (requestId, payload, token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/approvals/approve`, {
+    method: 'POST',
+    headers: getHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  return parseResponse(response);
+};
+
+const rejectRequest = async (requestId, payload, token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/approvals/reject`, {
+    method: 'POST',
+    headers: getHeaders(token),
+    body: JSON.stringify(payload),
   });
 
   return parseResponse(response);
@@ -98,7 +131,10 @@ const addLineItemsBulk = async (requestId, payload, token) => {
 
 export default {
   getApprovalRequests,
+  getApprovalRequest,
   getPendingApprovals,
+  approveRequest,
+  rejectRequest,
   createApprovalRequest,
   submitApprovalRequest,
   getEmployeeByEid,

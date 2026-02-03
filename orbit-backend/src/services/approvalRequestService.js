@@ -769,7 +769,7 @@ export class ApprovalRequestService {
   static async getAttachmentsByRequestId(requestId) {
     try {
       const { data, error } = await supabase
-        .from('tblbudgetapprovalrequests_attachments')
+        .from('tblbudgetapprovalrequests_attachments_logs')
         .select('*')
         .eq('request_id', requestId);
 
@@ -855,7 +855,7 @@ export class ApprovalRequestService {
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_approvals')
         .select('*')
-        .eq('assigned_to_primary', userId)
+        .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId}`)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
 

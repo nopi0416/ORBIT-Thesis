@@ -1,6 +1,7 @@
 import { BudgetConfigService } from '../services/budgetConfigService.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { validateBudgetConfig, validateScopeFields } from '../utils/validators.js';
+import { broadcast } from '../realtime/websocketServer.js';
 
 /**
  * Budget Configuration Controller
@@ -87,6 +88,11 @@ export class BudgetConfigController {
         return sendError(res, result.error, 400);
       }
 
+      broadcast('budget_config_updated', {
+        action: 'created',
+        budget_id: result.data?.budget_id || result.data?.id,
+      });
+
       sendSuccess(res, result.data, result.message, 201);
     } catch (error) {
       console.error('Error in createBudgetConfig:', error);
@@ -164,6 +170,11 @@ export class BudgetConfigController {
         return sendError(res, result.error, 400);
       }
 
+      broadcast('budget_config_updated', {
+        action: 'updated',
+        budget_id: result.data?.budget_id || id,
+      });
+
       sendSuccess(res, result.data, result.message);
     } catch (error) {
       console.error('Error in updateBudgetConfig:', error);
@@ -188,6 +199,11 @@ export class BudgetConfigController {
       if (!result.success) {
         return sendError(res, result.error, 400);
       }
+
+      broadcast('budget_config_updated', {
+        action: 'deleted',
+        budget_id: id,
+      });
 
       sendSuccess(res, {}, result.message);
     } catch (error) {
@@ -738,6 +754,25 @@ export class BudgetConfigController {
       sendSuccess(res, result.data, 'User retrieved successfully');
     } catch (error) {
       console.error('Error in getUserById:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * GET /api/users
+   * Get all users with their roles
+   */
+  static async getAllUsers(req, res) {
+    try {
+      const result = await BudgetConfigService.getAllUsers();
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Users retrieved successfully');
+    } catch (error) {
+      console.error('Error in getAllUsers:', error);
       sendError(res, error.message, 500);
     }
   }

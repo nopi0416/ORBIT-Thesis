@@ -178,6 +178,29 @@ export const getConfigurationsByUser = async (userId, token) => {
 };
 
 /**
+ * READ - Get all users with roles
+ */
+export const getUsersList = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/users/list/all`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch users');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    throw error;
+  }
+};
+
+/**
  * Tenure Groups - GET
  */
 export const getTenureGroups = async (budgetId, token) => {
