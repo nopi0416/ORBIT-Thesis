@@ -5,16 +5,15 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check } from '../components/icons';
+import { authAPI } from '../utils/api';
 
 export default function ResetPassword() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const email = searchParams.get('email');
 
-  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState('');
@@ -74,7 +73,7 @@ export default function ResetPassword() {
     e.preventDefault();
     setError('');
 
-    if (!currentPassword || !newPassword || !confirmPassword) {
+    if (!newPassword || !confirmPassword) {
       setError('All fields are required');
       return;
     }
@@ -90,18 +89,23 @@ export default function ResetPassword() {
       return;
     }
 
-    if (currentPassword === newPassword) {
-      setError('New password must be different from current password');
-      return;
-    }
-
     setIsLoading(true);
 
-    // Simulate password reset
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    try {
+      const result = await authAPI.resetPassword(email, newPassword);
 
-    // Redirect to login with success
-    navigate('/login?reset=success');
+      if (result.success) {
+        // Redirect to login with success message
+        navigate('/login?reset=success');
+      } else {
+        setError(result.error || 'Failed to reset password. Please try again.');
+      }
+    } catch (err) {
+      setError('An unexpected error occurred. Please try again later.');
+      console.error('Reset password error:', err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const requirements = getPasswordRequirements();
@@ -158,43 +162,6 @@ export default function ResetPassword() {
                 </Alert>
               )}
 
-              {/* Current Password */}
-              <div className="space-y-2">
-                <Label htmlFor="current-password" className="text-sm font-medium">
-                  Current Password
-                </Label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5" style={{ color: 'oklch(0.65 0.03 280)' }} />
-                  <Input
-                    id="current-password"
-                    type={showCurrentPassword ? 'text' : 'password'}
-                    placeholder="Enter your current password"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    style={{
-                      paddingLeft: '2.5rem',
-                      paddingRight: '2.5rem',
-                      height: '2.75rem',
-                      backgroundColor: 'oklch(0.18 0.05 280)',
-                      borderColor: 'oklch(0.3 0.05 280)',
-                      color: 'oklch(0.95 0.02 280)',
-                    }}
-                    className="border rounded-md transition-colors"
-                    disabled={isLoading}
-                    autoComplete="current-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
-                    style={{ color: 'oklch(0.65 0.03 280)' }}
-                    disabled={isLoading}
-                  >
-                    {showCurrentPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                  </button>
-                </div>
-              </div>
-
               {/* New Password */}
               <div className="space-y-2">
                 <Label htmlFor="new-password" className="text-sm font-medium">
@@ -219,6 +186,7 @@ export default function ResetPassword() {
                     className="border rounded-md transition-colors"
                     disabled={isLoading}
                     autoComplete="new-password"
+                    autoFocus
                   />
                   <button
                     type="button"

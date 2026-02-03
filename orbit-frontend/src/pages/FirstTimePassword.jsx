@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { authAPI } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -8,8 +10,10 @@ import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check, X } from '..
 
 export default function FirstTimePassword() {
   const navigate = useNavigate();
+  const { setUser } = useAuth();
   const [searchParams] = useSearchParams();
   const email = searchParams.get('email');
+  const userId = searchParams.get('userId');
   const role = searchParams.get('role');
 
   const [currentPassword, setCurrentPassword] = useState('');
@@ -21,7 +25,7 @@ export default function FirstTimePassword() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  if (!email || !role) {
+  if (!email || !role || !userId) {
     navigate('/login');
     return null;
   }
@@ -39,11 +43,6 @@ export default function FirstTimePassword() {
     e.preventDefault();
     setError('');
 
-    if (currentPassword !== 'demo123') {
-      setError('Current password is incorrect');
-      return;
-    }
-
     if (!isPasswordValid) {
       setError('Please ensure all password requirements are met');
       return;
@@ -51,11 +50,35 @@ export default function FirstTimePassword() {
 
     setIsLoading(true);
 
-    // Simulate password setup
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const result = await authAPI.firstTimePassword(email, currentPassword, newPassword);
 
-    // Redirect to dashboard or user agreement depending on setup flow
-    navigate('/user-agreement?email=' + encodeURIComponent(email) + '&role=' + role);
+    setIsLoading(false);
+
+    if (!result.success) {
+      setError(result.error);
+      return;
+    }
+
+    // Password changed successfully - now record the user agreement
+    console.log('[FIRST TIME PASSWORD] Password changed, recording user agreement');
+    const agreementResult = await authAPI.acceptUserAgreement(userId, '1.0');
+
+    if (!agreementResult.success) {
+      console.error('[FIRST TIME PASSWORD] Failed to record agreement:', agreementResult.error);
+      setError('Password changed but failed to complete setup. Please contact support.');
+      return;
+    }
+
+    console.log('[FIRST TIME PASSWORD] User agreement recorded, setting user and redirecting to dashboard');
+    
+    // Set user in context so AuthGuard allows access to dashboard
+    setUser({
+      id: userId,
+      email,
+      role,
+    });
+    
+    navigate('/dashboard');
   };
 
   return (
