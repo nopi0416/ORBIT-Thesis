@@ -7,6 +7,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check, X } from '../components/icons';
+import { getDashboardRoute } from '../utils/roleRouting';
 
 export default function FirstTimePassword() {
   const navigate = useNavigate();
@@ -48,37 +49,21 @@ export default function FirstTimePassword() {
       return;
     }
 
-    setIsLoading(true);
-
-    const result = await authAPI.firstTimePassword(email, currentPassword, newPassword);
-
-    setIsLoading(false);
-
-    if (!result.success) {
-      setError(result.error);
+    if (!currentPassword) {
+      setError('Please enter your current password');
       return;
     }
 
-    // Password changed successfully - now record the user agreement
-    console.log('[FIRST TIME PASSWORD] Password changed, recording user agreement');
-    const agreementResult = await authAPI.acceptUserAgreement(userId, '1.0');
-
-    if (!agreementResult.success) {
-      console.error('[FIRST TIME PASSWORD] Failed to record agreement:', agreementResult.error);
-      setError('Password changed but failed to complete setup. Please contact support.');
-      return;
-    }
-
-    console.log('[FIRST TIME PASSWORD] User agreement recorded, setting user and redirecting to dashboard');
+    console.log('[FIRST TIME PASSWORD] Password validated, storing in session and redirecting to security questions');
     
-    // Set user in context so AuthGuard allows access to dashboard
-    setUser({
-      id: userId,
-      email,
-      role,
-    });
+    // Store validated password and new password in sessionStorage for use in security questions page
+    sessionStorage.setItem('firstTimePassword', JSON.stringify({
+      currentPassword,
+      newPassword,
+    }));
     
-    navigate('/dashboard');
+    // Redirect to security questions page with flag to indicate coming from password change
+    navigate(`/security-questions?email=${encodeURIComponent(email)}&userId=${encodeURIComponent(userId)}&role=${encodeURIComponent(role)}&fromPasswordChange=true`);
   };
 
   return (
@@ -116,7 +101,7 @@ export default function FirstTimePassword() {
               {/* Back button */}
               <button
                 type="button"
-                onClick={() => navigate(-1)}
+                onClick={() => navigate(`/user-agreement?email=${encodeURIComponent(email)}&userId=${encodeURIComponent(userId)}&role=${encodeURIComponent(role)}`)}
                 className="inline-flex items-center gap-2 text-sm transition-colors"
                 style={{ color: 'oklch(0.65 0.03 280)' }}
               >
@@ -297,10 +282,10 @@ export default function FirstTimePassword() {
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    Creating Password...
+                    Continuing...
                   </>
                 ) : (
-                  'Complete Setup'
+                  'Continue'
                 )}
               </Button>
             </form>

@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { Eye, EyeOff, Lock, User, AlertCircle, Loader2, ArrowLeft } from '../components/icons';
 import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../utils/api';
+import { getDashboardRoute } from '../utils/roleRouting';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -189,9 +190,10 @@ export default function Login() {
             console.log('[LOGIN FORM] Password change required, redirecting to first-time-password');
             navigate(`/first-time-password?email=${encodeURIComponent(email)}&role=${encodeURIComponent(result.role || 'requestor')}`);
           } else {
-            // OTP verified, redirecting to dashboard
-            console.log('[LOGIN FORM] OTP verified, redirecting to dashboard');
-            navigate('/dashboard');
+            // OTP verified, redirect to role-specific dashboard
+            const dashboardRoute = getDashboardRoute(result.role);
+            console.log('[LOGIN FORM] OTP verified, redirecting to', dashboardRoute, 'for role:', result.role);
+            navigate(dashboardRoute);
           }
         } else {
           console.log('[LOGIN FORM] OTP verification failed:', result.error);
@@ -214,9 +216,10 @@ export default function Login() {
             setOtp(['', '', '', '', '', '']);
             setFieldErrors({});
           } else {
-            // Direct login successful
-            console.log('[LOGIN FORM] Direct login, redirecting to dashboard');
-            navigate('/dashboard');
+            // Direct login successful - redirect to role-specific dashboard
+            const dashboardRoute = getDashboardRoute(result.role);
+            console.log('[LOGIN FORM] Direct login successful, redirecting to', dashboardRoute, 'for role:', result.role);
+            navigate(dashboardRoute);
           }
         } else {
           console.log('[LOGIN FORM] Login failed:', result.error);

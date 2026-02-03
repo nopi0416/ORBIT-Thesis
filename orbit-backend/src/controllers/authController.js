@@ -431,6 +431,56 @@ export class AuthController {
       sendError(res, error.message, 500);
     }
   }
+
+  /**
+   * GET /api/auth/user/:userId
+   * Get user details by user ID
+   */
+  static async getUserDetails(req, res) {
+    try {
+      const { userId } = req.params;
+
+      if (!userId) {
+        return sendError(res, 'User ID is required', 400);
+      }
+
+      const result = await AuthService.getUserDetails(userId);
+
+      if (!result.success) {
+        return sendError(res, 'An error occurred while fetching user details. Please try again.', 400);
+      }
+
+      sendSuccess(res, result.data, 'User details retrieved successfully');
+    } catch (error) {
+      console.error('Error in getUserDetails:', error);
+      sendError(res, 'An error occurred. Please try again.', 500);
+    }
+  }
+
+  /**
+   * POST /api/auth/verify-token
+   * Verify if JWT token is still valid
+   */
+  static async verifyToken(req, res) {
+    try {
+      const { token } = req.body;
+
+      if (!token) {
+        return sendError(res, 'Token is required', 400);
+      }
+
+      const result = await AuthService.verifyToken(token);
+
+      if (!result.success) {
+        return sendError(res, 'Token is invalid or expired', 401);
+      }
+
+      sendSuccess(res, { valid: true, data: result.data }, 'Token is valid');
+    } catch (error) {
+      console.error('Error in verifyToken:', error);
+      sendError(res, 'Token verification failed', 500);
+    }
+  }
 }
 
 export default AuthController;

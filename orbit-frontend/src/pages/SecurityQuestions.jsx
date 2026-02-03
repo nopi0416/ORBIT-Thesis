@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { authAPI } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Select } from '../components/ui/select';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../components/ui/select';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { AlertCircle, Loader2, ArrowLeft } from '../components/icons';
+import { getDashboardRoute } from '../utils/roleRouting';
 
 const SECURITY_QUESTIONS = [
   'What was the name of your first pet?',
@@ -21,9 +23,12 @@ const SECURITY_QUESTIONS = [
 
 export default function SecurityQuestions() {
   const navigate = useNavigate();
+  const { setUser } = useAuth();
   const [searchParams] = useSearchParams();
   const email = searchParams.get('email');
   const role = searchParams.get('role');
+  const userId = searchParams.get('userId');
+  const fromPasswordChange = searchParams.get('fromPasswordChange');
 
   const [question1, setQuestion1] = useState('');
   const [answer1, setAnswer1] = useState('');
@@ -34,7 +39,7 @@ export default function SecurityQuestions() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  if (!email || !role) {
+  if (!email || !role || !userId) {
     navigate('/login');
     return null;
   }
@@ -60,9 +65,21 @@ export default function SecurityQuestions() {
 
     setIsLoading(true);
 
-    // Get userId from URL params or from previous flow
-    const userId = searchParams.get('userId') || searchParams.get('email');
-    
+    // Step 1: Record user agreement
+    console.log('[SECURITY QUESTIONS] Recording user agreement');
+    const agreementResult = await authAPI.acceptUserAgreement(userId, '1.0');
+
+    if (!agreementResult.success) {
+      console.error('[SECURITY QUESTIONS] Failed to record agreement:', agreementResult.error);
+      setIsLoading(false);
+      setError('An error occurred. Please try again.');
+      return;
+    }
+
+    console.log('[SECURITY QUESTIONS] User agreement recorded successfully');
+
+    // Step 2: Save security questions
+    console.log('[SECURITY QUESTIONS] Saving security questions');
     const result = await authAPI.saveSecurityQuestions(userId, {
       question1,
       answer1,
@@ -72,15 +89,79 @@ export default function SecurityQuestions() {
       answer3,
     });
 
-    setIsLoading(false);
-
     if (!result.success) {
-      setError(result.error);
+      setIsLoading(false);
+      setError('An error occurred. Please try again.');
       return;
     }
 
-    // Navigate to user agreement
-    navigate(`/user-agreement?userId=${userId}`);
+    console.log('[SECURITY QUESTIONS] Security questions saved successfully');
+
+    // Step 3: Save the password LAST (retrieved from session storage from password change page)
+    // Only save after security questions are confirmed saved
+    const passwordData = sessionStorage.getItem('firstTimePassword');
+    if (passwordData && fromPasswordChange) {
+      try {
+        const { currentPassword, newPassword } = JSON.parse(passwordData);
+        console.log('[SECURITY QUESTIONS] Saving password from first-time setup');
+        
+        const passwordResult = await authAPI.firstTimePassword(email, currentPassword, newPassword);
+        
+        if (!passwordResult.success) {
+          console.error('[SECURITY QUESTIONS] Password save failed:', passwordResult.error);
+          setIsLoading(false);
+          // Password save failed but security questions were already saved
+          // Still redirect to dashboard but inform user
+          setError('Setup completed but password change was not applied. Please contact support.');
+          return;
+        }
+
+        console.log('[SECURITY QUESTIONS] Password saved successfully');
+      } catch (error) {
+        console.error('[SECURITY QUESTIONS] Error saving password:', error);
+        setIsLoading(false);
+        // Password save failed but security questions were already saved
+        setError('Setup completed but password change was not applied. Please contact support.');
+        return;
+      }
+    }
+
+    // All steps completed successfully - clear session storage and set user in context
+    console.log('[SECURITY QUESTIONS] All setup steps completed, fetching user details');
+    
+    // Fetch complete user details from backend
+    const userDetailsResult = await authAPI.getUserDetails(userId);
+    
+    if (!userDetailsResult.success) {
+      console.error('[SECURITY QUESTIONS] Failed to fetch user details:', userDetailsResult.error);
+      // Still allow them to proceed even if we can't fetch details
+      setUser({
+        id: userId,
+        email,
+        role,
+      });
+    } else {
+      // Set user with complete details from backend
+      console.log('[SECURITY QUESTIONS] User details fetched successfully');
+      sessionStorage.removeItem('firstTimePassword');
+      
+      const userData = {
+        id: userDetailsResult.data.user_id,
+        email: userDetailsResult.data.email,
+        first_name: userDetailsResult.data.first_name,
+        last_name: userDetailsResult.data.last_name,
+        department: userDetailsResult.data.department,
+        status: userDetailsResult.data.status,
+        role,
+      };
+      
+      setUser(userData);
+    }
+
+    // Redirect to role-specific dashboard
+    const dashboardRoute = getDashboardRoute(role);
+    console.log('[SECURITY QUESTIONS] Redirecting to', dashboardRoute, 'for role:', role);
+    navigate(dashboardRoute);
   };
 
   return (
@@ -118,7 +199,14 @@ export default function SecurityQuestions() {
               {/* Back button */}
               <button
                 type="button"
-                onClick={() => navigate('/verify-otp')}
+                onClick={() => {
+                  // If coming from password change, go back to password page, otherwise go to login
+                  if (fromPasswordChange) {
+                    navigate(`/first-time-password?email=${encodeURIComponent(email)}&userId=${encodeURIComponent(userId)}&role=${encodeURIComponent(role)}`);
+                  } else {
+                    navigate('/login');
+                  }
+                }}
                 className="inline-flex items-center gap-2 text-sm transition-colors"
                 style={{ color: 'oklch(0.65 0.03 280)' }}
               >
@@ -139,13 +227,17 @@ export default function SecurityQuestions() {
                 <Label htmlFor="question1" className="text-sm font-medium">
                   Security Question 1
                 </Label>
-                <Select value={question1} onValueChange={setQuestion1} disabled={isLoading}>
-                  <option value="">Select a question</option>
-                  {SECURITY_QUESTIONS.map((q) => (
-                    <option key={q} value={q}>
-                      {q}
-                    </option>
-                  ))}
+                <Select value={question1} onValueChange={setQuestion1}>
+                  <SelectTrigger disabled={isLoading} className="h-11">
+                    <SelectValue placeholder="Select a question" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SECURITY_QUESTIONS.map((q) => (
+                      <SelectItem key={q} value={q}>
+                        {q}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
                 <Input
                   id="answer1"
@@ -165,13 +257,17 @@ export default function SecurityQuestions() {
                 <Label htmlFor="question2" className="text-sm font-medium">
                   Security Question 2
                 </Label>
-                <Select value={question2} onValueChange={setQuestion2} disabled={isLoading}>
-                  <option value="">Select a question</option>
-                  {SECURITY_QUESTIONS.map((q) => (
-                    <option key={q} value={q} disabled={q === question1}>
-                      {q}
-                    </option>
-                  ))}
+                <Select value={question2} onValueChange={setQuestion2}>
+                  <SelectTrigger disabled={isLoading} className="h-11">
+                    <SelectValue placeholder="Select a question" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SECURITY_QUESTIONS.map((q) => (
+                      <SelectItem key={q} value={q} disabled={q === question1}>
+                        {q}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
                 <Input
                   id="answer2"
@@ -190,13 +286,17 @@ export default function SecurityQuestions() {
                 <Label htmlFor="question3" className="text-sm font-medium">
                   Security Question 3
                 </Label>
-                <Select value={question3} onValueChange={setQuestion3} disabled={isLoading}>
-                  <option value="">Select a question</option>
-                  {SECURITY_QUESTIONS.map((q) => (
-                    <option key={q} value={q} disabled={q === question1 || q === question2}>
-                      {q}
-                    </option>
-                  ))}
+                <Select value={question3} onValueChange={setQuestion3}>
+                  <SelectTrigger disabled={isLoading} className="h-11">
+                    <SelectValue placeholder="Select a question" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SECURITY_QUESTIONS.map((q) => (
+                      <SelectItem key={q} value={q} disabled={q === question1 || q === question2}>
+                        {q}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
                 <Input
                   id="answer3"
@@ -223,10 +323,10 @@ export default function SecurityQuestions() {
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    Saving...
+                    Completing Setup...
                   </>
                 ) : (
-                  'Continue'
+                  'Complete Setup'
                 )}
               </Button>
             </form>

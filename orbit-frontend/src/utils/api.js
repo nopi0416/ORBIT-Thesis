@@ -252,6 +252,16 @@ export const authAPI = {
       includeToken: false,
     });
   },
+
+  /**
+   * Get user details by user ID
+   */
+  getUserDetails: async (userId) => {
+    return apiCall(`/auth/user/${userId}`, {
+      method: 'GET',
+      includeToken: false,
+    });
+  },
 };
 
 export default apiCall;

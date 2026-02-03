@@ -248,8 +248,35 @@ export class AuthService {
         };
       }
 
-      // Check if user agreement is accepted (first-time login)
+      // Fetch user role from tbluserroles joined with tblroles
       const userId = user.user_id || user.id;
+      const { data: userRoleData, error: roleError } = await supabase
+        .from('tbluserroles')
+        .select(`
+          user_role_id,
+          user_id,
+          is_active,
+          tblroles:role_id (
+            role_id,
+            role_name,
+            description
+          )
+        `)
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .single();
+
+      if (roleError || !userRoleData || !userRoleData.tblroles) {
+        console.log(`[COMPLETE LOGIN] No active role found for user ${userId}:`, roleError?.message);
+        return {
+          success: false,
+          error: 'No active role assigned to user',
+        };
+      }
+
+      const userRole = userRoleData.tblroles.role_name;
+
+      // Check if user agreement is accepted (first-time login)
       const { data: userAgreements, error: agreementError } = await supabase
         .from('tbluser_agreements')
         .select('*')
@@ -269,7 +296,7 @@ export class AuthService {
             requiresUserAgreement: true,
             userId,
             email: user.email,
-            role: user.role,
+            role: userRole,
             firstName: user.first_name,
             lastName: user.last_name,
           },
@@ -278,7 +305,7 @@ export class AuthService {
       }
 
       // Generate JWT token
-      const token = this.generateToken(userId, user.email, user.role);
+      const token = this.generateToken(userId, user.email, userRole);
 
       // Update last login
       try {
@@ -298,7 +325,7 @@ export class AuthService {
           email: user.email,
           firstName: user.first_name,
           lastName: user.last_name,
-          role: user.role,
+          role: userRole,
           userType: 'user',
         },
         message: 'Login successful',
@@ -584,7 +611,7 @@ export class AuthService {
   }
 
   /**
-   * Save security questions for user
+   * Save security questions for user and mark first-time login as complete
    */
   static async saveSecurityQuestions(userId, questions) {
     try {
@@ -595,7 +622,7 @@ export class AuthService {
         .eq('user_id', userId);
 
       // Insert new security questions
-      const { error } = await supabase
+      const { error: questionsError } = await supabase
         .from('tblsecurity_questions')
         .insert([
           {
@@ -610,7 +637,20 @@ export class AuthService {
           },
         ]);
 
-      if (error) throw error;
+      if (questionsError) throw questionsError;
+
+      // Mark user as no longer first-time login (first-time setup is now complete)
+      const { error: updateError } = await supabase
+        .from('tblusers')
+        .update({
+          is_first_login: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', userId);
+
+      if (updateError) throw updateError;
+
+      console.log(`[SECURITY QUESTIONS] User ${userId} completed first-time setup`);
 
       return {
         success: true,
@@ -618,9 +658,10 @@ export class AuthService {
       };
     } catch (error) {
       console.error('Error saving security questions:', error);
+      // Don't expose database error details to frontend for security/privacy reasons
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to save security questions. Please try again or contact support.',
       };
     }
   }
@@ -785,6 +826,46 @@ export class AuthService {
       return {
         success: false,
         error: error.message || 'Invalid token',
+      };
+    }
+  }
+
+  /**
+   * Get user details by user ID
+   */
+  static async getUserDetails(userId) {
+    try {
+      const { data, error } = await supabase
+        .from('tblusers')
+        .select('user_id, first_name, last_name, department, status, email')
+        .eq('user_id', userId)
+        .single();
+
+      if (error) throw error;
+
+      if (!data) {
+        return {
+          success: false,
+          error: 'User not found',
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          user_id: data.user_id,
+          first_name: data.first_name,
+          last_name: data.last_name,
+          department: data.department,
+          status: data.status,
+          email: data.email,
+        },
+      };
+    } catch (error) {
+      console.error('Error getting user details:', error);
+      return {
+        success: false,
+        error: error.message,
       };
     }
   }

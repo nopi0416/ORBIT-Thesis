@@ -31,4 +31,10 @@ router.post('/verify-security-answers', AuthController.verifySecurityAnswers);
 router.post('/support-ticket', AuthController.createSupportTicket);
 router.post('/user-agreement', AuthController.acceptUserAgreement);
 
+// User Details Routes
+router.get('/user/:userId', AuthController.getUserDetails);
+
+// Token Verification Routes
+router.post('/verify-token', AuthController.verifyToken);
+
 export default router;
