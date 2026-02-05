@@ -239,25 +239,34 @@ export class AuthController {
     try {
       const { email, newPassword } = req.body;
 
+      console.log(`[RESET PASSWORD CONTROLLER] Received request for: ${email}`);
+
       if (!email || !newPassword) {
+        console.log(`[RESET PASSWORD CONTROLLER] Missing email or newPassword`);
         return sendError(res, 'Email and new password are required', 400);
       }
 
       const passwordValidation = validatePassword(newPassword);
       if (!passwordValidation.isValid) {
+        console.log(`[RESET PASSWORD CONTROLLER] Password validation failed:`, passwordValidation.errors);
         return sendError(res, passwordValidation.errors.join('; '), 400);
       }
 
+      console.log(`[RESET PASSWORD CONTROLLER] Validation passed, calling AuthService.resetPasswordAfterOTP`);
       const result = await AuthService.resetPasswordAfterOTP(email, newPassword);
 
+      console.log(`[RESET PASSWORD CONTROLLER] Service result:`, result);
       if (!result.success) {
         // Don't expose internal errors to frontend
-        return sendError(res, typeof result.error === 'string' ? result.error : 'Failed to reset password', 400);
+        const errorMessage = typeof result.error === 'string' ? result.error : 'Failed to reset password';
+        console.log(`[RESET PASSWORD CONTROLLER] Reset failed with error:`, errorMessage);
+        return sendError(res, errorMessage, 400);
       }
 
+      console.log(`[RESET PASSWORD CONTROLLER] Password reset successful for: ${email}`);
       sendSuccess(res, {}, result.message);
     } catch (error) {
-      console.error('Error in resetPassword:', error);
+      console.error('[RESET PASSWORD CONTROLLER] Catch error:', error);
       // Don't expose internal error details
       sendError(res, 'An error occurred while resetting your password', 500);
     }
@@ -333,6 +342,56 @@ export class AuthController {
       sendSuccess(res, {}, result.message);
     } catch (error) {
       console.error('Error in verifySecurityAnswers:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * POST /api/auth/security-question
+   * Get one random security question for password reset
+   */
+  static async getSecurityQuestion(req, res) {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return sendError(res, 'Email is required', 400);
+      }
+
+      const result = await AuthService.getSecurityQuestion(email);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Security question retrieved successfully');
+    } catch (error) {
+      console.error('Error in getSecurityQuestion:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * POST /api/auth/verify-security-answer
+   * Verify a single security answer for password reset
+   */
+  static async verifySingleSecurityAnswer(req, res) {
+    try {
+      const { email, questionIndex, answer } = req.body;
+
+      if (!email || !questionIndex || !answer) {
+        return sendError(res, 'Email, question index, and answer are required', 400);
+      }
+
+      const result = await AuthService.verifySingleSecurityAnswer(email, questionIndex, answer);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, {}, result.message);
+    } catch (error) {
+      console.error('Error in verifySingleSecurityAnswer:', error);
       sendError(res, error.message, 500);
     }
   }

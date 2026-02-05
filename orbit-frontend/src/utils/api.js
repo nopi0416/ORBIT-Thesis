@@ -195,6 +195,28 @@ export const authAPI = {
   },
 
   /**
+   * Get one random security question for password reset
+   */
+  getSecurityQuestion: async (email) => {
+    return apiCall('/auth/security-question', {
+      method: 'POST',
+      body: { email },
+      includeToken: false,
+    });
+  },
+
+  /**
+   * Verify single security answer for password reset
+   */
+  verifySingleSecurityAnswer: async (email, questionIndex, answer) => {
+    return apiCall('/auth/verify-security-answer', {
+      method: 'POST',
+      body: { email, questionIndex, answer },
+      includeToken: false,
+    });
+  },
+
+  /**
    * Create support ticket
    */
   createSupportTicket: async (ticketData) => {

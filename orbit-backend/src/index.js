@@ -4,6 +4,8 @@ import helmet from 'helmet';
 import http from 'http';
 import { corsMiddleware } from './config/cors.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { enforceHTTPS, securityHeaders } from './middleware/httpsEnforcement.js';
+import { apiLimiter } from './middleware/rateLimiter.js';
 import apiRoutes from './routes/index.js';
 import { initWebSocketServer } from './realtime/websocketServer.js';
 
@@ -16,11 +18,20 @@ const PORT = process.env.PORT || 3001;
 // MIDDLEWARE
 // ============================================================================
 
+// HTTPS Enforcement (production only)
+app.use(enforceHTTPS);
+
+// Security Headers
+app.use(securityHeaders);
+
 // Security
 app.use(helmet());
 
 // CORS
 app.use(corsMiddleware);
+
+// General API Rate Limiting
+app.use(apiLimiter);
 
 // Body Parsing
 app.use(express.json());

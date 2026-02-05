@@ -9,6 +9,24 @@ import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../utils/api';
 import { getDashboardRoute } from '../utils/roleRouting';
 
+const carouselSlides = [
+  {
+    image: '/carousel-1.png',
+    title: 'Enterprise Security',
+    description: 'Bank-level encryption for your sensitive data',
+  },
+  {
+    image: '/carousel-2.png',
+    title: 'Financial Intelligence',
+    description: 'Real-time insights for better decision making',
+  },
+  {
+    image: '/carousel-3.png',
+    title: 'Team Collaboration',
+    description: 'Work together seamlessly across your organization',
+  },
+];
+
 export default function Login() {
   const navigate = useNavigate();
   const { login, completeLogin } = useAuth();
@@ -22,6 +40,7 @@ export default function Login() {
   const [requiresOTP, setRequiresOTP] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(180); // 3 minutes
+  const [currentCarouselIndex, setCurrentCarouselIndex] = useState(0);
   const inputRefs = useRef([]);
 
   // Timer for OTP expiration
@@ -40,6 +59,15 @@ export default function Login() {
 
     return () => clearInterval(interval);
   }, [requiresOTP, timeRemaining]);
+
+  // Auto-rotate carousel
+  useEffect(() => {
+    const carouselInterval = setInterval(() => {
+      setCurrentCarouselIndex((prev) => (prev + 1) % carouselSlides.length);
+    }, 5000); // Change image every 5 seconds
+
+    return () => clearInterval(carouselInterval);
+  }, []);
 
   // Initialize resend cooldown when OTP page is shown
   useEffect(() => {
@@ -269,13 +297,14 @@ export default function Login() {
 
       <div className="relative z-10 w-full max-w-4xl">
         <div className="rounded-2xl shadow-2xl overflow-hidden grid md:grid-cols-2 min-h-[650px]" style={{ backgroundColor: 'oklch(0.18 0.05 280)' }}>
-          {/* Left side - Image carousel (simplified branding section) */}
-          <div className="hidden md:flex md:flex-col md:justify-between p-10 relative overflow-hidden"
+          {/* Left side - Image carousel */}
+          <div className="hidden md:flex md:flex-col md:justify-between p-8 relative overflow-hidden"
             style={{
-              background: 'linear-gradient(135deg, oklch(0.15 0.08 250) 0%, oklch(0.12 0.06 260) 100%)',
+              background: 'linear-gradient(to bottom right, rgb(10, 61, 74), rgb(15, 85, 99), rgb(26, 107, 122))',
             }}>
+            
             {/* Logo and branding */}
-            <div className="flex items-center gap-3 z-10">
+            <div className="flex items-center gap-3 z-20 relative">
               <div className="w-10 h-10 rounded-lg flex items-center justify-center border border-white/20"
                 style={{
                   background: 'rgba(255, 255, 255, 0.1)',
@@ -285,23 +314,56 @@ export default function Login() {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-white">ORBIT</h1>
-                <p className="text-xs text-white/80">Budget Intelligence Tool</p>
+                <p className="text-xs text-white/80">Financial Intelligence Tool</p>
               </div>
             </div>
 
-            {/* Content overlay */}
-            <div className="space-y-4 max-w-md z-10">
-              <h2 className="text-3xl font-bold text-white">Enterprise Security</h2>
-              <p className="text-lg text-white/90">Bank-level encryption for your sensitive data</p>
+            {/* Carousel Images */}
+            <div className="absolute inset-0">
+              {carouselSlides.map((slide, index) => (
+                <div
+                  key={index}
+                  className={`absolute inset-0 transition-opacity duration-1000 ${
+                    index === currentCarouselIndex ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
+                  <img
+                    src={slide.image}
+                    alt={slide.title}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-0" style={{
+                    background: 'linear-gradient(to top, rgba(10, 61, 74, 0.9), rgba(10, 61, 74, 0.4), transparent)'
+                  }}></div>
+                </div>
+              ))}
             </div>
 
-            {/* Decorative gradient */}
-            <div
-              className="absolute bottom-0 left-0 right-0 h-32 pointer-events-none"
-              style={{
-                background: 'linear-gradient(to top, oklch(0.1 0.04 260) 0%, transparent 100%)',
-              }}
-            />
+            {/* Content overlay */}
+            <div className="space-y-3 max-w-md z-20 relative mt-auto">
+              <h2 className="text-3xl font-bold text-white">
+                {carouselSlides[currentCarouselIndex].title}
+              </h2>
+              <p className="text-lg text-white/90">
+                {carouselSlides[currentCarouselIndex].description}
+              </p>
+
+              {/* Carousel indicators */}
+              <div className="flex gap-2 mt-6 justify-center">
+                {carouselSlides.map((_, index) => (
+                  <button
+                    key={index}
+                    onClick={() => setCurrentCarouselIndex(index)}
+                    className={`rounded-full transition-all ${
+                      index === currentCarouselIndex
+                        ? 'w-8 h-1 bg-white'
+                        : 'w-4 h-1 bg-white/40'
+                    }`}
+                    aria-label={`Go to slide ${index + 1}`}
+                  />
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* Right side - Login form */}

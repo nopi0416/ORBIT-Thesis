@@ -4,11 +4,13 @@
  */
 
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import supabase from '../config/database.js';
 import { sendOTPEmail, sendPasswordResetEmail } from '../config/email.js';
 import { validatePassword } from '../utils/authValidators.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const BCRYPT_SALT_ROUNDS = 12; // Security: Higher rounds = slower but more secure
 
 export class AuthService {
   /**
@@ -38,18 +40,21 @@ export class AuthService {
         };
       }
 
-      // Hash password (in production, use bcrypt or similar)
-      // For now, we'll store as-is but mark as needs change
+      // Hash password using bcrypt with salt rounds
+      const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+      
       const { data, error } = await supabase
         .from('tblusers')
         .insert([
           {
             email,
-            password, // TODO: Hash before storing
+            password_hash: hashedPassword, // Store hashed password
             first_name: firstName,
             last_name: lastName,
             role,
             is_active: true,
+            failed_login_attempts: 0, // Account lockout tracking
+            account_locked_until: null, // Account lockout expiry
             password_expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(), // 90 days
             created_at: new Date().toISOString(),
           },
@@ -96,15 +101,68 @@ export class AuthService {
 
       if (adminUser) {
         console.log(`[LOGIN] Found admin user: ${email}`);
-        // Verify admin password (password_hash field)
-        // In production, use bcrypt.compare(password, adminUser.password_hash)
-        if (adminUser.password_hash !== password) {
+        
+        // Check if account is locked
+        if (adminUser.account_locked_until && new Date() < new Date(adminUser.account_locked_until)) {
+          console.log(`[LOGIN] Admin account locked for: ${email}`);
+          return {
+            success: false,
+            error: 'Account is temporarily locked. Please try again later.',
+          };
+        }
+        
+        // Check if password has expired
+        if (adminUser.password_expires_at && new Date() > new Date(adminUser.password_expires_at)) {
+          console.log(`[LOGIN] Admin password expired for: ${email}`);
+          return {
+            success: false,
+            error: 'Your password has expired. Please reset it.',
+          };
+        }
+        
+        // Verify admin password using bcrypt (support both hashed and legacy plaintext)
+        let passwordMatch = false;
+        if (adminUser.password_hash) {
+          // Check if it's a bcrypt hash (starts with $2a$, $2b$, or $2y$)
+          if (adminUser.password_hash.startsWith('$2')) {
+            // It's a bcrypt hash
+            passwordMatch = await bcrypt.compare(password, adminUser.password_hash);
+          } else {
+            // Legacy plaintext password stored as password_hash
+            passwordMatch = password === adminUser.password_hash;
+          }
+        }
+        if (!passwordMatch) {
           console.log(`[LOGIN] Admin password mismatch for: ${email}`);
+          
+          // Increment failed attempts and lock account if needed
+          const newFailedAttempts = (adminUser.failed_login_attempts || 0) + 1;
+          const shouldLock = newFailedAttempts >= 3; // Lock after 3 failed attempts
+          
+          await supabase
+            .from('tbladminusers')
+            .update({
+              failed_login_attempts: newFailedAttempts,
+              account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
+            })
+            .eq('id', adminUser.id);
+          
+          console.log(`[LOGIN] Admin failed attempts: ${newFailedAttempts}`);
+          
           return {
             success: false,
             error: 'Invalid email or password',
           };
         }
+        
+        // Reset failed attempts on successful login
+        await supabase
+          .from('tbladminusers')
+          .update({
+            failed_login_attempts: 0,
+            account_locked_until: null
+          })
+          .eq('id', adminUser.id);
 
         // Generate OTP for admin login
         const otpResult = await this.generateOTP(email, 'login');
@@ -143,16 +201,67 @@ export class AuthService {
       }
 
       console.log(`[LOGIN] Found user: ${email}`);
+      
+      // Check if account is locked
+      if (user.account_locked_until && new Date() < new Date(user.account_locked_until)) {
+        console.log(`[LOGIN] User account locked for: ${email}`);
+        return {
+          success: false,
+          error: 'Account is temporarily locked. Please try again later.',
+        };
+      }
+      
+      // Check if password has expired
+      if (user.password_expires_at && new Date() > new Date(user.password_expires_at)) {
+        console.log(`[LOGIN] User password expired for: ${email}`);
+        return {
+          success: false,
+          error: 'Your password has expired. Please reset it.',
+        };
+      }
 
-      // Verify password (check password_hash first, fall back to password column)
-      const passwordToCheck = user.password_hash || user.password;
-      if (passwordToCheck !== password) {
+      // Verify password using bcrypt (support both password_hash and legacy password column)
+      let passwordMatch = false;
+      if (user.password_hash) {
+        // Check if it's a bcrypt hash (starts with $2a$, $2b$, or $2y$)
+        if (user.password_hash.startsWith('$2')) {
+          // It's a bcrypt hash
+          passwordMatch = await bcrypt.compare(password, user.password_hash);
+        } else {
+          // Legacy plaintext password stored as password_hash
+          passwordMatch = password === user.password_hash;
+        }
+      }
+      if (!passwordMatch) {
         console.log(`[LOGIN] Password mismatch for: ${email}`);
+        
+        // Increment failed attempts and lock account if needed
+        const newFailedAttempts = (user.failed_login_attempts || 0) + 1;
+        const shouldLock = newFailedAttempts >= 3; // Lock after 3 failed attempts
+        
+        await supabase
+          .from('tblusers')
+          .update({
+            failed_login_attempts: newFailedAttempts,
+            account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
+          })
+          .eq('id', user.id);
+        
+        console.log(`[LOGIN] User failed attempts: ${newFailedAttempts}`);
         return {
           success: false,
           error: 'Invalid email or password',
         };
       }
+
+      // Reset failed attempts on successful login
+      await supabase
+        .from('tblusers')
+        .update({
+          failed_login_attempts: 0,
+          account_locked_until: null
+        })
+        .eq('id', user.id);
 
       console.log(`[LOGIN] Password verified for: ${email}, generating OTP`);
 
@@ -499,23 +608,27 @@ export class AuthService {
     try {
       console.log(`[RESET PASSWORD] Starting for: ${email}`);
       
-      // Validate new password
+      // Validate new password FIRST (before hashing)
       const validation = validatePassword(newPassword);
       if (!validation.isValid) {
         console.log(`[RESET PASSWORD] Validation failed:`, validation.errors);
         return {
           success: false,
-          error: validation.errors,
+          error: validation.errors.join('; '),
         };
       }
+      
+      // Hash the new password after validation passes
+      const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
 
       console.log(`[RESET PASSWORD] Validation passed, updating database`);
 
-      // Update password_hash only (most reliable column)
+      // Update password_hash with bcrypt-hashed password
+      // Note: Only updating password_hash since other security columns may not exist yet
       const { data, error } = await supabase
         .from('tblusers')
         .update({
-          password_hash: newPassword, // TODO: Hash with bcrypt before storing
+          password_hash: hashedPassword,
         })
         .eq('email', email)
         .select();
@@ -555,9 +668,12 @@ export class AuthService {
       if (!validation.isValid) {
         return {
           success: false,
-          error: validation.errors,
+          error: validation.errors.join('; '),
         };
       }
+      
+      // Hash the new password
+      const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
 
       // If current password is provided, verify it
       if (currentPassword) {
@@ -567,7 +683,27 @@ export class AuthService {
           .eq('email', email)
           .single();
 
-        if (!user || user.password_hash !== currentPassword) {
+        if (!user) {
+          return {
+            success: false,
+            error: 'User not found',
+          };
+        }
+
+        // Verify current password using bcrypt (support both hashed and plaintext)
+        let passwordMatch = false;
+        if (user.password_hash) {
+          // Check if it's a bcrypt hash (starts with $2a$, $2b$, or $2y$)
+          if (user.password_hash.startsWith('$2')) {
+            // It's a bcrypt hash
+            passwordMatch = await bcrypt.compare(currentPassword, user.password_hash);
+          } else {
+            // Legacy plaintext password
+            passwordMatch = currentPassword === user.password_hash;
+          }
+        }
+
+        if (!passwordMatch) {
           return {
             success: false,
             error: 'Current password is incorrect',
@@ -575,12 +711,12 @@ export class AuthService {
         }
       }
 
-      // Update password_hash (don't try to update non-existent column)
+      // Update password_hash with bcrypt-hashed password
+      // Note: Only updating password_hash since other security columns may not exist yet
       const { data, error } = await supabase
         .from('tblusers')
         .update({
-          password_hash: newPassword, // TODO: Hash with bcrypt before storing
-          updated_at: new Date().toISOString(),
+          password_hash: hashedPassword,
         })
         .eq('email', email)
         .select();
@@ -615,6 +751,16 @@ export class AuthService {
    */
   static async saveSecurityQuestions(userId, questions) {
     try {
+      // Reset failed login attempts and account lock when questions are saved
+      // This happens after password is set in first-time flow
+      await supabase
+        .from('tblusers')
+        .update({
+          failed_login_attempts: 0,
+          account_locked_until: null
+        })
+        .eq('user_id', userId);
+      
       // Delete existing security questions
       await supabase
         .from('tblsecurity_questions')
@@ -673,7 +819,7 @@ export class AuthService {
     try {
       const { data: user } = await supabase
         .from('tblusers')
-        .select('id')
+        .select('user_id')
         .eq('email', email)
         .single();
 
@@ -687,7 +833,7 @@ export class AuthService {
       const { data: securityData } = await supabase
         .from('tblsecurity_questions')
         .select('*')
-        .eq('user_id', user.id)
+        .eq('user_id', user.user_id)
         .single();
 
       if (!securityData) {
@@ -715,6 +861,131 @@ export class AuthService {
       };
     } catch (error) {
       console.error('Error verifying security answers:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Get one random security question for password reset
+   */
+  static async getSecurityQuestion(email) {
+    try {
+      const { data: user } = await supabase
+        .from('tblusers')
+        .select('user_id')
+        .eq('email', email)
+        .single();
+
+      if (!user) {
+        return {
+          success: false,
+          error: 'User not found',
+        };
+      }
+
+      const { data: securityData } = await supabase
+        .from('tblsecurity_questions')
+        .select('question_1, question_2, question_3')
+        .eq('user_id', user.user_id)
+        .single();
+
+      if (!securityData) {
+        return {
+          success: false,
+          error: 'Security questions not found',
+        };
+      }
+
+      // Pick a random question from the three
+      const questions = [
+        { index: 1, question: securityData.question_1 },
+        { index: 2, question: securityData.question_2 },
+        { index: 3, question: securityData.question_3 },
+      ];
+
+      const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
+
+      return {
+        success: true,
+        data: {
+          questionIndex: randomQuestion.index,
+          question: randomQuestion.question,
+        },
+      };
+    } catch (error) {
+      console.error('Error getting security question:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Verify a single security answer for password reset
+   */
+  static async verifySingleSecurityAnswer(email, questionIndex, answer) {
+    try {
+      const { data: user } = await supabase
+        .from('tblusers')
+        .select('user_id')
+        .eq('email', email)
+        .single();
+
+      if (!user) {
+        return {
+          success: false,
+          error: 'User not found',
+        };
+      }
+
+      const { data: securityData } = await supabase
+        .from('tblsecurity_questions')
+        .select('answer_1, answer_2, answer_3')
+        .eq('user_id', user.user_id)
+        .single();
+
+      if (!securityData) {
+        return {
+          success: false,
+          error: 'Security questions not found',
+        };
+      }
+
+      // Get the correct answer based on the question index
+      const answerMap = {
+        1: securityData.answer_1,
+        2: securityData.answer_2,
+        3: securityData.answer_3,
+      };
+
+      const correctAnswer = answerMap[questionIndex];
+      if (!correctAnswer) {
+        return {
+          success: false,
+          error: 'Invalid question index',
+        };
+      }
+
+      // Verify answer (case-insensitive)
+      const answerMatch = correctAnswer.toLowerCase() === answer.toLowerCase();
+
+      if (!answerMatch) {
+        return {
+          success: false,
+          error: 'Security answer is incorrect',
+        };
+      }
+
+      return {
+        success: true,
+        message: 'Security answer verified successfully',
+      };
+    } catch (error) {
+      console.error('Error verifying security answer:', error);
       return {
         success: false,
         error: error.message,
