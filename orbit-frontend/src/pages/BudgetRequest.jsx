@@ -15,6 +15,7 @@ import { resolveUserRole } from "../utils/roleUtils";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
 import budgetConfigService from "../services/budgetConfigService";
 import { connectWebSocket, addWebSocketListener } from "../services/realtimeService";
+import { fetchWithCache, invalidateNamespace } from "../utils/dataCache";
 const parseStoredList = (value) => {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -61,6 +62,12 @@ export default function BudgetConfigurationPage() {
   const { user } = useAuth();
   const userRole = resolveUserRole(user);
   const [activeTab, setActiveTab] = useState("list");
+
+  useEffect(() => {
+    const handleSwitchToList = () => setActiveTab("list");
+    window.addEventListener('switchToConfigList', handleSwitchToList);
+    return () => window.removeEventListener('switchToConfigList', handleSwitchToList);
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -219,7 +226,12 @@ function ConfigurationList() {
       setError(null);
       try {
         const token = user?.token || localStorage.getItem("authToken") || "";
-        const data = await budgetConfigService.getBudgetConfigurations({ org_id: user?.org_id }, token);
+        const data = await fetchWithCache(
+          'budgetConfigs',
+          `org_${user?.org_id || 'all'}`,
+          () => budgetConfigService.getBudgetConfigurations({ org_id: user?.org_id }, token),
+          5 * 60 * 1000 // 5 minutes TTL
+        );
         setConfigurations((data || []).map(transformConfig));
       } catch (err) {
         console.error("Error fetching configurations:", err);
@@ -1105,9 +1117,24 @@ function CreateConfiguration() {
       try {
         setApprovalsLoading(true);
         const [l1Data, l2Data, l3Data] = await Promise.all([
-          budgetConfigService.getApproversByLevel("L1", token),
-          budgetConfigService.getApproversByLevel("L2", token),
-          budgetConfigService.getApproversByLevel("L3", token),
+          fetchWithCache(
+            'approvers',
+            'L1',
+            () => budgetConfigService.getApproversByLevel("L1", token),
+            10 * 60 * 1000 // 10 minutes TTL
+          ),
+          fetchWithCache(
+            'approvers',
+            'L2',
+            () => budgetConfigService.getApproversByLevel("L2", token),
+            10 * 60 * 1000
+          ),
+          fetchWithCache(
+            'approvers',
+            'L3',
+            () => budgetConfigService.getApproversByLevel("L3", token),
+            10 * 60 * 1000
+          ),
         ]);
         setApprovalsL1(l1Data || []);
         setApprovalsL2(l2Data || []);
@@ -1129,7 +1156,12 @@ function CreateConfiguration() {
     const fetchOrganizations = async () => {
       try {
         setOrganizationsLoading(true);
-        const data = await budgetConfigService.getOrganizations(token);
+        const data = await fetchWithCache(
+          'organizations',
+          'all',
+          () => budgetConfigService.getOrganizations(token),
+          10 * 60 * 1000 // 10 minutes TTL
+        );
         setOrganizations(data || []);
       } catch (err) {
         console.error("Error fetching organizations:", err);
@@ -1234,10 +1266,15 @@ function CreateConfiguration() {
     const lines = [];
 
     parentIds.forEach((parentId) => {
-      const children = childOrgMap[parentId] || [];
-      const parentSelected = paths.some((path) => path[0] === parentId && path.length === 1);
+      const parent = parentOrgs.find((p) => p.org_id === parentId);
+      if (!parent) return;
 
+      const children = childOrgMap[parentId] || [];
+      
+      // Get all selected child departments for this parent
+      const selectedChildren = [];
       const childSelections = new Map();
+      
       paths.forEach((path) => {
         if (path[0] !== parentId) return;
         if (path.length >= 2) {
@@ -1255,6 +1292,7 @@ function CreateConfiguration() {
         }
       });
 
+      // Check if all children are selected
       const isChildAllSelected = (childId) => {
         const grandchildren = grandchildOrgMap[childId] || [];
         const entry = childSelections.get(childId);
@@ -1275,40 +1313,28 @@ function CreateConfiguration() {
 
       const allChildrenFullySelected = children.length > 0 && children.every((child) => isChildAllSelected(child.org_id));
 
-      if (!children.length || (parentSelected && childSelections.size === 0) || allChildrenFullySelected) {
-        lines.push({
-          key: `${parentId}-all`,
-          text: `${getOrgName(parentId)}`,
-          scope: { parentId },
-        });
-        return;
-      }
-
-      childSelections.forEach((entry, childId) => {
-        const grandchildren = grandchildOrgMap[childId] || [];
-        const hasGrandchildSelection = entry.grandchildIds.size > 0;
-        const allGrandchildrenSelected =
-          (entry.childSelected && !hasGrandchildSelection) ||
-          (grandchildren.length > 0 && entry.grandchildIds.size === grandchildren.length);
-
-        if (allGrandchildrenSelected) {
-          lines.push({
-            key: `${parentId}-${childId}-all`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)}`,
-            scope: { parentId, childId },
-          });
-          return;
-        }
-
-        const selectedGrandchildren = Array.from(entry.grandchildIds).map((id) => getOrgName(id));
-        if (selectedGrandchildren.length > 0) {
-          lines.push({
-            key: `${parentId}-${childId}-partial`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → ${selectedGrandchildren.join(", ")}`,
-            scope: { parentId, childId, grandchildIds: new Set(entry.grandchildIds) },
-          });
+      // Build department names list
+      const departmentNames = [];
+      children.forEach((child) => {
+        if (isChildAllSelected(child.org_id)) {
+          departmentNames.push(child.org_name);
         }
       });
+
+      // Create single line for this parent
+      if (allChildrenFullySelected || !children.length) {
+        lines.push({
+          key: `${parentId}-all`,
+          text: `${parent.org_name} → All`,
+          scope: { type: 'parent', parentId },
+        });
+      } else if (departmentNames.length > 0) {
+        lines.push({
+          key: `${parentId}-depts`,
+          text: `${parent.org_name} → ${departmentNames.join(', ')}`,
+          scope: { type: 'parent', parentId },
+        });
+      }
     });
 
     return lines;
@@ -1348,10 +1374,15 @@ function CreateConfiguration() {
     const lines = [];
 
     parentIds.forEach((parentId) => {
-      const children = childOrgMap[parentId] || [];
-      const parentSelected = paths.some((path) => path[0] === parentId && path.length === 1);
+      const parent = parentOrgs.find((p) => p.org_id === parentId);
+      if (!parent) return;
 
+      const children = childOrgMap[parentId] || [];
+      
+      // Get all selected child departments for this parent
+      const selectedChildren = [];
       const childSelections = new Map();
+      
       paths.forEach((path) => {
         if (path[0] !== parentId) return;
         if (path.length >= 2) {
@@ -1369,6 +1400,7 @@ function CreateConfiguration() {
         }
       });
 
+      // Check if all children are selected
       const isChildAllSelected = (childId) => {
         const grandchildren = grandchildOrgMap[childId] || [];
         const entry = childSelections.get(childId);
@@ -1389,40 +1421,28 @@ function CreateConfiguration() {
 
       const allChildrenFullySelected = children.length > 0 && children.every((child) => isChildAllSelected(child.org_id));
 
-      if (!children.length || (parentSelected && childSelections.size === 0) || allChildrenFullySelected) {
-        lines.push({
-          key: `${parentId}-all`,
-          text: `${getOrgName(parentId)} → All`,
-          scope: { parentId },
-        });
-        return;
-      }
-
-      childSelections.forEach((entry, childId) => {
-        const grandchildren = grandchildOrgMap[childId] || [];
-        const hasGrandchildSelection = entry.grandchildIds.size > 0;
-        const allGrandchildrenSelected =
-          (entry.childSelected && !hasGrandchildSelection) ||
-          (grandchildren.length > 0 && entry.grandchildIds.size === grandchildren.length);
-
-        if (allGrandchildrenSelected) {
-          lines.push({
-            key: `${parentId}-${childId}-all`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → All`,
-            scope: { parentId, childId },
-          });
-          return;
-        }
-
-        const selectedGrandchildren = Array.from(entry.grandchildIds).map((id) => getOrgName(id));
-        if (selectedGrandchildren.length > 0) {
-          lines.push({
-            key: `${parentId}-${childId}-partial`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → ${selectedGrandchildren.join(", ")}`,
-            scope: { parentId, childId, grandchildIds: new Set(entry.grandchildIds) },
-          });
+      // Build department names list
+      const departmentNames = [];
+      children.forEach((child) => {
+        if (isChildAllSelected(child.org_id)) {
+          departmentNames.push(child.org_name);
         }
       });
+
+      // Create single line for this parent
+      if (allChildrenFullySelected || !children.length) {
+        lines.push({
+          key: `${parentId}-all`,
+          text: `${parent.org_name} → All`,
+          scope: { type: 'parent', parentId },
+        });
+      } else if (departmentNames.length > 0) {
+        lines.push({
+          key: `${parentId}-depts`,
+          text: `${parent.org_name} → ${departmentNames.join(', ')}`,
+          scope: { type: 'parent', parentId },
+        });
+      }
     });
 
     return lines;
@@ -1588,6 +1608,9 @@ function CreateConfiguration() {
 
       await budgetConfigService.createBudgetConfiguration(configData, token);
 
+      // Invalidate budget configs cache to force refresh on list
+      invalidateNamespace('budgetConfigs');
+
       setSubmitSuccess(true);
       setSuccessCountdown(5);
       setSuccessModalOpen(true);
@@ -1636,6 +1659,10 @@ function CreateConfiguration() {
         if (prev <= 1) {
           clearInterval(intervalId);
           setSuccessModalOpen(false);
+          // Wait for modal close animation before switching tabs
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('switchToConfigList'));
+          }, 500);
           return 0;
         }
         return prev - 1;
@@ -1795,27 +1822,26 @@ function CreateConfiguration() {
                     />
                   </div>
                   <div className="space-y-2 md:col-span-6">
-                    <Label className="text-white">Budget Period *</Label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="flex items-center gap-2">
-                        <Label htmlFor="startDate" className="text-xs text-gray-300 whitespace-nowrap">Start Date</Label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="startDate" className="text-sm text-gray-300">Configuration Start Date *</Label>
                         <Input
                           id="startDate"
                           type="date"
                           value={formData.startDate}
                           onChange={(e) => updateField("startDate", e.target.value)}
-                          className="bg-slate-700 border-gray-300 text-white"
+                          className="bg-slate-700 border-gray-300 text-white w-full"
                         />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Label htmlFor="endDate" className="text-xs text-gray-300 whitespace-nowrap">End Date</Label>
+                      <div className="space-y-2">
+                        <Label htmlFor="endDate" className="text-sm text-gray-300">Configuration End Date *</Label>
                         <Input
                           id="endDate"
                           type="date"
                           value={formData.endDate}
                           onChange={(e) => updateField("endDate", e.target.value)}
                           min={minEndDate}
-                          className="bg-slate-700 border-gray-300 text-white"
+                          className="bg-slate-700 border-gray-300 text-white w-full"
                         />
                       </div>
                     </div>
@@ -1840,9 +1866,6 @@ function CreateConfiguration() {
                   <h4 className="font-medium text-white">Data Control</h4>
                   <Badge className="bg-green-500 text-white">Enabled</Badge>
                 </div>
-                <p className="text-xs text-gray-400">
-                  Set min and max limits per employee (applies to both positive and negative amounts).
-                </p>
                 <div className="space-y-3">
                   <div className="space-y-2">
                     <Label className="text-white">Currency *</Label>
@@ -1884,7 +1907,6 @@ function CreateConfiguration() {
                 <div className="flex items-center justify-between">
                   <h4 className="font-medium text-white">Payroll Cycle & Budget Control</h4>
                 </div>
-                <p className="text-xs text-gray-400">Define the configuration's payroll period.</p>
                 <div className="space-y-2">
                   <Label className="text-white">Cycle *</Label>
                   <SearchableSelect
@@ -1979,13 +2001,8 @@ function CreateConfiguration() {
                                 formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath))
                               );
                             } else {
-                              const nextPaths = [...formData.affectedOUPaths, newPath];
-                              if (newPath.length > 1) {
-                                const parentPath = [newPath[0]];
-                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                                if (!parentExists) nextPaths.push(parentPath);
-                              }
-                              updateField("affectedOUPaths", nextPaths);
+                              // Only add the selected path, don't auto-add parent
+                              updateField("affectedOUPaths", [...formData.affectedOUPaths, newPath]);
                             }
                           };
 
@@ -2109,13 +2126,8 @@ function CreateConfiguration() {
                                 formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath))
                               );
                             } else {
-                              const nextPaths = [...formData.accessibleOUPaths, newPath];
-                              if (newPath.length > 1) {
-                                const parentPath = [newPath[0]];
-                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                                if (!parentExists) nextPaths.push(parentPath);
-                              }
-                              updateField("accessibleOUPaths", nextPaths);
+                              // Only add the selected path, don't auto-add parent
+                              updateField("accessibleOUPaths", [...formData.accessibleOUPaths, newPath]);
                             }
                           };
 
@@ -2355,8 +2367,8 @@ function CreateConfiguration() {
           ) : (
             <div className="grid gap-4 lg:grid-cols-12">
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-6">
-                <h4 className="font-medium text-white">Configuration Summary</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Configuration Summary</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Budget Name</span>
                     <span className="text-white font-medium">{formData.budgetName || "Not specified"}</span>
@@ -2365,16 +2377,16 @@ function CreateConfiguration() {
                     <span className="text-gray-400">Budget Period</span>
                     <span>{formData.startDate && formData.endDate ? `${formData.startDate} → ${formData.endDate}` : "Not specified"}</span>
                   </div>
-                  <div>
-                    <span className="text-gray-400">Description</span>
-                    <p className="mt-1 text-gray-200">{formData.description || "No description provided."}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-gray-400 flex-shrink-0">Description</span>
+                    <p className="text-gray-200 text-right">{formData.description || "No description provided."}</p>
                   </div>
                 </div>
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-                <h4 className="font-medium text-white">Data Control</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Data Control</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Currency</span>
                     <span>{getCurrencyLabel(formData.currency)}</span>
@@ -2391,8 +2403,8 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-                <h4 className="font-medium text-white">Payroll & Budget Control</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Payroll & Budget Control</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Payroll Cycle</span>
                     <span>{getPayCycleLabel(formData.payCycle)}</span>
@@ -2411,33 +2423,33 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5">
-                <h4 className="font-medium text-white">Organization Scope</h4>
+                <h4 className="font-medium text-white text-base">Organization Scope</h4>
                 <div className="space-y-3">
                   <div>
-                    <span className="text-xs text-gray-400 uppercase">Affected OUs</span>
+                    <span className="text-sm text-gray-400 uppercase">Affected OUs</span>
                     <div className="mt-2 space-y-1">
                       {affectedPreviewLines.length ? (
                         affectedPreviewLines.map((line) => (
-                          <div key={line.key} className="text-xs text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
+                          <div key={line.key} className="text-sm text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
                             {line.text}
                           </div>
                         ))
                       ) : (
-                        <div className="text-xs text-gray-400">Not specified</div>
+                        <div className="text-sm text-gray-400">Not specified</div>
                       )}
                     </div>
                   </div>
                   <div>
-                    <span className="text-xs text-gray-400 uppercase">Accessible OUs</span>
+                    <span className="text-sm text-gray-400 uppercase">Accessible OUs</span>
                     <div className="mt-2 space-y-1">
                       {accessiblePreviewLines.length ? (
                         accessiblePreviewLines.map((line) => (
-                          <div key={line.key} className="text-xs text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
+                          <div key={line.key} className="text-sm text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
                             {line.text}
                           </div>
                         ))
                       ) : (
-                        <div className="text-xs text-gray-400">Not specified</div>
+                        <div className="text-sm text-gray-400">Not specified</div>
                       )}
                     </div>
                   </div>
@@ -2445,8 +2457,8 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-4">
-                <h4 className="font-medium text-white">Location & Client Scope</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Location & Client Scope</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Geo</span>
                     <span>{formData.countries?.[0] || "Not specified"}</span>
@@ -2455,31 +2467,31 @@ function CreateConfiguration() {
                     <span className="text-gray-400">Site Location</span>
                     <span>{formData.siteLocation?.[0] || "Not specified"}</span>
                   </div>
-                  <div>
-                    <span className="text-gray-400">Clients</span>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-gray-400 text-sm flex-shrink-0">Clients</span>
+                    <div className="flex flex-wrap gap-2 justify-end">
                       {formData.clients?.length ? (
                         formData.clients.map((client) => (
-                          <span key={client} className="text-xs bg-slate-800/60 px-2 py-1 rounded">
+                          <span key={client} className="text-sm bg-slate-800/60 px-2 py-1 rounded">
                             {client}
                           </span>
                         ))
                       ) : (
-                        <span className="text-xs text-gray-400">Not specified</span>
+                        <span className="text-sm text-gray-400">Not specified</span>
                       )}
                     </div>
                   </div>
-                  <div>
-                    <span className="text-gray-400">Tenure Groups</span>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-gray-400 text-sm flex-shrink-0">Tenure Groups</span>
+                    <div className="flex flex-wrap gap-2 justify-end">
                       {formData.selectedTenureGroups?.length ? (
                         formData.selectedTenureGroups.map((tenure) => (
-                          <span key={tenure} className="text-xs bg-slate-800/60 px-2 py-1 rounded">
+                          <span key={tenure} className="text-sm bg-slate-800/60 px-2 py-1 rounded">
                             {tenure}
                           </span>
                         ))
                       ) : (
-                        <span className="text-xs text-gray-400">Not specified</span>
+                        <span className="text-sm text-gray-400">Not specified</span>
                       )}
                     </div>
                   </div>
@@ -2487,22 +2499,28 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-                <h4 className="font-medium text-white">Approval Hierarchy</h4>
-                <div className="space-y-3 text-sm text-gray-200">
-                  <div>
-                    <span className="text-xs text-gray-400 uppercase">L1</span>
-                    <p className="mt-1">Primary: {getApproverName(formData.approverL1)}</p>
-                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL1)}</p>
+                <h4 className="font-medium text-white text-base">Approval Hierarchy</h4>
+                <div className="space-y-3 text-gray-200">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-base text-gray-300 uppercase font-semibold flex-shrink-0">L1</span>
+                    <div className="space-y-1 flex-1">
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded">Primary: {getApproverName(formData.approverL1)}</p>
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded text-gray-400">Backup: {getApproverName(formData.backupApproverL1)}</p>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs text-gray-400 uppercase">L2</span>
-                    <p className="mt-1">Primary: {getApproverName(formData.approverL2)}</p>
-                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL2)}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-base text-gray-300 uppercase font-semibold flex-shrink-0">L2</span>
+                    <div className="space-y-1 flex-1">
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded">Primary: {getApproverName(formData.approverL2)}</p>
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded text-gray-400">Backup: {getApproverName(formData.backupApproverL2)}</p>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs text-gray-400 uppercase">L3</span>
-                    <p className="mt-1">Primary: {getApproverName(formData.approverL3)}</p>
-                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL3)}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-base text-gray-300 uppercase font-semibold flex-shrink-0">L3</span>
+                    <div className="space-y-1 flex-1">
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded">Primary: {getApproverName(formData.approverL3)}</p>
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded text-gray-400">Backup: {getApproverName(formData.backupApproverL3)}</p>
+                    </div>
                   </div>
                 </div>
               </div>

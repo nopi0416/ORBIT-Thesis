@@ -16,6 +16,7 @@ import { getApproversByLevel, getBudgetConfigurationById, getBudgetConfiguration
 import { connectWebSocket, addWebSocketListener } from '../services/realtimeService';
 import { resolveUserRole } from '../utils/roleUtils';
 import BulkUploadValidation from '../components/approval/BulkUploadValidation';
+import { fetchWithCache, invalidateNamespace } from '../utils/dataCache';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -227,7 +228,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       );
     } else {
       // For bulk: need approval description and at least one valid item
-      const hasApprovalDescription = bulkItems.length > 0 && bulkItems[0]?.approval_description?.trim().length > 0;
+      // Check if ANY item has approval_description (they should all have the same value)
+      const hasApprovalDescription = bulkItems.some(item => 
+        item.approval_description && item.approval_description.trim().length > 0
+      );
       const hasValidItems = bulkItems.some(item => {
         const hasEmployeeData = item.employee_id && item.employeeData;
         const hasValidAmount = item.amount && item.amount > 0;
@@ -243,7 +247,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setConfigLoading(true);
       setConfigError(null);
       try {
-        const data = await getBudgetConfigurations({ org_id: user?.org_id }, token);
+        const data = await fetchWithCache(
+          'budgetConfigs',
+          `org_${user?.org_id || 'all'}`,
+          () => getBudgetConfigurations({ org_id: user?.org_id }, token),
+          5 * 60 * 1000 // 5 minutes TTL
+        );
         setConfigurations((data || []).map(normalizeConfig));
       } catch (error) {
         setConfigError(error.message || 'Failed to load configurations');
@@ -260,9 +269,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     const fetchApprovers = async () => {
       try {
         const [l1Data, l2Data, l3Data] = await Promise.all([
-          getApproversByLevel('L1', token),
-          getApproversByLevel('L2', token),
-          getApproversByLevel('L3', token),
+          fetchWithCache('approvers', 'L1', () => getApproversByLevel('L1', token), 10 * 60 * 1000),
+          fetchWithCache('approvers', 'L2', () => getApproversByLevel('L2', token), 10 * 60 * 1000),
+          fetchWithCache('approvers', 'L3', () => getApproversByLevel('L3', token), 10 * 60 * 1000),
         ]);
         setApprovalsL1(l1Data || []);
         setApprovalsL2(l2Data || []);
@@ -277,7 +286,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
     const fetchOrganizations = async () => {
       try {
-        const data = await getOrganizations(token);
+        const data = await fetchWithCache('organizations', 'all', () => getOrganizations(token), 10 * 60 * 1000);
         setOrganizations(data || []);
       } catch (error) {
         console.error('Error fetching organizations:', error);
@@ -1438,8 +1447,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[520px_1fr] items-start">
-      <Card className="bg-slate-800 border-slate-700 flex flex-col min-h-[420px] w-full justify-self-start">
+    <>
+      <div className="grid gap-6 xl:grid-cols-[520px_1fr] items-start">
+        <Card className="bg-slate-800 border-slate-700 flex flex-col min-h-[420px] w-full justify-self-start">
         <CardHeader>
           <CardTitle className="text-white">Submit New Approval Request</CardTitle>
           <CardDescription className="text-gray-400">
@@ -1556,6 +1566,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           )}
         </CardContent>
       </Card>
+    </div>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className={`bg-slate-800 border-slate-700 text-white flex flex-col ${
@@ -2062,7 +2073,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
 function ApprovalRequests({ refreshKey }) {

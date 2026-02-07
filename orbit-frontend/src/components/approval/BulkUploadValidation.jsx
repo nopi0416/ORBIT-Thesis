@@ -31,7 +31,7 @@ const BulkUploadValidation = ({
     return bulkItems.map((item, index) => {
       const validation = validateEmployee ? validateEmployee(item) : { valid: true, warnings: [], errors: [] };
       
-      // Check for duplicates
+      // Check for duplicates FIRST - if duplicate, override "Employee not found" error
       let isDuplicate = false;
       if (item.employee_id && item.employee_id.trim()) {
         const eid = item.employee_id.trim().toUpperCase();
@@ -39,8 +39,12 @@ const BulkUploadValidation = ({
           if (seenEmployeeIds.has(eid)) {
             // This is a duplicate occurrence
             isDuplicate = true;
-            validation.errors = validation.errors || [];
-            validation.errors.push('Duplicate Employee ID');
+            // Remove "Employee not found" error if present (duplicate means it was found)
+            validation.errors = (validation.errors || []).filter(err => err !== 'Employee not found');
+            // Add duplicate error only if not already present
+            if (!validation.errors.includes('Duplicate Employee ID')) {
+              validation.errors.push('Duplicate Employee ID');
+            }
           } else {
             // First occurrence, just mark as seen
             seenEmployeeIds.add(eid);
