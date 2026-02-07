@@ -150,7 +150,8 @@ export default function SecurityQuestions() {
         email: userDetailsResult.data.email,
         first_name: userDetailsResult.data.first_name,
         last_name: userDetailsResult.data.last_name,
-        department: userDetailsResult.data.department,
+        geo_id: userDetailsResult.data.geo_id,
+        org_id: userDetailsResult.data.org_id,
         status: userDetailsResult.data.status,
         role,
       };

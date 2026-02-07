@@ -129,6 +129,19 @@ const addLineItemsBulk = async (requestId, payload, token) => {
   return parseResponse(response);
 };
 
+/**
+ * Get multiple employees by EIDs in batch (optimized for bulk uploads)
+ */
+const getEmployeesBatch = async (eids, companyId, token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/employees/batch`, {
+    method: 'POST',
+    headers: getHeaders(token),
+    body: JSON.stringify({ eids, company_id: companyId }),
+  });
+
+  return parseResponse(response);
+};
+
 export default {
   getApprovalRequests,
   getApprovalRequest,
@@ -138,6 +151,7 @@ export default {
   createApprovalRequest,
   submitApprovalRequest,
   getEmployeeByEid,
+  getEmployeesBatch,
   addLineItem,
   addLineItemsBulk,
 };

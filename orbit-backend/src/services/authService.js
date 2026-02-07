@@ -82,82 +82,89 @@ export class AuthService {
    * Login user - validates credentials and generates OTP
    * Requires OTP verification to complete login
    */
-  static async loginUser(email, password) {
+  static async loginUser(employeeId, password) {
     try {
-      console.log(`[LOGIN] Attempting login for: ${email}`);
+      const identifier = String(employeeId || '').trim();
+      const isEmail = identifier.includes('@');
+
+      console.log(`[LOGIN] Attempting login for: ${identifier}`);
       
       // First, try to find admin user
-      const { data: adminUser } = await supabase
-        .from('tbladminusers')
-        .select('*')
-        .eq('email', email)
-        .eq('is_active', true)
-        .single();
+      if (isEmail) {
+        const { data: adminUser } = await supabase
+          .from('tbladminusers')
+          .select('*')
+          .eq('email', identifier)
+          .eq('is_active', true)
+          .single();
 
-      if (adminUser) {
-        console.log(`[LOGIN] Found admin user: ${email}`);
-        // Verify admin password (password_hash field)
-        // In production, use bcrypt.compare(password, adminUser.password_hash)
-        if (adminUser.password_hash !== password) {
-          console.log(`[LOGIN] Admin password mismatch for: ${email}`);
+        if (adminUser) {
+          console.log(`[LOGIN] Found admin user: ${identifier}`);
+          // Verify admin password (password_hash field)
+          // In production, use bcrypt.compare(password, adminUser.password_hash)
+          if (adminUser.password_hash !== password) {
+            console.log(`[LOGIN] Admin password mismatch for: ${identifier}`);
+            return {
+              success: false,
+              error: 'Invalid employee ID or password',
+            };
+          }
+
+          // Generate OTP for admin login
+          const otpResult = await this.generateOTP(identifier, 'login');
+          if (!otpResult.success) {
+            return {
+              success: false,
+              error: 'Failed to generate OTP',
+            };
+          }
+
           return {
-            success: false,
-            error: 'Invalid email or password',
+            success: true,
+            requiresOTP: true,
+            data: {
+              email: adminUser.email,
+              userType: 'admin',
+            },
+            message: 'OTP has been sent to your email. Please verify to complete login.',
           };
         }
-
-        // Generate OTP for admin login
-        const otpResult = await this.generateOTP(email, 'login');
-        if (!otpResult.success) {
-          return {
-            success: false,
-            error: 'Failed to generate OTP',
-          };
-        }
-
-        return {
-          success: true,
-          requiresOTP: true,
-          data: {
-            email: adminUser.email,
-            userType: 'admin',
-          },
-          message: 'OTP has been sent to your email. Please verify to complete login.',
-        };
       }
 
       // If not admin, try regular user
-      console.log(`[LOGIN] No admin found, checking regular users for: ${email}`);
-      const { data: user, error } = await supabase
+      console.log(`[LOGIN] No admin found, checking regular users for: ${identifier}`);
+      const query = supabase
         .from('tblusers')
-        .select('*')
-        .eq('email', email)
-        .single();
+        .select('*');
+
+      const { data: user, error } = await (isEmail
+        ? query.eq('email', identifier).single()
+        : query.eq('employee_id', identifier).single());
 
       if (error || !user) {
-        console.log(`[LOGIN] User not found or error: ${email}`, error);
+        console.log(`[LOGIN] User not found or error: ${identifier}`, error);
         return {
           success: false,
-          error: 'Invalid email or password',
+          error: 'Invalid employee ID or password',
         };
       }
 
-      console.log(`[LOGIN] Found user: ${email}`);
+      console.log(`[LOGIN] Found user: ${identifier}`);
 
       // Verify password (check password_hash first, fall back to password column)
       const passwordToCheck = user.password_hash || user.password;
       if (passwordToCheck !== password) {
-        console.log(`[LOGIN] Password mismatch for: ${email}`);
+        console.log(`[LOGIN] Password mismatch for: ${identifier}`);
         return {
           success: false,
-          error: 'Invalid email or password',
+          error: 'Invalid employee ID or password',
         };
       }
 
-      console.log(`[LOGIN] Password verified for: ${email}, generating OTP`);
+      console.log(`[LOGIN] Password verified for: ${identifier}, generating OTP`);
 
       // Generate OTP for user login
-      const otpResult = await this.generateOTP(email, 'login');
+      const otpResult = await this.generateOTP(user.email, 'login');
       if (!otpResult.success) {
         return {
           success: false,
@@ -207,7 +214,7 @@ export class AuthService {
 
       if (adminUser) {
         // Generate JWT token
-        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role);
+          const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role, null);
 
         // Update last login if table supports it
         try {
@@ -299,13 +306,15 @@ export class AuthService {
             role: userRole,
             firstName: user.first_name,
             lastName: user.last_name,
+              geo_id: user.geo_id,
+              org_id: user.org_id || null,
           },
           message: 'User agreement acceptance required',
         };
       }
 
       // Generate JWT token
-      const token = this.generateToken(userId, user.email, userRole);
+      const token = this.generateToken(userId, user.email, userRole, user.org_id || null);
 
       // Update last login
       try {
@@ -326,6 +335,8 @@ export class AuthService {
           firstName: user.first_name,
           lastName: user.last_name,
           role: userRole,
+          geo_id: user.geo_id,
+            org_id: user.org_id || null,
           userType: 'user',
         },
         message: 'Login successful',
@@ -800,11 +811,12 @@ export class AuthService {
   /**
    * Generate JWT token (stub - replace with actual JWT library)
    */
-  static generateToken(userId, email, role) {
-    const payload = {
-      userId,
-      email,
-      role,
+  static generateToken(userId, email, role, orgId = null) {
+      const payload = {
+        userId,
+        email,
+        role,
+        ...(orgId ? { org_id: orgId } : {}),
     };
 
     // Sign JWT token with 24 hour expiry
@@ -837,7 +849,7 @@ export class AuthService {
     try {
       const { data, error } = await supabase
         .from('tblusers')
-        .select('user_id, first_name, last_name, department, status, email')
+        .select('user_id, first_name, last_name, geo_id, org_id, status, email')
         .eq('user_id', userId)
         .single();
 
@@ -856,7 +868,8 @@ export class AuthService {
           user_id: data.user_id,
           first_name: data.first_name,
           last_name: data.last_name,
-          department: data.department,
+          geo_id: data.geo_id,
+            org_id: data.org_id,
           status: data.status,
           email: data.email,
         },

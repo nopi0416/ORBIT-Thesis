@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { BudgetConfigController } from '../controllers/budgetConfigController.js';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
+
+// Require authentication for all budget configuration endpoints
+router.use(authenticateToken);
 
 /**
  * Budget Configuration Routes

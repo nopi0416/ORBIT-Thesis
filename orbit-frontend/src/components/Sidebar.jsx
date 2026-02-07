@@ -4,12 +4,15 @@ import { cn } from '../utils/cn';
 import { LayoutDashboard, FileText, Building2, User, LogOut } from '../components/icons';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../context/AuthContext';
+import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 
-export function Sidebar({ userRole }) {
+export function Sidebar({ userRole: userRoleProp }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
+  const userRole = resolveUserRole(user);
+  const isAdmin = userRole === 'admin';
 
   const handleLogout = () => {
     logout();
@@ -126,29 +129,33 @@ export function Sidebar({ userRole }) {
         })}
 
         {/* Admin Navigation Section */}
-        {isHovered && (
+        {isAdmin && (
           <>
-            <div className="my-2 border-t border-white/10"></div>
-            <p className="px-3 py-2 text-xs font-semibold uppercase text-white/50">Admin</p>
+            {isHovered && (
+              <>
+                <div className="my-2 border-t border-white/10"></div>
+                <p className="px-3 py-2 text-xs font-semibold uppercase text-white/50">Admin</p>
+              </>
+            )}
+            {adminNavigation.map((item) => {
+              const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    isActive ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-white/70 hover:bg-white/10 hover:text-white",
+                  )}
+                  title={!isHovered ? item.name : undefined}
+                >
+                  <item.icon className="h-5 w-5 shrink-0" />
+                  {isHovered && <span>{item.name}</span>}
+                </Link>
+              );
+            })}
           </>
         )}
-        {adminNavigation.map((item) => {
-          const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
-          return (
-            <Link
-              key={item.name}
-              to={item.href}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                isActive ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-white/70 hover:bg-white/10 hover:text-white",
-              )}
-              title={!isHovered ? item.name : undefined}
-            >
-              <item.icon className="h-5 w-5 shrink-0" />
-              {isHovered && <span>{item.name}</span>}
-            </Link>
-          );
-        })}
       </nav>
 
       {/* Footer */}
@@ -158,16 +165,8 @@ export function Sidebar({ userRole }) {
           <div className="mb-3 rounded-lg bg-white/5 px-3 py-2">
             <p className="text-xs font-medium text-white/50">Signed in as</p>
             <p className="truncate text-sm font-semibold text-white">{user.name}</p>
-            <p className="text-xs capitalize text-primary">
-              {userRole === "l1"
-                ? "L1 Approver"
-                : userRole === "l2"
-                  ? "L2 Approver"
-                  : userRole === "l3"
-                    ? "L3 Approver"
-                    : userRole === "payroll"
-                      ? "Payroll Staff"
-                      : "Requestor"}
+            <p className="text-xs text-primary">
+              {getRoleDisplayName(userRole)}
             </p>
           </div>
         )}

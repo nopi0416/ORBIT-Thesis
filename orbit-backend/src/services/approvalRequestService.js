@@ -22,27 +22,130 @@ export class ApprovalRequestService {
       }
       const company = companyId || this.defaultCompanyId;
 
-      const { data, error } = await supabaseSecondary
+      // Fetch employee data
+      const { data: employeeData, error: employeeError } = await supabaseSecondary
         .from('tblemployee')
         .select('*')
         .eq('company_id', company)
         .eq('eid', eid)
         .maybeSingle();
 
-      if (error) throw error;
-      if (!data) {
+      if (employeeError) throw employeeError;
+      if (!employeeData) {
         return {
           success: false,
           error: 'Employee not found',
         };
       }
 
+      // Fetch company data separately
+      const { data: companyData, error: companyError } = await supabaseSecondary
+        .from('tblcompany')
+        .select('company_name, company_code')
+        .eq('company_id', employeeData.company_id)
+        .maybeSingle();
+
+      if (companyError) {
+        console.warn('Error fetching company data:', companyError);
+      }
+
+      // Merge company data into employee object
+      const enrichedData = {
+        ...employeeData,
+        company_name: companyData?.company_name || '',
+        company_code: companyData?.company_code || '',
+      };
+
       return {
         success: true,
-        data,
+        data: enrichedData,
       };
     } catch (error) {
       console.error('Error fetching employee by EID:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Get multiple employees by EIDs in batch (optimized for bulk uploads)
+   * @param {Array<string>} eids - Array of employee IDs
+   * @param {string} companyId - Company UUID
+   * @returns {Object} { success: true, data: { found: [...], notFound: [...] } }
+   */
+  static async getEmployeesBatch(eids, companyId) {
+    try {
+      if (!supabaseSecondary) {
+        return {
+          success: false,
+          error: 'Employee warehouse connection is not configured (SUPABASE_URL2/KEY2).',
+        };
+      }
+
+      if (!eids || !Array.isArray(eids) || eids.length === 0) {
+        return {
+          success: false,
+          error: 'Employee IDs array is required',
+        };
+      }
+
+      const company = companyId || this.defaultCompanyId;
+
+      // Fetch all employees in one query
+      const { data: employeesData, error: employeesError } = await supabaseSecondary
+        .from('tblemployee')
+        .select('*')
+        .eq('company_id', company)
+        .in('eid', eids);
+
+      if (employeesError) throw employeesError;
+
+      // Get unique company IDs from found employees
+      const companyIds = [...new Set(employeesData?.map(emp => emp.company_id).filter(Boolean) || [])];
+
+      // Fetch company data for all found companies
+      let companyDataMap = {};
+      if (companyIds.length > 0) {
+        const { data: companiesData, error: companiesError } = await supabaseSecondary
+          .from('tblcompany')
+          .select('company_id, company_name, company_code')
+          .in('company_id', companyIds);
+
+        if (companiesError) {
+          console.warn('Error fetching company data:', companiesError);
+        } else if (companiesData) {
+          companyDataMap = companiesData.reduce((acc, company) => {
+            acc[company.company_id] = company;
+            return acc;
+          }, {});
+        }
+      }
+
+      // Enrich employees with company data
+      const foundEmployees = (employeesData || []).map(emp => {
+        const companyInfo = companyDataMap[emp.company_id] || {};
+        return {
+          ...emp,
+          company_name: companyInfo.company_name || '',
+          company_code: companyInfo.company_code || '',
+        };
+      });
+
+      // Identify not found employee IDs
+      const foundEids = foundEmployees.map(emp => emp.eid);
+      const notFoundEids = eids.filter(eid => !foundEids.includes(eid));
+
+      return {
+        success: true,
+        data: {
+          found: foundEmployees,
+          notFound: notFoundEids,
+        },
+      };
+    } catch (error) {
+      console.error('Error fetching employees in batch:', error);
       return {
         success: false,
         error: error.message,
@@ -188,6 +291,10 @@ export class ApprovalRequestService {
       // Apply filters
       if (filters.budget_id) {
         query = query.eq('budget_id', filters.budget_id);
+      }
+
+      if (filters.budget_ids && Array.isArray(filters.budget_ids)) {
+        query = query.in('budget_id', filters.budget_ids);
       }
 
       if (filters.status) {
@@ -850,7 +957,7 @@ export class ApprovalRequestService {
   /**
    * Get approvals pending for a user
    */
-  static async getPendingApprovalsForUser(userId) {
+  static async getPendingApprovalsForUser(userId, budgetIds = null) {
     try {
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_approvals')
@@ -861,9 +968,31 @@ export class ApprovalRequestService {
 
       if (error) throw error;
 
+      let filtered = data || [];
+      if (Array.isArray(budgetIds)) {
+        if (!budgetIds.length) {
+          return { success: true, data: [] };
+        }
+
+        const requestIds = filtered.map((row) => row.request_id).filter(Boolean);
+        if (!requestIds.length) {
+          return { success: true, data: [] };
+        }
+
+        const { data: requestRows, error: requestError } = await supabase
+          .from('tblbudgetapprovalrequests')
+          .select('request_id, budget_id')
+          .in('request_id', requestIds);
+
+        if (requestError) throw requestError;
+
+        const budgetMap = new Map((requestRows || []).map((row) => [row.request_id, row.budget_id]));
+        filtered = filtered.filter((row) => budgetIds.includes(budgetMap.get(row.request_id)));
+      }
+
       return {
         success: true,
-        data,
+        data: filtered,
       };
     } catch (error) {
       console.error('Error fetching pending approvals:', error);

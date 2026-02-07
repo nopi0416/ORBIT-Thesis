@@ -64,6 +64,7 @@ export const getBudgetConfigurations = async (filters = {}, token) => {
     if (filters.geo) queryParams.append('geo', filters.geo);
     if (filters.location) queryParams.append('location', filters.location);
     if (filters.search) queryParams.append('search', filters.search);
+    if (filters.org_id) queryParams.append('org_id', filters.org_id);
     
     const url = `${API_BASE_URL}/budget-configurations${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
     

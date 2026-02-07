@@ -24,6 +24,13 @@ router.post('/', authenticateToken, ApprovalRequestController.createApprovalRequ
 router.get('/', authenticateToken, ApprovalRequestController.getAllApprovalRequests);
 
 /**
+ * POST /api/approval-requests/employees/batch
+ * Get multiple employees by EIDs in batch (optimized for bulk uploads)
+ * Body: { eids: ['EMP001', 'EMP002', ...], company_id: 'uuid' }
+ */
+router.post('/employees/batch', authenticateToken, ApprovalRequestController.getEmployeesBatch);
+
+/**
  * GET /api/approval-requests/employees/:eid
  * Get employee details by employee ID (EID)
  * Query: ?company_id=uuid (optional)

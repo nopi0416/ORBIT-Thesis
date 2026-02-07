@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { PageHeader } from '../components/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -14,6 +14,8 @@ import { useAuth } from '../context/AuthContext';
 import approvalRequestService from '../services/approvalRequestService';
 import { getApproversByLevel, getBudgetConfigurationById, getBudgetConfigurations, getOrganizations, getUserById } from '../services/budgetConfigService';
 import { connectWebSocket, addWebSocketListener } from '../services/realtimeService';
+import { resolveUserRole } from '../utils/roleUtils';
+import BulkUploadValidation from '../components/approval/BulkUploadValidation';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -89,8 +91,16 @@ const getStatusBadgeClass = (status) => {
 
 export default function ApprovalPage() {
   const { user } = useAuth();
-  const userRole = user?.role || 'requestor';
+  const userRole = resolveUserRole(user);
   const [refreshKey, setRefreshKey] = useState(0);
+  
+  // Role-based tab visibility
+  // Requestor: Submit + History only
+  // L2/L3: Approval Requests + History only
+  // L1/Payroll: All three tabs
+  const canSubmit = userRole === 'requestor' || userRole === 'l1' || userRole === 'payroll';
+  const canViewRequests = userRole === 'l1' || userRole === 'l2' || userRole === 'l3' || userRole === 'payroll';
+  const defaultTab = canSubmit ? 'submit' : canViewRequests ? 'requests' : 'history';
 
   const handleRefresh = () => setRefreshKey((prev) => prev + 1);
 
@@ -102,9 +112,9 @@ export default function ApprovalPage() {
       />
 
       <div className="flex-1 p-6">
-        <Tabs defaultValue="submit" className="space-y-6">
+        <Tabs defaultValue={defaultTab} className="space-y-6">
           <TabsList className="bg-slate-800 border-slate-700 p-1">
-            {(userRole === 'requestor' || userRole === 'l1' || userRole === 'payroll') && (
+            {canSubmit && (
               <TabsTrigger
                 value="submit"
                 className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
@@ -112,7 +122,7 @@ export default function ApprovalPage() {
                 Submit Approval
               </TabsTrigger>
             )}
-            {(userRole === 'l1' || userRole === 'l2' || userRole === 'l3' || userRole === 'payroll') && (
+            {canViewRequests && (
               <TabsTrigger
                 value="requests"
                 className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
@@ -128,13 +138,13 @@ export default function ApprovalPage() {
             </TabsTrigger>
           </TabsList>
 
-          {(userRole === 'requestor' || userRole === 'l1' || userRole === 'payroll') && (
+          {canSubmit && (
             <TabsContent value="submit">
               <SubmitApproval userId={user?.id} onRefresh={handleRefresh} refreshKey={refreshKey} />
             </TabsContent>
           )}
 
-          {(userRole === 'l1' || userRole === 'l2' || userRole === 'l3' || userRole === 'payroll') && (
+          {canViewRequests && (
             <TabsContent value="requests">
               <ApprovalRequests refreshKey={refreshKey} />
             </TabsContent>
@@ -151,7 +161,7 @@ export default function ApprovalPage() {
 
 function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const { user } = useAuth();
-  const userRole = user?.role || 'requestor';
+  const userRole = resolveUserRole(user);
   const [configurations, setConfigurations] = useState([]);
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState(null);
@@ -199,7 +209,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [bulkItems, setBulkItems] = useState([]);
   const [bulkFileName, setBulkFileName] = useState('');
   const [bulkParseError, setBulkParseError] = useState(null);
-  const [bulkRewardType, setBulkRewardType] = useState('');
   const [submitError, setSubmitError] = useState(null);
   const [submitSuccess, setSubmitSuccess] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -208,12 +217,33 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const token = useMemo(() => getToken(), [refreshKey]);
   const companyId = 'caaa0000-0000-0000-0000-000000000001';
 
+  // Check if user can proceed with submission
+  const canProceed = useMemo(() => {
+    if (requestMode === 'individual') {
+      return (
+        requestDetails.details?.trim().length > 0 &&
+        individualRequest.employeeId?.trim().length > 0 &&
+        individualRequest.amount > 0
+      );
+    } else {
+      // For bulk: need approval description and at least one valid item
+      const hasApprovalDescription = bulkItems.length > 0 && bulkItems[0]?.approval_description?.trim().length > 0;
+      const hasValidItems = bulkItems.some(item => {
+        const hasEmployeeData = item.employee_id && item.employeeData;
+        const hasValidAmount = item.amount && item.amount > 0;
+        const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
+        return hasEmployeeData && hasValidAmount && isInScope;
+      });
+      return hasApprovalDescription && hasValidItems;
+    }
+  }, [requestMode, requestDetails, individualRequest, bulkItems]);
+
   useEffect(() => {
     const fetchConfigs = async () => {
       setConfigLoading(true);
       setConfigError(null);
       try {
-        const data = await getBudgetConfigurations({}, token);
+        const data = await getBudgetConfigurations({ org_id: user?.org_id }, token);
         setConfigurations((data || []).map(normalizeConfig));
       } catch (error) {
         setConfigError(error.message || 'Failed to load configurations');
@@ -459,30 +489,75 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             .filter(Boolean)
         );
 
-        const allowedDepartments = Array.from(
-          new Set([...configDepartmentNames, ...Array.from(configOuNames)])
-        );
-        const hasAllDepartments = allowedDepartments.includes('all');
+        // When OU filter exists, ignore "All" departments and use OU names as allowed departments
+        const hasOuFilter = configOuIds.size > 0 || configOuPaths.length > 0;
+        const allowedDepartments = hasOuFilter 
+          ? Array.from(configOuNames)  // Use only OU-specific departments when OU filter exists
+          : Array.from(new Set([...configDepartmentNames, ...Array.from(configOuNames)]));
+        
+        const hasAllDepartments = !hasOuFilter && allowedDepartments.includes('all');
         const hasDepartmentFilter = allowedDepartments.length > 0 && !hasAllDepartments;
         const departmentAllowed =
           !hasDepartmentFilter || employeeDeptCandidates.some((value) => allowedDepartments.includes(value));
 
+        console.log('[Department Matching Debug]', {
+          employeeData: data,
+          employeeDepartment,
+          employeeOrgId,
+          employeeOrgName,
+          employeeDeptCandidates,
+          rawConfigDepartments,
+          configDepartmentNames,
+          configOuIds: Array.from(configOuIds),
+          configOuNames: Array.from(configOuNames),
+          allowedDepartments,
+          hasAllDepartments,
+          hasDepartmentFilter,
+          departmentAllowed,
+        });
+
         const employeePathRaw =
           data?.ou_path || data?.org_path || data?.ou_hierarchy || data?.org_hierarchy || '';
         const employeePath = parseStoredList(employeePathRaw).map((value) => normalizeText(value));
-
-        const hasOuFilter = configOuIds.size > 0 || configOuPaths.length > 0;
+        
+        // Get company name from employee data
+        const employeeCompanyName = normalizeText(
+          data?.company_name || data?.companyName || data?.company || ''
+        );
+        
+        // More lenient OU matching: check if employee's company/org/OU is in the allowed list
         const ouAllowed =
           !hasOuFilter ||
           (employeeOrgId && configOuIds.has(employeeOrgId)) ||
+          (employeeCompanyName && configOuNames.has(employeeCompanyName)) ||
           (employeePath.length > 0 &&
             configOuPaths.some((path) => {
               const normalizedPath = path.map((value) => normalizeText(value)).filter(Boolean);
               if (!normalizedPath.length) return false;
-              return normalizedPath.every((id, index) => employeePath[index] === id);
+              // Check if any part of the employee path matches any part of the config path
+              return normalizedPath.some((configId) => employeePath.includes(configId));
             }));
 
+        console.log('[OU Matching Debug]', {
+          employeePathRaw,
+          employeePath,
+          employeeCompanyName,
+          configOuPaths,
+          configOuIds: Array.from(configOuIds),
+          configOuNames: Array.from(configOuNames),
+          hasOuFilter,
+          employeeOrgIdInSet: employeeOrgId && configOuIds.has(employeeOrgId),
+          companyNameInSet: employeeCompanyName && configOuNames.has(employeeCompanyName),
+          ouAllowed,
+        });
+
         if (!departmentAllowed || !ouAllowed) {
+          console.warn('[Employee Lookup] Employee not in budget scope:', {
+            departmentAllowed,
+            ouAllowed,
+            employeeDepartment,
+            allowedDepartments,
+          });
           setEmployeeLookupError('Employee is not within the selected budget scope.');
           setIndividualRequest((prev) => ({
             ...prev,
@@ -501,15 +576,15 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
         setIndividualRequest((prev) => ({
           ...prev,
-          employeeName: data?.employee_name || data?.fullname || data?.full_name || '',
-          email: data?.email || '',
-          position: data?.position || data?.job_title || '',
-          employeeStatus: data?.employment_status || data?.status || '',
-          geo: data?.geo || data?.region || '',
-          location: data?.location || data?.site || '',
+          employeeName: data?.name || data?.employee_name || data?.fullname || data?.full_name || '',
+          email: data?.email || data?.email_address || '',
+          position: data?.position || data?.job_title || data?.job_position || '',
+          employeeStatus: data?.employee_status || data?.active_status || data?.employment_status || data?.status || '',
+          geo: data?.geo || data?.region || data?.country || '',
+          location: data?.location || data?.site || data?.office || '',
           department: employeeDepartment || employeeOrgName || '',
-          hireDate: data?.hire_date || data?.date_hired || '',
-          terminationDate: data?.termination_date || data?.end_date || '',
+          hireDate: data?.hire_date || data?.date_hired || data?.start_date || '',
+          terminationDate: data?.termination_date || data?.end_date || data?.exit_date || '',
         }));
       } catch (error) {
         setEmployeeLookupError(error.message || 'Employee not found.');
@@ -651,7 +726,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     setBulkItems([]);
     setBulkFileName('');
     setBulkParseError(null);
-    setBulkRewardType('');
     setSubmitError(null);
     setSubmitSuccess(null);
     setShowModal(true);
@@ -797,15 +871,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   );
 
   const handleDownloadTemplate = async () => {
-    if (!bulkRewardType) {
-      setBulkParseError('Select a reward type before generating the template.');
-      return;
-    }
     const XLSXModule = await import('xlsx');
     const XLSX = XLSXModule.default || XLSXModule;
     const headers = [
       'Employee ID',
-      'Position',
       'Amount',
       'Is Deduction',
       'Notes',
@@ -813,7 +882,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
     const sampleRow = {
       'Employee ID': 'EMP001',
-      Position: 'Team Lead',
       Amount: 2500,
       'Is Deduction': 'No',
       Notes: 'Sample entry',
@@ -822,14 +890,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     const worksheet = XLSX.utils.json_to_sheet([sampleRow], { header: headers });
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'BulkTemplate');
-    const metaSheet = XLSX.utils.json_to_sheet([{ reward_type: bulkRewardType }], { header: ['reward_type'] });
-    XLSX.utils.book_append_sheet(workbook, metaSheet, '_meta');
-    workbook.Workbook = workbook.Workbook || {};
-    workbook.Workbook.Sheets = workbook.Workbook.Sheets || [];
-    const metaIndex = workbook.SheetNames.indexOf('_meta');
-    if (metaIndex >= 0) {
-      workbook.Workbook.Sheets[metaIndex] = { Hidden: 1 };
-    }
     XLSX.writeFile(workbook, 'approval_bulk_template.xlsx');
   };
 
@@ -842,8 +902,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     };
 
     const employeeId = getValue(['employee_id', 'Employee ID', 'EmployeeID', 'Employee']);
-    const position = getValue(['position', 'Position']);
-    const rewardType = getValue(['item_type', 'Reward Type', 'RewardType', 'Item Type']);
+    const approvalDescription = getValue(['approval_description', 'Approval Description', 'Description']);
     const amountValue = getValue(['amount', 'Amount']);
     const isDeductionRaw = getValue(['is_deduction', 'Is Deduction', 'Deduction']);
     const notes = getValue(['notes', 'Notes']);
@@ -857,8 +916,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     return {
       item_number: index + 1,
       employee_id: String(employeeId || '').trim(),
-      position: String(position || '').trim(),
-      item_type: String(rewardType || '').trim(),
+      approval_description: String(approvalDescription || '').trim(),
       amount,
       is_deduction: isDeduction,
       notes: String(notes || '').trim(),
@@ -884,21 +942,237 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       const workbook = XLSX.read(buffer, { type: 'array' });
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(firstSheet, { defval: '' });
-      const metaSheet = workbook.Sheets['_meta'];
-      if (metaSheet) {
-        const metaRows = XLSX.utils.sheet_to_json(metaSheet, { defval: '' });
-        const metaRewardType = metaRows?.[0]?.reward_type;
-        if (metaRewardType) {
-          setBulkRewardType(metaRewardType);
-        }
-      }
       const parsedItems = rows.map((row, index) => normalizeBulkRow(row, index));
 
       if (!parsedItems.length) {
         throw new Error('Template is empty. Add at least one line item.');
       }
 
-      setBulkItems(parsedItems);
+      // Enrich with employee data using batch processing
+      // Process in batches of 100 employees
+      const batchSize = 100;
+      const enrichedItems = [];
+      
+      // Helper function to validate employee against budget scope (same as individual)
+      const validateEmployeeScope = (data) => {
+        const normalizeText = (value) => String(value || '').trim().toLowerCase();
+
+        const employeeDepartment =
+          data?.department || data?.dept || data?.department_name || data?.dept_name || data?.org_name || data?.ou_name || '';
+        const employeeOrgId = normalizeText(
+          data?.org_id || data?.ou_id || data?.org_unit_id || data?.department_id || ''
+        );
+        const employeeOrgName = employeeOrgId ? getOrgName(employeeOrgId) : '';
+
+        const employeeDeptCandidates = [
+          employeeDepartment,
+          data?.org_name || '',
+          data?.ou_name || '',
+          employeeOrgName || '',
+        ]
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+
+        const rawConfigDepartments =
+          selectedConfig?.departments ||
+          selectedConfig?.department ||
+          selectedConfig?.budget_department ||
+          selectedConfig?.budgetDepartment ||
+          '';
+
+        const configDepartmentNames = parseStoredList(rawConfigDepartments)
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+
+        const configOuPaths = parseStoredPaths(
+          selectedConfig?.affectedOUPaths || selectedConfig?.affected_ou || []
+        );
+        const configOuIds = new Set(
+          configOuPaths.flat().map((value) => normalizeText(value)).filter(Boolean)
+        );
+        const configOuNames = new Set(
+          configOuPaths
+            .map((path) => (Array.isArray(path) ? path[path.length - 1] : path))
+            .map((value) => normalizeText(getOrgName(value) || value))
+            .filter(Boolean)
+        );
+
+        // When OU filter exists, ignore "All" departments and use OU names as allowed departments
+        const hasOuFilter = configOuIds.size > 0 || configOuPaths.length > 0;
+        const allowedDepartments = hasOuFilter 
+          ? Array.from(configOuNames)  // Use only OU-specific departments when OU filter exists
+          : Array.from(new Set([...configDepartmentNames, ...Array.from(configOuNames)]));
+        
+        const hasAllDepartments = !hasOuFilter && allowedDepartments.includes('all');
+        const hasDepartmentFilter = allowedDepartments.length > 0 && !hasAllDepartments;
+        const departmentAllowed =
+          !hasDepartmentFilter || employeeDeptCandidates.some((value) => allowedDepartments.includes(value));
+
+        const employeePathRaw =
+          data?.ou_path || data?.org_path || data?.ou_hierarchy || data?.org_hierarchy || '';
+        const employeePath = parseStoredList(employeePathRaw).map((value) => normalizeText(value));
+        
+        // Get company name from employee data
+        const employeeCompanyName = normalizeText(
+          data?.company_name || data?.companyName || data?.company || ''
+        );
+        
+        // More lenient OU matching: check if employee's company/org/OU is in the allowed list
+        const ouAllowed =
+          !hasOuFilter ||
+          (employeeOrgId && configOuIds.has(employeeOrgId)) ||
+          (employeeCompanyName && configOuNames.has(employeeCompanyName)) ||
+          (employeePath.length > 0 &&
+            configOuPaths.some((path) => {
+              const normalizedPath = path.map((value) => normalizeText(value)).filter(Boolean);
+              if (!normalizedPath.length) return false;
+              // Check if any part of the employee path matches any part of the config path
+              return normalizedPath.some((configId) => employeePath.includes(configId));
+            }));
+
+        return {
+          departmentAllowed,
+          ouAllowed,
+          isValid: departmentAllowed && ouAllowed,
+          employeeDepartment,
+          employeeOrgName,
+        };
+      };
+      
+      for (let i = 0; i < parsedItems.length; i += batchSize) {
+        const batch = parsedItems.slice(i, i + batchSize);
+        const employeeIds = batch.map(item => item.employee_id).filter(Boolean);
+        
+        if (employeeIds.length === 0) {
+          // No employee IDs in this batch, just add as-is
+          enrichedItems.push(...batch);
+          continue;
+        }
+
+        try {
+          // Fetch all employees in this batch in one API call
+          const batchData = await approvalRequestService.getEmployeesBatch(employeeIds, companyId, token);
+          
+          // The API returns { found: [...], notFound: [...] }
+          console.log('[Bulk Upload] Batch API result:', {
+            batchNumber: Math.floor(i / batchSize) + 1,
+            requestedIds: employeeIds,
+            foundCount: batchData?.found?.length || 0,
+            notFoundCount: batchData?.notFound?.length || 0,
+            notFoundIds: batchData?.notFound || [],
+            rawResponse: batchData,
+          });
+          
+          if (batchData && (batchData.found || batchData.notFound !== undefined)) {
+            // Create a map of employee data by EID for quick lookup
+            const employeeMap = (batchData.found || []).reduce((acc, emp) => {
+              acc[emp.eid] = emp;
+              return acc;
+            }, {});
+
+            // Enrich each item in the batch with validation
+            const enrichedBatch = batch.map(item => {
+              if (!item.employee_id) return item;
+              
+              const employeeData = employeeMap[item.employee_id];
+              if (employeeData) {
+                // Validate employee scope (same as individual validation)
+                const validation = validateEmployeeScope(employeeData);
+                
+                console.log(`[Bulk Upload] Employee ${item.employee_id} scope validation:`, {
+                  departmentAllowed: validation.departmentAllowed,
+                  ouAllowed: validation.ouAllowed,
+                  isValid: validation.isValid,
+                  employeeDepartment: validation.employeeDepartment,
+                  employeeOrgName: validation.employeeOrgName,
+                });
+                
+                return {
+                  ...item,
+                  employee_name: employeeData.name || '',
+                  position: employeeData.position || '',
+                  department: validation.employeeDepartment || validation.employeeOrgName || '',
+                  employeeData: employeeData,
+                  scopeValidation: validation, // Store validation result
+                };
+              }
+              
+              // Employee not found
+              console.warn(`[Bulk Upload] Employee ${item.employee_id} not found in database`);
+              return item;
+            });
+
+            enrichedItems.push(...enrichedBatch);
+          } else {
+            // API call failed for this batch, add items without enrichment
+            console.error('[Bulk Upload] Batch API call returned invalid data:', batchData);
+            enrichedItems.push(...batch);
+          }
+        } catch (error) {
+          console.error(`Error fetching employee batch:`, error);
+          // If batch fails, add items without enrichment
+          enrichedItems.push(...batch);
+        }
+      }
+
+      // Count valid and warning rows with detailed logging
+      let validCount = 0;
+      let warningCount = 0;
+      let invalidCount = 0;
+
+      console.log('[Bulk Upload Validation] Starting validation of enriched items:', enrichedItems.length);
+
+      enrichedItems.forEach((item, idx) => {
+        const hasEmployeeData = item.employee_id && item.employeeData;
+        const hasValidAmount = item.amount && item.amount > 0;
+        const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
+        
+        // Detailed logging for each item
+        console.log(`[Item ${idx + 1}] Employee ${item.employee_id}:`, {
+          hasEmployeeData,
+          hasValidAmount,
+          amount: item.amount,
+          scopeValidation: item.scopeValidation,
+          isInScope,
+          employeeData: item.employeeData ? 'Found' : 'Not Found',
+        });
+        
+        // Valid: has employee data, valid amount, and is in scope
+        if (hasEmployeeData && hasValidAmount && isInScope) {
+          validCount++;
+          console.log(`[Item ${idx + 1}] ✓ VALID`);
+        } 
+        // Invalid: missing critical data or out of scope
+        else if (!hasEmployeeData || !hasValidAmount || !isInScope) {
+          invalidCount++;
+          console.log(`[Item ${idx + 1}] ✗ INVALID - Reasons:`, {
+            missingEmployee: !hasEmployeeData,
+            invalidAmount: !hasValidAmount,
+            outOfScope: !isInScope,
+          });
+        }
+        // Warning: has some data but incomplete
+        else {
+          warningCount++;
+          console.log(`[Item ${idx + 1}] ⚠ WARNING`);
+        }
+      });
+
+      console.log('[Bulk Upload Validation] Summary:', {
+        total: enrichedItems.length,
+        valid: validCount,
+        warning: warningCount,
+        invalid: invalidCount,
+      });
+
+      // Only reject if ALL rows are completely invalid
+      if (validCount === 0 && warningCount === 0 && enrichedItems.length > 0) {
+        console.error('[Bulk Upload Validation] All items are invalid - rejecting file');
+        throw new Error('File contains only invalid data. At least one employee must be found with a valid amount and be in the budget scope.');
+      }
+
+      console.log('[Bulk Upload Validation] File accepted with', validCount, 'valid and', warningCount, 'warning items');
+      setBulkItems(enrichedItems);
     } catch (error) {
       console.error('Error parsing bulk template:', error);
       setBulkItems([]);
@@ -995,17 +1269,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }
 
     const invalidItem = bulkItems.find(
-      (item) => !item.employee_id || !item.position || !item.amount
+      (item) => !item.employee_id || !item.amount
     );
 
     if (invalidItem) {
-      setSubmitError('Ensure all bulk rows include Employee ID, Position, and Amount.');
-      return;
-    }
-
-    const rewardTypeValue = bulkRewardType || bulkItems.find((item) => item.item_type)?.item_type;
-    if (!rewardTypeValue) {
-      setSubmitError('Reward type is missing. Select a reward type and generate a template.');
+      setSubmitError('Ensure all bulk rows include Employee ID and Amount.');
       return;
     }
 
@@ -1023,10 +1291,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       await approvalRequestService.addLineItemsBulk(
         requestId,
         {
-          line_items: bulkItems.map((item) => ({
-            ...item,
-            item_type: rewardTypeValue,
-          })),
+          line_items: bulkItems,
         },
         token
       );
@@ -1293,8 +1558,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       </Card>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[60vw] max-w-none max-h-[90vh] overflow-y-auto p-4">
-          <DialogHeader>
+        <DialogContent className={`bg-slate-800 border-slate-700 text-white flex flex-col ${
+          requestMode === 'bulk' && bulkItems.length > 0
+            ? 'w-[90vw] max-w-none h-[85vh] p-0'
+            : 'w-[95vw] md:w-[80vw] xl:w-[60vw] max-w-none max-h-[90vh] overflow-y-auto p-4'
+        }`}>
+          <DialogHeader className={requestMode === 'bulk' && bulkItems.length > 0 ? 'px-6 pt-6 pb-2 flex-shrink-0' : ''}>
             <DialogTitle className="text-lg font-bold">Submit Approval Request</DialogTitle>
             <DialogDescription className="text-gray-400">
               {selectedConfig?.name}
@@ -1302,14 +1571,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           </DialogHeader>
 
           {submitError && (
-            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+            <div className={`${requestMode === 'bulk' && bulkItems.length > 0 ? 'mx-6' : ''} rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300`}>
               {submitError}
             </div>
           )}
 
-          <div className="grid gap-4">
-            <Tabs value={requestMode} onValueChange={setRequestMode} className="space-y-3">
-              <TabsList className="bg-slate-700 border-slate-600 p-1">
+          <div className={`flex-1 flex flex-col min-h-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-6 pb-4' : ''}`}>
+            <Tabs value={requestMode} onValueChange={setRequestMode} className="flex-1 flex flex-col min-h-0">
+              <TabsList className="bg-slate-700 border-slate-600 p-1 flex-shrink-0">
                 <TabsTrigger
                   value="individual"
                   className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
@@ -1324,7 +1593,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="individual" className="space-y-4">
+              <TabsContent value="individual" className="space-y-4 flex-1 overflow-y-auto mt-3">
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="space-y-2">
                     <Label className="text-white">Employee ID *</Label>
@@ -1332,7 +1601,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       value={individualRequest.employeeId}
                       onChange={(e) => setIndividualRequest((prev) => ({ ...prev, employeeId: e.target.value }))}
                       placeholder="e.g., EMP001"
-                      className="bg-slate-600 border-gray-300 text-white"
+                      className="bg-slate-700 border-gray-300 text-white"
                     />
                     {employeeLookupLoading && (
                       <p className="text-xs text-slate-400">Fetching employee details...</p>
@@ -1346,7 +1615,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.employeeName}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1354,7 +1623,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.email}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1362,7 +1631,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.position}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1370,7 +1639,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.employeeStatus}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1378,7 +1647,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.geo}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1386,7 +1655,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.location}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1394,7 +1663,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Input
                       value={individualRequest.department}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1403,7 +1672,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="date"
                       value={individualRequest.hireDate || ''}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1412,7 +1681,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="date"
                       value={individualRequest.terminationDate || ''}
                       disabled
-                      className="bg-slate-800/60 border-gray-300 text-white"
+                      className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1423,8 +1692,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       value={individualRequest.amount}
                       onChange={(e) => setIndividualRequest((prev) => ({ ...prev, amount: e.target.value }))}
                       placeholder="e.g., 2500"
-                      className="bg-slate-600 border-gray-300 text-white"
+                      className="bg-slate-700 border-gray-300 text-white"
                     />
+                    {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
+                      <p className="text-xs text-slate-400">
+                        Range: {Number(selectedConfig.minLimit).toLocaleString()} - {Number(selectedConfig.maxLimit).toLocaleString()}
+                      </p>
+                    )}
                     {(() => {
                       const amountValue = Number(individualRequest.amount);
                       const minLimitValue = Number(selectedConfig?.minLimit || 0);
@@ -1462,7 +1736,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       value={individualRequest.notes}
                       onChange={(e) => setIndividualRequest((prev) => ({ ...prev, notes: e.target.value }))}
                       rows={3}
-                      className="bg-slate-600 border-gray-300 text-white"
+                      className="bg-slate-700 border-gray-300 text-white"
                     />
                     <p className="text-xs text-slate-400">
                       Use this only if there is an exception, special handling, or additional context needed.
@@ -1474,29 +1748,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       value={requestDetails.details}
                       onChange={(e) => setRequestDetails((prev) => ({ ...prev, details: e.target.value }))}
                       rows={3}
-                      className="bg-slate-600 border-gray-300 text-white"
+                      className="bg-slate-700 border-gray-300 text-white"
                       placeholder="Describe the request details, purpose, and any important context."
                     />
                   </div>
                 </div>
               </TabsContent>
 
-              <TabsContent value="bulk" className="space-y-3">
-                <div className="space-y-2">
-                  <Label className="text-white">Reward Type *</Label>
-                  <Select value={bulkRewardType} onValueChange={(value) => setBulkRewardType(value)}>
-                    <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                      <SelectValue placeholder="Select reward type" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-slate-800 border-gray-300">
-                      <SelectItem value="performance_bonus" className="text-white">Performance Bonus</SelectItem>
-                      <SelectItem value="spot_award" className="text-white">Spot Award</SelectItem>
-                      <SelectItem value="innovation_reward" className="text-white">Innovation Reward</SelectItem>
-                      <SelectItem value="recognition" className="text-white">Recognition</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
+              <TabsContent value="bulk" className="flex-1 flex flex-col space-y-3 min-h-0">
                 <div className="space-y-2">
                   <Label className="text-white">Bulk Template Upload *</Label>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1504,7 +1763,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="button"
                       variant="outline"
                       onClick={handleDownloadTemplate}
-                      disabled={!bulkRewardType}
                       className="border-slate-600 text-white hover:bg-slate-700"
                     >
                       Download Excel Template
@@ -1513,31 +1771,99 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="file"
                       accept=".xlsx,.xls"
                       onChange={handleBulkFileChange}
-                      className="bg-slate-700 border-gray-300 text-white"
+                      className="bg-slate-700 border-gray-300 text-white max-w-md"
                     />
                   </div>
                   <p className="text-xs text-gray-400">
-                    Select a reward type before generating the template. Required columns: Employee ID, Position, Amount.
+                    Required columns: Employee ID, Amount, Is Deduction, Notes, Approval Description.
                   </p>
-                  {bulkRewardType && (
-                    <p className="text-xs text-gray-300">Selected reward type: {bulkRewardType}</p>
-                  )}
                   {bulkFileName && (
-                    <p className="text-xs text-gray-300">Uploaded: {bulkFileName}</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-gray-300">Uploaded: {bulkFileName}</p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setBulkItems([]);
+                          setBulkFileName('');
+                          setBulkParseError(null);
+                          // Reset file input
+                          const fileInput = document.querySelector('input[type="file"]');
+                          if (fileInput) fileInput.value = '';
+                        }}
+                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10 h-6 px-2"
+                      >
+                        ✕ Clear
+                      </Button>
+                    </div>
                   )}
                   {bulkItems.length > 0 && (
-                    <p className="text-xs text-green-300">Parsed {bulkItems.length} line item(s).</p>
+                    <p className="text-xs text-green-300">Uploaded {bulkItems.length} line item(s).</p>
                   )}
                   {bulkParseError && (
                     <p className="text-xs text-red-300">{bulkParseError}</p>
                   )}
                 </div>
+
+                <BulkUploadValidation
+                  bulkItems={bulkItems}
+                  setBulkItems={setBulkItems}
+                  selectedConfig={selectedConfig}
+                  organizations={organizations}
+                  validateEmployee={(item) => {
+                    const errors = [];
+                    const warnings = [];
+                    
+                    // Check if employee ID exists
+                    if (!item.employee_id) {
+                      errors.push('Employee ID required');
+                    }
+                    
+                    // Check if employee was found
+                    if (item.employee_id && !item.employeeData) {
+                      errors.push('Employee not found');
+                    }
+                    
+                    // Check if employee is in configuration scope (same validation as individual)
+                    if (item.employeeData && item.scopeValidation && selectedConfig) {
+                      if (!item.scopeValidation.departmentAllowed) {
+                        errors.push('Employee department not in budget scope');
+                      }
+                      if (!item.scopeValidation.ouAllowed) {
+                        errors.push('Employee OU/organization not in budget scope');
+                      }
+                    }
+                    
+                    // Check amount
+                    if (!item.amount || item.amount <= 0) {
+                      errors.push('Valid amount required');
+                    }
+                    
+                    // Check for warnings
+                    const minLimit = Number(selectedConfig?.minLimit || 0);
+                    const maxLimit = Number(selectedConfig?.maxLimit || 0);
+                    const needsNotes = 
+                      item.is_deduction ||
+                      (minLimit > 0 && item.amount < minLimit) ||
+                      (maxLimit > 0 && item.amount > maxLimit);
+                    
+                    if (needsNotes && !item.notes?.trim()) {
+                      warnings.push('Notes required for deduction/out-of-range amount');
+                    }
+                    
+                    if (!item.approval_description?.trim()) {
+                      warnings.push('Approval description recommended');
+                    }
+                    
+                    return { valid: errors.length === 0, errors, warnings };
+                  }}
+                />
               </TabsContent>
             </Tabs>
-
           </div>
 
-          <DialogFooter className="flex justify-end gap-2">
+          <DialogFooter className={`flex justify-end gap-2 flex-shrink-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-6 py-4 border-t border-slate-700' : ''}`}>
             <Button
               variant="outline"
               onClick={() => setShowModal(false)}
@@ -1548,18 +1874,18 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             {requestMode === 'individual' ? (
               <Button
                 onClick={handleSubmitIndividual}
-                disabled={submitting}
-                className="bg-blue-600 hover:bg-blue-700 text-white"
+                disabled={!canProceed || submitting}
+                className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Proceed
+                {submitting ? 'Submitting...' : 'Proceed'}
               </Button>
             ) : (
               <Button
                 onClick={handleSubmitBulk}
-                disabled={submitting}
-                className="bg-blue-600 hover:bg-blue-700 text-white"
+                disabled={!canProceed || submitting}
+                className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Proceed
+                {submitting ? 'Submitting...' : 'Proceed'}
               </Button>
             )}
           </DialogFooter>
@@ -1741,7 +2067,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 }
 function ApprovalRequests({ refreshKey }) {
   const { user } = useAuth();
-  const userRole = user?.role || 'requestor';
+  const userRole = resolveUserRole(user);
+  const requestorFlag = [user?.role_name, user?.roleName, user?.user_role, user?.userRole, user?.role]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes('requestor'));
+  const canViewRequests =
+    !requestorFlag && (userRole === 'l1' || userRole === 'l2' || userRole === 'l3' || userRole === 'payroll');
   const [approvals, setApprovals] = useState([]);
   const [approvalStatusMap, setApprovalStatusMap] = useState({});
   const [loading, setLoading] = useState(false);
@@ -2105,6 +2436,10 @@ function ApprovalRequests({ refreshKey }) {
       setActionSubmitting(false);
     }
   };
+
+  if (!canViewRequests) {
+    return null;
+  }
 
   return (
     <Card className="bg-slate-800 border-slate-700">

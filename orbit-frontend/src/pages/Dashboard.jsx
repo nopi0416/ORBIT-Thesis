@@ -7,6 +7,7 @@ import { Badge } from '../components/ui/badge';
 import { Progress } from '../components/ui/progress';
 import { useAuth } from '../context/AuthContext';
 import { cn } from '../utils/cn';
+import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 import {
   TrendingUp,
   Clock,
@@ -24,7 +25,7 @@ import {
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const userRole = user?.role || "requestor";
+  const userRole = resolveUserRole(user);
 
   const getStatsForRole = () => {
     switch (userRole) {
@@ -203,16 +204,6 @@ export default function DashboardPage() {
     { department: "Marketing", used: 54000, total: 120000, color: "bg-yellow-500" },
     { department: "Operations", used: 76500, total: 90000, color: "bg-purple-600" },
   ];
-
-  const getRoleDisplayName = (role) => {
-    switch (role) {
-      case "l1": return "L1 Approver";
-      case "l2": return "L2 Approver";
-      case "l3": return "L3 Approver";
-      case "payroll": return "Payroll Staff";
-      default: return "Requestor";
-    }
-  };
 
   return (
     <div>

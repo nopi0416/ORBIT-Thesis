@@ -59,15 +59,15 @@ export class AuthController {
    */
   static async login(req, res) {
     try {
-      const { email, password } = req.body;
+      const { employee_id, password } = req.body;
 
       // Validate input
-      const validation = validateLogin(email, password);
+      const validation = validateLogin(employee_id, password);
       if (!validation.isValid) {
         return sendError(res, validation.errors, 400);
       }
 
-      const result = await AuthService.loginUser(email, password);
+      const result = await AuthService.loginUser(employee_id, password);
 
       if (!result.success) {
         return sendError(res, result.error, 401);

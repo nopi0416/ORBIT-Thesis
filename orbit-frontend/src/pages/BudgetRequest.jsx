@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -11,12 +11,10 @@ import { SearchableSelect } from "../components/ui/searchable-select";
 import { MultiSelect } from "../components/ui/multi-select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { useAuth } from "../context/AuthContext";
+import { resolveUserRole } from "../utils/roleUtils";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
 import budgetConfigService from "../services/budgetConfigService";
 import { connectWebSocket, addWebSocketListener } from "../services/realtimeService";
-import currencyData from "../data/currencies.json";
-import * as currencyCodes from "currency-codes/index.js";
-
 const parseStoredList = (value) => {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -33,68 +31,7 @@ const parseStoredList = (value) => {
   return [value];
 };
 
-const getCurrencyOptionsFromLibrary = () => {
-  const data = currencyCodes?.data;
-  if (Array.isArray(data) && data.length) {
-    return data.map((item) => ({
-      value: item.code,
-      label: `${item.code} - ${item.currency}`,
-    }));
-  }
-
-  if (typeof currencyCodes?.codes === "function") {
-    const codes = currencyCodes.codes();
-    if (Array.isArray(codes) && codes.length) {
-      return codes.map((code) => {
-        const info = currencyCodes.code ? currencyCodes.code(code) : null;
-        const currencyName = info?.currency || code;
-        return { value: code, label: `${code} - ${currencyName}` };
-      });
-    }
-  }
-
-  return [];
-};
-
-const getCurrencyOptionsFromJson = (data) => {
-  if (!Array.isArray(data)) return [];
-  return data
-    .map((item) => {
-      const code = item?.code || item?.value;
-      if (!code) return null;
-      if (item?.label) {
-        return { value: code, label: item.label };
-      }
-      const name = item?.name || item?.currency;
-      const label = name ? `${code} - ${name}` : code;
-      return { value: code, label };
-    })
-    .filter(Boolean);
-};
-
-const buildCurrencyOptions = () => {
-  const libraryOptions = getCurrencyOptionsFromLibrary();
-  const jsonOptions = getCurrencyOptionsFromJson(currencyData);
-
-  if (!libraryOptions.length) {
-    return jsonOptions;
-  }
-
-  if (!jsonOptions.length) {
-    return libraryOptions;
-  }
-
-  const libraryMap = new Map(libraryOptions.map((option) => [option.value, option]));
-  jsonOptions.forEach((option) => {
-    if (libraryMap.has(option.value)) {
-      libraryMap.set(option.value, { ...libraryMap.get(option.value), ...option });
-    }
-  });
-
-  return Array.from(libraryMap.values()).sort((a, b) => a.value.localeCompare(b.value));
-};
-
-const currencyOptions = buildCurrencyOptions();
+const currencyOptions = [{ value: "PHP", label: "PHP - Philippine Peso" }];
 
 const getApprovalStatusInfo = (status) => {
   switch (status) {
@@ -122,7 +59,7 @@ const getApprovalStatusInfo = (status) => {
 
 export default function BudgetConfigurationPage() {
   const { user } = useAuth();
-  const userRole = user?.role || "requestor";
+  const userRole = resolveUserRole(user);
   const [activeTab, setActiveTab] = useState("list");
 
   return (
@@ -177,13 +114,60 @@ function ConfigurationList() {
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState(null);
   const [editSuccess, setEditSuccess] = useState(false);
+  const [approvalsL1, setApprovalsL1] = useState([]);
+  const [approvalsL2, setApprovalsL2] = useState([]);
+  const [approvalsL3, setApprovalsL3] = useState([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(true);
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
-  const transformConfig = (config) => {
+  const getApproverName = (approverId, approversList) => {
+    if (!approverId) return null;
+    if (!Array.isArray(approversList) || approversList.length === 0) return null;
+    const approver = approversList.find(a => a.user_id === approverId);
+    if (!approver) {
+      console.log('Approver not found:', approverId, 'in list:', approversList);
+      return null;
+    }
+    const fullName = `${approver.first_name || ''} ${approver.last_name || ''}`.trim();
+    return fullName || null;
+  };
+
+  const transformConfig = useCallback((config) => {
     const startDate = config.start_date || config.startDate || null;
     const endDate = config.end_date || config.endDate || null;
     const dateRangeLabel = startDate && endDate ? `${startDate} → ${endDate}` : "Not specified";
+
+    // Extract approver IDs and names from the approvers array (from tblbudgetconfig_approvers)
+    const approversArray = config.approvers || [];
+    const l1Approver = approversArray.find(a => a.approval_level === 1);
+    const l2Approver = approversArray.find(a => a.approval_level === 2);
+    const l3Approver = approversArray.find(a => a.approval_level === 3);
+
+    const approverL1Id = l1Approver?.primary_approver || "";
+    const backupApproverL1Id = l1Approver?.backup_approver || "";
+    const approverL2Id = l2Approver?.primary_approver || "";
+    const backupApproverL2Id = l2Approver?.backup_approver || "";
+    const approverL3Id = l3Approver?.primary_approver || "";
+    const backupApproverL3Id = l3Approver?.backup_approver || "";
+
+    // Use names from backend (already enriched with user data)
+    const approverL1Name = l1Approver?.approver_name || null;
+    const backupApproverL1Name = l1Approver?.backup_approver_name || null;
+    const approverL2Name = l2Approver?.approver_name || null;
+    const backupApproverL2Name = l2Approver?.backup_approver_name || null;
+    const approverL3Name = l3Approver?.approver_name || null;
+    const backupApproverL3Name = l3Approver?.backup_approver_name || null;
+
+    console.log('Transform config:', config.budget_name || config.name, {
+      approverL1Id,
+      approverL1Name,
+      approverL2Id,
+      approverL2Name,
+      approverL3Id,
+      approverL3Name,
+      approversArray: approversArray.length
+    });
 
     return {
       id: config.budget_id || config.id,
@@ -201,15 +185,32 @@ function ConfigurationList() {
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
-      approvers: config.approvers || config.approval_hierarchy || [],
-      approverL1: config.approver_l1 || config.approverL1 || config.approver_l1_id || "",
-      backupApproverL1: config.backup_approver_l1 || config.backupApproverL1 || config.backup_approver_l1_id || "",
-      approverL2: config.approver_l2 || config.approverL2 || config.approver_l2_id || "",
-      backupApproverL2: config.backup_approver_l2 || config.backupApproverL2 || config.backup_approver_l2_id || "",
-      approverL3: config.approver_l3 || config.approverL3 || config.approver_l3_id || "",
-      backupApproverL3: config.backup_approver_l3 || config.backupApproverL3 || config.backup_approver_l3_id || "",
+      approvers: approversArray,
+      approverL1: approverL1Id,
+      backupApproverL1: backupApproverL1Id,
+      approverL2: approverL2Id,
+      backupApproverL2: backupApproverL2Id,
+      approverL3: approverL3Id,
+      backupApproverL3: backupApproverL3Id,
+      approverL1Name,
+      backupApproverL1Name,
+      approverL2Name,
+      backupApproverL2Name,
+      approverL3Name,
+      backupApproverL3Name,
       approvalStatus: config.approvalStatus || "no_submission",
     };
+  }, []);
+
+  const resolveApproverId = (value, approvers = []) => {
+    if (!value) return "";
+    const exactMatch = approvers.find((approver) => approver.user_id === value);
+    if (exactMatch) return value;
+    const normalized = String(value).trim().toLowerCase();
+    const nameMatch = approvers.find((approver) =>
+      `${approver.first_name || ""} ${approver.last_name || ""}`.trim().toLowerCase() === normalized
+    );
+    return nameMatch ? nameMatch.user_id : value;
   };
 
   useEffect(() => {
@@ -218,7 +219,7 @@ function ConfigurationList() {
       setError(null);
       try {
         const token = user?.token || localStorage.getItem("authToken") || "";
-        const data = await budgetConfigService.getBudgetConfigurations({}, token);
+        const data = await budgetConfigService.getBudgetConfigurations({ org_id: user?.org_id }, token);
         setConfigurations((data || []).map(transformConfig));
       } catch (err) {
         console.error("Error fetching configurations:", err);
@@ -231,6 +232,68 @@ function ConfigurationList() {
 
     fetchConfigurations();
   }, [user]);
+
+  useEffect(() => {
+    const fetchApprovers = async () => {
+      try {
+        setApprovalsLoading(true);
+        const [l1Data, l2Data, l3Data] = await Promise.all([
+          budgetConfigService.getApproversByLevel("L1", token),
+          budgetConfigService.getApproversByLevel("L2", token),
+          budgetConfigService.getApproversByLevel("L3", token),
+        ]);
+        setApprovalsL1(l1Data || []);
+        setApprovalsL2(l2Data || []);
+        setApprovalsL3(l3Data || []);
+      } catch (err) {
+        console.error("Error fetching approvers:", err);
+        setApprovalsL1([]);
+        setApprovalsL2([]);
+        setApprovalsL3([]);
+      } finally {
+        setApprovalsLoading(false);
+      }
+    };
+
+    fetchApprovers();
+  }, [token]);
+
+  // Re-transform configurations when approver data loads to populate names
+  useEffect(() => {
+    console.log('Approver data effect:', {
+      loading: approvalsLoading,
+      configCount: configurations.length,
+      l1Count: approvalsL1.length,
+      l2Count: approvalsL2.length,
+      l3Count: approvalsL3.length
+    });
+
+    if (approvalsLoading) return;
+    if (configurations.length === 0) return;
+
+    console.log('Re-transforming configurations with approver names');
+    setConfigurations(prev => {
+      const rawConfigs = prev.map(config => ({
+        // Get raw config data (revert to original structure for re-transform)
+        budget_id: config.id,
+        budget_name: config.name,
+        description: config.description,
+        start_date: config.startDate,
+        end_date: config.endDate,
+        min_limit: config.limitMin,
+        max_limit: config.limitMax,
+        budget_control: config.budgetControlEnabled,
+        budget_limit: config.budgetLimit,
+        pay_cycle: config.payCycle,
+        currency: config.currency,
+        geo: config.geo,
+        location: config.location,
+        client: config.clients,
+        approvers: config.approvers, // Preserve the approvers array from backend
+      }));
+      return rawConfigs.map(transformConfig);
+    });
+  }, [approvalsLoading, transformConfig]);
 
   useEffect(() => {
     connectWebSocket();
@@ -273,7 +336,22 @@ function ConfigurationList() {
   }, [token, selectedConfig?.id]);
 
   useEffect(() => {
-    if (!selectedConfig) return;
+    if (!selectedConfig) {
+      setEditConfig(null);
+      setEditError(null);
+      setEditSuccess(false);
+      return;
+    }
+
+    // Extract approver ID from various possible formats
+    const extractApproverId = (value) => {
+      if (!value) return '';
+      if (typeof value === 'string') return value;
+      if (typeof value === 'object' && value.user_id) return value.user_id;
+      if (typeof value === 'object' && value.id) return value.id;
+      return '';
+    };
+
     setEditConfig({
       id: selectedConfig.id,
       name: selectedConfig.name || "",
@@ -282,20 +360,62 @@ function ConfigurationList() {
       endDate: selectedConfig.endDate || "",
       limitMin: selectedConfig.limitMin || "",
       limitMax: selectedConfig.limitMax || "",
-      currency: selectedConfig.currency || "",
-      payCycle: selectedConfig.payCycle || "",
+      currency: "PHP",
+      payCycle: "SEMI_MONTHLY",
       budgetControlEnabled: Boolean(selectedConfig.budgetControlEnabled),
       budgetControlLimit: selectedConfig.budgetLimit || "",
-      approverL1: selectedConfig.approverL1 || "",
-      backupApproverL1: selectedConfig.backupApproverL1 || "",
-      approverL2: selectedConfig.approverL2 || "",
-      backupApproverL2: selectedConfig.backupApproverL2 || "",
-      approverL3: selectedConfig.approverL3 || "",
-      backupApproverL3: selectedConfig.backupApproverL3 || "",
+      approverL1: extractApproverId(selectedConfig.approverL1),
+      backupApproverL1: extractApproverId(selectedConfig.backupApproverL1),
+      approverL2: extractApproverId(selectedConfig.approverL2),
+      backupApproverL2: extractApproverId(selectedConfig.backupApproverL2),
+      approverL3: extractApproverId(selectedConfig.approverL3),
+      backupApproverL3: extractApproverId(selectedConfig.backupApproverL3),
     });
     setEditError(null);
     setEditSuccess(false);
   }, [selectedConfig]);
+
+  useEffect(() => {
+    if (!editConfig) return;
+    setEditConfig((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      const resolvedL1 = resolveApproverId(prev.approverL1, approvalsL1);
+      const resolvedBackupL1 = resolveApproverId(prev.backupApproverL1, approvalsL1);
+      const resolvedL2 = resolveApproverId(prev.approverL2, approvalsL2);
+      const resolvedBackupL2 = resolveApproverId(prev.backupApproverL2, approvalsL2);
+      const resolvedL3 = resolveApproverId(prev.approverL3, approvalsL3);
+      const resolvedBackupL3 = resolveApproverId(prev.backupApproverL3, approvalsL3);
+
+      let changed = false;
+      if (resolvedL1 !== prev.approverL1) {
+        next.approverL1 = resolvedL1;
+        changed = true;
+      }
+      if (resolvedBackupL1 !== prev.backupApproverL1) {
+        next.backupApproverL1 = resolvedBackupL1;
+        changed = true;
+      }
+      if (resolvedL2 !== prev.approverL2) {
+        next.approverL2 = resolvedL2;
+        changed = true;
+      }
+      if (resolvedBackupL2 !== prev.backupApproverL2) {
+        next.backupApproverL2 = resolvedBackupL2;
+        changed = true;
+      }
+      if (resolvedL3 !== prev.approverL3) {
+        next.approverL3 = resolvedL3;
+        changed = true;
+      }
+      if (resolvedBackupL3 !== prev.backupApproverL3) {
+        next.backupApproverL3 = resolvedBackupL3;
+        changed = true;
+      }
+
+      return changed ? next : prev;
+    });
+  }, [approvalsL1, approvalsL2, approvalsL3]);
 
   const renderApproverSummary = (config) => {
     if (config.approvers?.length) {
@@ -337,8 +457,8 @@ function ConfigurationList() {
         endDate: editConfig.endDate || null,
         minLimit: editConfig.limitMin ? parseFloat(editConfig.limitMin) : 0,
         maxLimit: editConfig.limitMax ? parseFloat(editConfig.limitMax) : 0,
-        currency: editConfig.currency || null,
-        payCycle: editConfig.payCycle || null,
+        currency: "PHP",
+        payCycle: "SEMI_MONTHLY",
         budgetControlEnabled: editConfig.budgetControlEnabled,
         budgetControlLimit: editConfig.budgetControlEnabled && editConfig.budgetControlLimit
           ? parseFloat(editConfig.budgetControlLimit)
@@ -371,8 +491,8 @@ function ConfigurationList() {
                     : config.dateRangeLabel,
                 limitMin: editConfig.limitMin,
                 limitMax: editConfig.limitMax,
-                currency: editConfig.currency,
-                payCycle: editConfig.payCycle,
+                currency: "PHP",
+                payCycle: "SEMI_MONTHLY",
                 budgetControlEnabled: editConfig.budgetControlEnabled,
                 budgetLimit: editConfig.budgetControlEnabled ? editConfig.budgetControlLimit : "—",
                 approverL1: editConfig.approverL1,
@@ -508,68 +628,122 @@ function ConfigurationList() {
             <div className="text-sm text-gray-400">No configurations found.</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full text-sm text-left text-gray-300">
-                <thead className="text-xs uppercase bg-slate-700 text-gray-300">
+              <table className="min-w-full text-sm text-left text-gray-300 border-collapse">
+                <thead className="text-xs uppercase bg-slate-700 text-gray-300 sticky top-0">
                   <tr>
-                    <th className="px-4 py-3">Configuration</th>
-                    <th className="px-4 py-3">Date Range</th>
-                    <th className="px-4 py-3">Budget Limit</th>
-                    <th className="px-4 py-3">Payroll Cycle</th>
-                    <th className="px-4 py-3">Currency</th>
-                    <th className="px-4 py-3">Geo</th>
-                    <th className="px-4 py-3">Location</th>
-                    <th className="px-4 py-3">Client</th>
-                    <th className="px-4 py-3">Approvers</th>
-                    <th className="px-4 py-3">Status</th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[200px] max-w-[400px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Configuration
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[150px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Period
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Budget Limit
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[100px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Min - Max
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Geo
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Location
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[150px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Client
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      L1 Approver
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      L2 Approver
+                    </th>
+                    <th className="px-3 py-3 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      L3 Approver
+                    </th>
+                    <th className="px-3 py-3 min-w-[80px]">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredConfigurations.map((config) => {
-                    const approvalInfo = getApprovalStatusInfo(config.approvalStatus);
-                    const StatusIcon = approvalInfo.icon;
-
-                    return (
-                      <tr
-                        key={config.id}
-                        className="border-b border-slate-700 hover:bg-slate-700/60 cursor-pointer"
-                        onClick={() => {
-                          setSelectedConfig(config);
-                          setDetailsOpen(true);
-                        }}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-semibold text-white">{config.name}</div>
-                          <div className="text-xs text-gray-400">{config.description}</div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant="outline" className="text-xs border-slate-500 text-gray-300 bg-slate-600">
-                            {config.dateRangeLabel}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          {config.budgetControlEnabled ? config.budgetLimit : "—"}
-                        </td>
-                        <td className="px-4 py-3">{config.payCycle}</td>
-                        <td className="px-4 py-3">{config.currency || "—"}</td>
-                        <td className="px-4 py-3">{config.geo.length ? config.geo.join(", ") : "—"}</td>
-                        <td className="px-4 py-3">{config.location.length ? config.location.join(", ") : "—"}</td>
-                        <td className="px-4 py-3">{config.clients.length ? config.clients.join(", ") : "—"}</td>
-                        <td className="px-4 py-3">
-                          <div className="space-y-1 text-xs text-gray-300">
-                            {renderApproverSummary(config).map((line, index) => (
-                              <div key={`${config.id}-approver-${index}`}>{line}</div>
-                            ))}
+                  {filteredConfigurations.map((config) => (
+                    <tr key={config.id} className="border-b border-slate-700 hover:bg-slate-700/50 transition-colors">
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="font-medium text-white">{config.name}</div>
+                        {config.description && (
+                          <div className="text-xs text-gray-400 mt-1 line-clamp-2">{config.description}</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="text-xs">{config.dateRangeLabel}</div>
+                        <div className="text-xs text-gray-400">{config.payCycle === 'SEMI_MONTHLY' ? 'Semi-Monthly' : config.payCycle}</div>
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600 text-right">
+                        {config.budgetControlEnabled ? (
+                          <div className="font-medium text-green-400">
+                            {config.currency} {Number(config.budgetLimit || 0).toLocaleString()}
                           </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2 text-xs">
-                            <StatusIcon className={`h-4 w-4 ${approvalInfo.color}`} />
-                            <span>{approvalInfo.label}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                        ) : (
+                          <div className="text-xs text-gray-400">No limit</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600 text-right">
+                        <div className="text-xs">
+                          {config.currency} {Number(config.limitMin || 0).toLocaleString()} - {Number(config.limitMax || 0).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="text-xs">{config.geo?.length ? config.geo.join(', ') : 'All'}</div>
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="text-xs">{config.location?.length ? config.location.join(', ') : 'All'}</div>
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="text-xs">
+                          {Array.isArray(config.clients) && config.clients.length > 0
+                            ? config.clients.length > 2
+                              ? `${config.clients.slice(0, 2).join(', ')}... (+${config.clients.length - 2})`
+                              : config.clients.join(', ')
+                            : 'All'}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">
+                          {config.approverL1Name || config.approverL1 || '—'}
+                          {config.backupApproverL1Name && (
+                            <div className="text-xs text-gray-500 mt-0.5">Backup: {config.backupApproverL1Name}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">
+                          {config.approverL2Name || config.approverL2 || '—'}
+                          {config.backupApproverL2Name && (
+                            <div className="text-xs text-gray-500 mt-0.5">Backup: {config.backupApproverL2Name}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">
+                          {config.approverL3Name || config.approverL3 || '—'}
+                          {config.backupApproverL3Name && (
+                            <div className="text-xs text-gray-500 mt-0.5">Backup: {config.backupApproverL3Name}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <Button
+                          onClick={() => {
+                            setSelectedConfig(config);
+                            setDetailsOpen(true);
+                          }}
+                          size="sm"
+                          className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7"
+                        >
+                          View
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -639,11 +813,10 @@ function ConfigurationList() {
                         value={editConfig.payCycle}
                         onValueChange={(value) => handleEditChange("payCycle", value)}
                         options={[
-                          { value: "MONTHLY", label: "Monthly (End of Month)" },
                           { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
-                          { value: "BI_WEEKLY", label: "Bi-Weekly (Every 14 Days)" },
                         ]}
                         placeholder="Select payroll cycle"
+                        disabled
                       />
                     </div>
                     <div className="space-y-2">
@@ -671,6 +844,7 @@ function ConfigurationList() {
                         onValueChange={(value) => handleEditChange("currency", value)}
                         options={currencyOptions}
                         placeholder="Select currency"
+                        disabled
                       />
                     </div>
                     <div className="space-y-2">
@@ -728,50 +902,107 @@ function ConfigurationList() {
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <Label className="text-white">Approver L1</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.approverL1}
-                        onChange={(e) => handleEditChange("approverL1", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => {
+                          handleEditChange("approverL1", value);
+                          if (editConfig.backupApproverL1 === value) {
+                            handleEditChange("backupApproverL1", "");
+                          }
+                        }}
+                        options={approvalsL1.map((approver) => ({
+                          value: approver.user_id,
+                          label: `${approver.first_name} ${approver.last_name}`,
+                        }))}
+                        disabled={approvalsLoading}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                        searchPlaceholder="Search approver..."
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Backup L1</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.backupApproverL1}
-                        onChange={(e) => handleEditChange("backupApproverL1", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => handleEditChange("backupApproverL1", value)}
+                        options={approvalsL1
+                          .filter((approver) => approver.user_id !== editConfig.approverL1)
+                          .map((approver) => ({
+                            value: approver.user_id,
+                            label: `${approver.first_name} ${approver.last_name}`,
+                          }))}
+                        disabled={approvalsLoading}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                        searchPlaceholder="Search backup..."
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Approver L2</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.approverL2}
-                        onChange={(e) => handleEditChange("approverL2", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => {
+                          handleEditChange("approverL2", value);
+                          if (editConfig.backupApproverL2 === value) {
+                            handleEditChange("backupApproverL2", "");
+                          }
+                        }}
+                        options={approvalsL2.map((approver) => ({
+                          value: approver.user_id,
+                          label: `${approver.first_name} ${approver.last_name}`,
+                        }))}
+                        disabled={approvalsLoading}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                        searchPlaceholder="Search approver..."
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Backup L2</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.backupApproverL2}
-                        onChange={(e) => handleEditChange("backupApproverL2", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => handleEditChange("backupApproverL2", value)}
+                        options={approvalsL2
+                          .filter((approver) => approver.user_id !== editConfig.approverL2)
+                          .map((approver) => ({
+                            value: approver.user_id,
+                            label: `${approver.first_name} ${approver.last_name}`,
+                          }))}
+                        disabled={approvalsLoading}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                        searchPlaceholder="Search backup..."
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Approver L3</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.approverL3}
-                        onChange={(e) => handleEditChange("approverL3", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => {
+                          handleEditChange("approverL3", value);
+                          if (editConfig.backupApproverL3 === value) {
+                            handleEditChange("backupApproverL3", "");
+                          }
+                        }}
+                        options={approvalsL3.map((approver) => ({
+                          value: approver.user_id,
+                          label: `${approver.first_name} ${approver.last_name}`,
+                        }))}
+                        disabled={approvalsLoading}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                        searchPlaceholder="Search approver..."
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Backup L3</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.backupApproverL3}
-                        onChange={(e) => handleEditChange("backupApproverL3", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => handleEditChange("backupApproverL3", value)}
+                        options={approvalsL3
+                          .filter((approver) => approver.user_id !== editConfig.approverL3)
+                          .map((approver) => ({
+                            value: approver.user_id,
+                            label: `${approver.first_name} ${approver.last_name}`,
+                          }))}
+                        disabled={approvalsLoading}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                        searchPlaceholder="Search backup..."
                       />
                     </div>
                   </div>
@@ -849,10 +1080,10 @@ function CreateConfiguration() {
     dataControlEnabled: true,
     limitMin: "",
     limitMax: "",
-    currency: "",
+    currency: "PHP",
     budgetControlEnabled: false,
     budgetControlLimit: "",
-    payCycle: "",
+    payCycle: "SEMI_MONTHLY",
     affectedOUPaths: [],
     accessibleOUPaths: [],
     countries: [],
@@ -967,6 +1198,22 @@ function CreateConfiguration() {
   };
 
   const { parents: parentOrgs, childOUs: childOrgMap, grandchildOUs: grandchildOrgMap } = buildOrgHierarchy();
+
+  const getParentSelectionCount = (paths = [], parentId) =>
+    (paths || []).filter((path) => path[0] === parentId).length;
+
+  const buildAllPathsForParent = (parentId) => {
+    const paths = [[parentId]];
+    const children = childOrgMap[parentId] || [];
+    children.forEach((child) => {
+      paths.push([parentId, child.org_id]);
+      const grandchildren = grandchildOrgMap[child.org_id] || [];
+      grandchildren.forEach((grandchild) => {
+        paths.push([parentId, child.org_id, grandchild.org_id]);
+      });
+    });
+    return paths;
+  };
 
   const getOrgName = (orgId) => {
     const org = organizations.find((o) => o.org_id === orgId);
@@ -1354,10 +1601,10 @@ function CreateConfiguration() {
         dataControlEnabled: true,
         limitMin: "",
         limitMax: "",
-        currency: "",
+        currency: "PHP",
         budgetControlEnabled: false,
         budgetControlLimit: "",
-        payCycle: "",
+        payCycle: "SEMI_MONTHLY",
         affectedOUPaths: [],
         accessibleOUPaths: [],
         countries: [],
@@ -1605,6 +1852,7 @@ function CreateConfiguration() {
                       options={currencyOptions}
                       placeholder="Select currency"
                       searchPlaceholder="Search currency..."
+                      disabled
                     />
                   </div>
                   <div className="space-y-2">
@@ -1643,12 +1891,11 @@ function CreateConfiguration() {
                     value={formData.payCycle}
                     onValueChange={(value) => updateField("payCycle", value)}
                     options={[
-                      { value: "MONTHLY", label: "Monthly (End of Month)" },
                       { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
-                      { value: "BI_WEEKLY", label: "Bi-Weekly (Every 14 Days)" },
                     ]}
                     placeholder="Select payroll cycle"
                     searchPlaceholder="Search payroll cycle..."
+                    disabled
                   />
                 </div>
 
@@ -1702,9 +1949,35 @@ function CreateConfiguration() {
                           const isParentSelected = formData.affectedOUPaths.some((path) => path[0] === parent.org_id);
 
                           const togglePath = (newPath) => {
+                            if (newPath.length === 1) {
+                              const parentId = newPath[0];
+                              const allParentPaths = buildAllPathsForParent(parentId);
+                              const allSelected = allParentPaths.every((path) =>
+                                formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(path))
+                              );
+
+                              if (allSelected) {
+                                updateField(
+                                  "affectedOUPaths",
+                                  formData.affectedOUPaths.filter((path) => path[0] !== parentId)
+                                );
+                              } else {
+                                const nextPaths = [...formData.affectedOUPaths];
+                                allParentPaths.forEach((path) => {
+                                  const exists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(path));
+                                  if (!exists) nextPaths.push(path);
+                                });
+                                updateField("affectedOUPaths", nextPaths);
+                              }
+                              return;
+                            }
+
                             const pathExists = formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
                             if (pathExists) {
-                              updateField("affectedOUPaths", formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                              updateField(
+                                "affectedOUPaths",
+                                formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath))
+                              );
                             } else {
                               const nextPaths = [...formData.affectedOUPaths, newPath];
                               if (newPath.length > 1) {
@@ -1716,6 +1989,8 @@ function CreateConfiguration() {
                             }
                           };
 
+                          const parentSelectionCount = getParentSelectionCount(formData.affectedOUPaths, parent.org_id);
+
                           return (
                             <div key={parent.org_id} className="space-y-0">
                               <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
@@ -1725,7 +2000,7 @@ function CreateConfiguration() {
                                   onCheckedChange={() => togglePath([parent.org_id])}
                                   className="border-pink-400 bg-slate-600 h-4 w-4"
                                 />
-                                <span className="text-white text-xs">{parent.org_name}</span>
+                                <span className="text-white text-xs">ALL ({parentSelectionCount} selected)</span>
                               </div>
 
                               {childOrgMap[parent.org_id] && (
@@ -1804,9 +2079,35 @@ function CreateConfiguration() {
                           const isParentSelected = formData.accessibleOUPaths.some((path) => path[0] === parent.org_id);
 
                           const toggleAccessPath = (newPath) => {
+                            if (newPath.length === 1) {
+                              const parentId = newPath[0];
+                              const allParentPaths = buildAllPathsForParent(parentId);
+                              const allSelected = allParentPaths.every((path) =>
+                                formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(path))
+                              );
+
+                              if (allSelected) {
+                                updateField(
+                                  "accessibleOUPaths",
+                                  formData.accessibleOUPaths.filter((path) => path[0] !== parentId)
+                                );
+                              } else {
+                                const nextPaths = [...formData.accessibleOUPaths];
+                                allParentPaths.forEach((path) => {
+                                  const exists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(path));
+                                  if (!exists) nextPaths.push(path);
+                                });
+                                updateField("accessibleOUPaths", nextPaths);
+                              }
+                              return;
+                            }
+
                             const pathExists = formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
                             if (pathExists) {
-                              updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                              updateField(
+                                "accessibleOUPaths",
+                                formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath))
+                              );
                             } else {
                               const nextPaths = [...formData.accessibleOUPaths, newPath];
                               if (newPath.length > 1) {
@@ -1818,6 +2119,8 @@ function CreateConfiguration() {
                             }
                           };
 
+                          const parentSelectionCount = getParentSelectionCount(formData.accessibleOUPaths, parent.org_id);
+
                           return (
                             <div key={parent.org_id} className="space-y-0">
                               <div className="flex items-center gap-1 p-1 hover:bg-slate-600/50 rounded">
@@ -1827,7 +2130,7 @@ function CreateConfiguration() {
                                   onCheckedChange={() => toggleAccessPath([parent.org_id])}
                                   className="border-blue-400 bg-slate-600 h-4 w-4"
                                 />
-                                <span className="text-white text-xs">{parent.org_name}</span>
+                                <span className="text-white text-xs">ALL ({parentSelectionCount} selected)</span>
                               </div>
 
                               {childOrgMap[parent.org_id] && (

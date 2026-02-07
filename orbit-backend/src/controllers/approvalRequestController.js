@@ -1,4 +1,5 @@
 import ApprovalRequestService from '../services/approvalRequestService.js';
+import { BudgetConfigService } from '../services/budgetConfigService.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { broadcast } from '../realtime/websocketServer.js';
 
@@ -33,6 +34,37 @@ export class ApprovalRequestController {
       sendError(res, error.message, 500);
     }
   }
+
+  /**
+   * Get multiple employees by EIDs in batch
+   * POST /api/approval-requests/employees/batch
+   * Body: { eids: ['EMP001', 'EMP002', ...], company_id: 'uuid' }
+   */
+  static async getEmployeesBatch(req, res) {
+    try {
+      const { eids, company_id } = req.body;
+
+      if (!eids || !Array.isArray(eids) || eids.length === 0) {
+        return sendError(res, 'Employee IDs array is required', 400);
+      }
+
+      // Limit batch size to prevent abuse
+      if (eids.length > 500) {
+        return sendError(res, 'Maximum 500 employees per batch request', 400);
+      }
+
+      const result = await ApprovalRequestService.getEmployeesBatch(eids, company_id);
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      sendSuccess(res, result.data, `Found ${result.data.found.length} of ${eids.length} employees`, 200);
+    } catch (error) {
+      console.error('Error in getEmployeesBatch:', error);
+      sendError(res, error.message, 500);
+    }
+  }
   /**
    * Create new approval request (DRAFT)
    * POST /api/approval-requests
@@ -41,10 +73,18 @@ export class ApprovalRequestController {
     try {
       const { budget_id, description, total_request_amount } = req.body;
       const userId = req.user?.id || req.body.submitted_by || req.body.created_by;
+      const orgId = req.user?.org_id || null;
 
       // Validate required fields
       if (!budget_id || !total_request_amount || !userId) {
         return sendError(res, 'Missing required fields: budget_id, total_request_amount, submitted_by', 400);
+      }
+
+      if (orgId) {
+        const accessCheck = await BudgetConfigService.isBudgetConfigInOrg(budget_id, orgId);
+        if (!accessCheck.success || !accessCheck.data) {
+          return sendError(res, 'Access denied for this budget configuration', 403);
+        }
       }
 
       const result = await ApprovalRequestService.createApprovalRequest({
@@ -101,6 +141,7 @@ export class ApprovalRequestController {
   static async getAllApprovalRequests(req, res) {
     try {
       const { budget_id, status, search, submitted_by } = req.query;
+      const orgId = req.user?.org_id || null;
       const isUuid = (value) =>
         typeof value === 'string' &&
         /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -111,6 +152,15 @@ export class ApprovalRequestController {
         ...(search && { search }),
         ...(submitted_by && isUuid(submitted_by) && { submitted_by }),
       };
+
+      if (orgId) {
+        const allowedBudgets = await BudgetConfigService.getBudgetIdsByOrgId(orgId);
+        const budgetIds = allowedBudgets.data || [];
+        if (!budgetIds.length) {
+          return sendSuccess(res, [], 'Approval requests retrieved', 200);
+        }
+        filters.budget_ids = budgetIds;
+      }
 
       const result = await ApprovalRequestService.getAllApprovalRequests(filters);
 
@@ -440,12 +490,19 @@ export class ApprovalRequestController {
   static async getPendingApprovals(req, res) {
     try {
       const userId = req.user?.id || req.query.user_id;
+      const orgId = req.user?.org_id || null;
 
       if (!userId) {
         return sendError(res, 'user_id is required', 400);
       }
 
-      const result = await ApprovalRequestService.getPendingApprovalsForUser(userId);
+      let budgetIds = null;
+      if (orgId) {
+        const allowedBudgets = await BudgetConfigService.getBudgetIdsByOrgId(orgId);
+        budgetIds = allowedBudgets.data || [];
+      }
+
+      const result = await ApprovalRequestService.getPendingApprovalsForUser(userId, budgetIds);
 
       if (!result.success) {
         return sendError(res, result.error, 500);

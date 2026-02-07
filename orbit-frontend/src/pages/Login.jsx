@@ -12,7 +12,8 @@ import { getDashboardRoute } from '../utils/roleRouting';
 export default function Login() {
   const navigate = useNavigate();
   const { login, completeLogin } = useAuth();
-  const [email, setEmail] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
+  const [otpEmail, setOtpEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [showPassword, setShowPassword] = useState(false);
@@ -113,7 +114,13 @@ export default function Login() {
     setTimeRemaining(180);
 
     try {
-      const result = await authAPI.resendOTP(email, 'login');
+      if (!otpEmail) {
+        setError('Unable to resend OTP. Please sign in again.');
+        setTimeRemaining(0);
+        return;
+      }
+
+      const result = await authAPI.resendOTP(otpEmail, 'login');
 
       if (!result.success) {
         setError(result.error || 'Failed to resend OTP');
@@ -135,11 +142,9 @@ export default function Login() {
         errors.otp = 'Please enter the complete 6-digit code';
       }
     } else {
-      // Email validation
-      if (!email) {
-        errors.email = 'Username is required';
-      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        errors.email = 'Please enter a valid username';
+      // Employee ID validation
+      if (!employeeId) {
+        errors.employee_id = 'Employee ID is required';
       }
 
       // Password validation
@@ -177,7 +182,7 @@ export default function Login() {
           return;
         }
 
-        const result = await completeLogin(email, otpCode);
+        const result = await completeLogin(otpEmail || employeeId, otpCode);
         
         console.log('[LOGIN FORM] Complete login result:', result);
 
@@ -185,10 +190,10 @@ export default function Login() {
           // Check if user agreement is required (first-time login)
           if (result.requiresUserAgreement) {
             console.log('[LOGIN FORM] User agreement required, redirecting to user-agreement');
-            navigate(`/user-agreement?email=${encodeURIComponent(email)}&userId=${result.userId}&role=${encodeURIComponent(result.role || 'requestor')}`);
+            navigate(`/user-agreement?email=${encodeURIComponent(otpEmail || employeeId)}&userId=${result.userId}&role=${encodeURIComponent(result.role || 'requestor')}`);
           } else if (result.requiresPasswordChange) {
             console.log('[LOGIN FORM] Password change required, redirecting to first-time-password');
-            navigate(`/first-time-password?email=${encodeURIComponent(email)}&role=${encodeURIComponent(result.role || 'requestor')}`);
+            navigate(`/first-time-password?email=${encodeURIComponent(otpEmail || employeeId)}&role=${encodeURIComponent(result.role || 'requestor')}`);
           } else {
             // OTP verified, redirect to role-specific dashboard
             const dashboardRoute = getDashboardRoute(result.role);
@@ -200,9 +205,9 @@ export default function Login() {
           setError(result.error || 'OTP verification failed. Please try again.');
         }
       } else {
-        // Step 1: Submit email and password
-        console.log('[LOGIN FORM] Submitting credentials for:', email);
-        const result = await login({ email, password });
+        // Step 1: Submit employee ID and password
+        console.log('[LOGIN FORM] Submitting credentials for:', employeeId);
+        const result = await login({ employee_id: employeeId, password });
         
         console.log('[LOGIN FORM] Login result:', result);
 
@@ -211,6 +216,7 @@ export default function Login() {
           if (result.requiresOTP) {
             // OTP required - show OTP entry form
             console.log('[LOGIN FORM] Showing OTP page');
+            setOtpEmail(result.email || otpEmail || employeeId);
             setRequiresOTP(true);
             setPassword('');
             setOtp(['', '', '', '', '', '']);
@@ -240,6 +246,7 @@ export default function Login() {
     setFieldErrors({});
     setResendCooldown(0);
     setTimeRemaining(180);
+    setOtpEmail('');
   };
 
   return (
@@ -326,37 +333,37 @@ export default function Login() {
 
                 {!requiresOTP ? (
                   <>
-                    {/* Email field */}
+                    {/* Employee ID field */}
                     <div className="space-y-2">
-                      <Label htmlFor="email" className="text-sm font-medium">
-                        Username
+                      <Label htmlFor="employee_id" className="text-sm font-medium">
+                        Employee ID
                       </Label>
                       <div className="relative">
                         <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5" style={{ color: 'oklch(0.65 0.03 280)' }} />
                         <Input
-                          id="email"
-                          type="email"
-                          placeholder="Enter your username"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
+                          id="employee_id"
+                          type="text"
+                          placeholder="Enter your employee ID"
+                          value={employeeId}
+                          onChange={(e) => setEmployeeId(e.target.value)}
                           style={{
                             paddingLeft: '2.5rem',
                             height: '2.75rem',
                             backgroundColor: 'oklch(0.18 0.05 280)',
-                            borderColor: fieldErrors.email ? 'oklch(0.55 0.22 25)' : 'oklch(0.3 0.05 280)',
+                            borderColor: fieldErrors.employee_id ? 'oklch(0.55 0.22 25)' : 'oklch(0.3 0.05 280)',
                             color: 'oklch(0.95 0.02 280)',
                           }}
                           className="border rounded-md transition-colors"
                           disabled={isLoading}
-                          autoComplete="email"
+                          autoComplete="username"
                           autoFocus
-                          aria-invalid={!!fieldErrors.email}
-                          aria-describedby={fieldErrors.email ? 'email-error' : undefined}
+                          aria-invalid={!!fieldErrors.employee_id}
+                          aria-describedby={fieldErrors.employee_id ? 'employee-id-error' : undefined}
                         />
                       </div>
-                      {fieldErrors.email && (
-                        <p id="email-error" className="text-sm animate-in fade-in slide-in-from-top-1" style={{ color: 'oklch(0.55 0.22 25)' }}>
-                          {fieldErrors.email}
+                      {fieldErrors.employee_id && (
+                        <p id="employee-id-error" className="text-sm animate-in fade-in slide-in-from-top-1" style={{ color: 'oklch(0.55 0.22 25)' }}>
+                          {fieldErrors.employee_id}
                         </p>
                       )}
                     </div>

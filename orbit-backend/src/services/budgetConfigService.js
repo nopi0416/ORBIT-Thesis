@@ -1,6 +1,32 @@
 import supabase from '../config/database.js';
 import { getUserUUID, isValidUser, getUserNameFromUUID, getUserDetailsFromUUID } from '../utils/userMapping.js';
 
+const parseStoredList = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return trimmed.split(',').map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  return [value];
+};
+
+const containsOrgId = (value, orgId) => {
+  if (!orgId) return true;
+  const parsed = parseStoredList(value);
+  if (!Array.isArray(parsed)) return false;
+  return parsed.some((entry) => {
+    if (Array.isArray(entry)) return entry.includes(orgId);
+    return entry === orgId;
+  });
+};
+
 /**
  * Budget Configuration Service
  * Handles all database operations for budget configurations
@@ -141,9 +167,20 @@ export class BudgetConfigService {
 
       if (error) throw error;
 
+      let filteredByOrg = data || [];
+      if (filters.org_id) {
+        const subtreeResult = await this.getOrganizationSubtreeIds(filters.org_id);
+        const allowedOrgIds = new Set(subtreeResult.data || [filters.org_id]);
+        filteredByOrg = (data || []).filter((row) => {
+          const accessMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.access_ou, id));
+          const affectedMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.affected_ou, id));
+          return accessMatch || affectedMatch;
+        });
+      }
+
       // Fetch related data for each config
       const configsWithRelations = await Promise.all(
-        data.map(async (config) => {
+        filteredByOrg.map(async (config) => {
           const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
           ]);
@@ -908,6 +945,135 @@ export class BudgetConfigService {
   }
 
   /**
+   * Get all organization IDs under a given org (including itself)
+   */
+  static async getOrganizationSubtreeIds(rootOrgId) {
+    try {
+      if (!rootOrgId) {
+        return { success: true, data: [] };
+      }
+
+      const { data, error } = await supabase
+        .from('tblorganization')
+        .select('org_id, parent_org_id');
+
+      if (error) throw error;
+
+      const childrenMap = new Map();
+      (data || []).forEach((org) => {
+        if (!childrenMap.has(org.parent_org_id)) {
+          childrenMap.set(org.parent_org_id, []);
+        }
+        childrenMap.get(org.parent_org_id).push(org.org_id);
+      });
+
+      const result = new Set([rootOrgId]);
+      const queue = [rootOrgId];
+
+      while (queue.length) {
+        const current = queue.shift();
+        const children = childrenMap.get(current) || [];
+        children.forEach((childId) => {
+          if (!result.has(childId)) {
+            result.add(childId);
+            queue.push(childId);
+          }
+        });
+      }
+
+      return { success: true, data: Array.from(result) };
+    } catch (error) {
+      console.error('Error building organization subtree:', error);
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  /**
+   * Get organizations under a given org (including itself)
+   */
+  static async getOrganizationsByOrgId(rootOrgId) {
+    try {
+      const allResult = await this.getAllOrganizations();
+      if (!allResult.success) return allResult;
+
+      if (!rootOrgId) {
+        return allResult;
+      }
+
+      const subtreeResult = await this.getOrganizationSubtreeIds(rootOrgId);
+      if (!subtreeResult.success) return subtreeResult;
+
+      const allowed = new Set(subtreeResult.data || []);
+      const filtered = (allResult.data || []).filter((org) => allowed.has(org.org_id));
+
+      return { success: true, data: filtered };
+    } catch (error) {
+      console.error('Error fetching organizations by org ID:', error);
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  /**
+   * Get budget IDs accessible to a given org ID
+   */
+  static async getBudgetIdsByOrgId(orgId) {
+    try {
+      if (!orgId) return { success: true, data: [] };
+
+      const subtreeResult = await this.getOrganizationSubtreeIds(orgId);
+      const allowedOrgIds = new Set(subtreeResult.data || [orgId]);
+
+      const { data, error } = await supabase
+        .from('tblbudgetconfiguration')
+        .select('budget_id, access_ou, affected_ou');
+
+      if (error) throw error;
+
+      const allowed = (data || [])
+        .filter((row) => {
+          const accessMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.access_ou, id));
+          const affectedMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.affected_ou, id));
+          return accessMatch || affectedMatch;
+        })
+        .map((row) => row.budget_id);
+
+      return { success: true, data: allowed };
+    } catch (error) {
+      console.error('Error fetching budget IDs by org:', error);
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  /**
+   * Check if a budget config is accessible for an org
+   */
+  static async isBudgetConfigInOrg(budgetId, orgId) {
+    try {
+      if (!budgetId || !orgId) return { success: true, data: true };
+
+      const subtreeResult = await this.getOrganizationSubtreeIds(orgId);
+      const allowedOrgIds = new Set(subtreeResult.data || [orgId]);
+
+      const { data, error } = await supabase
+        .from('tblbudgetconfiguration')
+        .select('budget_id, access_ou, affected_ou')
+        .eq('budget_id', budgetId)
+        .single();
+
+      if (error) throw error;
+
+      const allowed = Array.from(allowedOrgIds).some((id) =>
+        containsOrgId(data.access_ou, id) || containsOrgId(data.affected_ou, id)
+      );
+
+      return { success: true, data: allowed };
+    } catch (error) {
+      console.error('Error checking budget org access:', error);
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
    * Get all geos
    */
   static async getAllGeo() {
@@ -1142,7 +1308,7 @@ export class BudgetConfigService {
    * Fetch approvers by role level (L1, L2, or L3)
    * Returns user information with their assigned roles
    */
-  static async getApproversByLevel(level) {
+  static async getApproversByLevel(level, orgId = null) {
     try {
       // Map level string to role names
       const roleMap = {
@@ -1160,7 +1326,7 @@ export class BudgetConfigService {
       }
 
       // Query: Get users with specific role
-      const { data, error } = await supabase
+      let query = supabase
         .from('tbluserroles')
         .select(`
           user_id,
@@ -1171,7 +1337,7 @@ export class BudgetConfigService {
             first_name,
             last_name,
             email,
-            department,
+            org_id,
             status
           ),
           tblroles!inner (
@@ -1183,6 +1349,12 @@ export class BudgetConfigService {
         .eq('tblroles.role_name', roleName)
         .eq('is_active', true)
         .order('first_name', { foreignTable: 'tblusers', ascending: true });
+
+      if (orgId) {
+        query = query.eq('tblusers.org_id', orgId);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -1199,7 +1371,7 @@ export class BudgetConfigService {
           first_name: userObj.first_name,
           last_name: userObj.last_name,
           email: userObj.email,
-          department: userObj.department,
+          org_id: userObj.org_id,
           status: userObj.status,
           role_name: roleObj.role_name,
           role_id: roleObj.role_id,
@@ -1296,9 +1468,9 @@ export class BudgetConfigService {
   /**
    * Get all users with their active roles
    */
-  static async getAllUsers() {
+  static async getAllUsers(orgId = null) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('tblusers')
         .select(`
           user_id,
@@ -1306,6 +1478,8 @@ export class BudgetConfigService {
           first_name,
           last_name,
           email,
+          geo_id,
+          org_id,
           department,
           status,
           tbluserroles (
@@ -1317,6 +1491,12 @@ export class BudgetConfigService {
           )
         `)
         .order('first_name', { ascending: true });
+
+      if (orgId) {
+        query = query.eq('org_id', orgId);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -1335,6 +1515,8 @@ export class BudgetConfigService {
           first_name: user.first_name,
           last_name: user.last_name,
           email: user.email,
+          geo_id: user.geo_id,
+          org_id: user.org_id,
           department: user.department,
           status: user.status,
           roles,
