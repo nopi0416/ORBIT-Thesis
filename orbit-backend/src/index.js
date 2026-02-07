@@ -1,9 +1,11 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
+import http from 'http';
 import { corsMiddleware } from './config/cors.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import apiRoutes from './routes/index.js';
+import { initWebSocketServer } from './realtime/websocketServer.js';
 
 dotenv.config();
 
@@ -59,7 +61,10 @@ app.use(errorHandler);
 // SERVER START
 // ============================================================================
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+initWebSocketServer(server);
+
+server.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════════════════════╗
 ║        ORBIT Backend Server Started Successfully       ║

@@ -1,15 +1,20 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { authAPI } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check, X } from '../components/icons';
+import { getDashboardRoute } from '../utils/roleRouting';
 
 export default function FirstTimePassword() {
   const navigate = useNavigate();
+  const { setUser } = useAuth();
   const [searchParams] = useSearchParams();
   const email = searchParams.get('email');
+  const userId = searchParams.get('userId');
   const role = searchParams.get('role');
 
   const [currentPassword, setCurrentPassword] = useState('');
@@ -21,7 +26,7 @@ export default function FirstTimePassword() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  if (!email || !role) {
+  if (!email || !role || !userId) {
     navigate('/login');
     return null;
   }
@@ -39,23 +44,26 @@ export default function FirstTimePassword() {
     e.preventDefault();
     setError('');
 
-    if (currentPassword !== 'demo123') {
-      setError('Current password is incorrect');
-      return;
-    }
-
     if (!isPasswordValid) {
       setError('Please ensure all password requirements are met');
       return;
     }
 
-    setIsLoading(true);
+    if (!currentPassword) {
+      setError('Please enter your current password');
+      return;
+    }
 
-    // Simulate password setup
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-
-    // Redirect to dashboard or user agreement depending on setup flow
-    navigate('/user-agreement?email=' + encodeURIComponent(email) + '&role=' + role);
+    console.log('[FIRST TIME PASSWORD] Password validated, storing in session and redirecting to security questions');
+    
+    // Store validated password and new password in sessionStorage for use in security questions page
+    sessionStorage.setItem('firstTimePassword', JSON.stringify({
+      currentPassword,
+      newPassword,
+    }));
+    
+    // Redirect to security questions page with flag to indicate coming from password change
+    navigate(`/security-questions?email=${encodeURIComponent(email)}&userId=${encodeURIComponent(userId)}&role=${encodeURIComponent(role)}&fromPasswordChange=true`);
   };
 
   return (
@@ -93,7 +101,7 @@ export default function FirstTimePassword() {
               {/* Back button */}
               <button
                 type="button"
-                onClick={() => navigate(-1)}
+                onClick={() => navigate(`/user-agreement?email=${encodeURIComponent(email)}&userId=${encodeURIComponent(userId)}&role=${encodeURIComponent(role)}`)}
                 className="inline-flex items-center gap-2 text-sm transition-colors"
                 style={{ color: 'oklch(0.65 0.03 280)' }}
               >
@@ -274,10 +282,10 @@ export default function FirstTimePassword() {
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    Creating Password...
+                    Continuing...
                   </>
                 ) : (
-                  'Complete Setup'
+                  'Continue'
                 )}
               </Button>
             </form>

@@ -1,4 +1,4 @@
-import supabase from '../config/database.js';
+import supabase, { supabaseSecondary } from '../config/database.js';
 
 /**
  * Approval Request Service
@@ -7,6 +7,66 @@ import supabase from '../config/database.js';
  */
 
 export class ApprovalRequestService {
+  static defaultCompanyId = 'caaa0000-0000-0000-0000-000000000001';
+
+  /**
+   * Get employee details by EID and company ID
+   */
+  static async getEmployeeByEid(eid, companyId) {
+    try {
+      if (!supabaseSecondary) {
+        return {
+          success: false,
+          error: 'Employee warehouse connection is not configured (SUPABASE_URL2/KEY2).',
+        };
+      }
+      const company = companyId || this.defaultCompanyId;
+
+      const { data, error } = await supabaseSecondary
+        .from('tblemployee')
+        .select('*')
+        .eq('company_id', company)
+        .eq('eid', eid)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data) {
+        return {
+          success: false,
+          error: 'Employee not found',
+        };
+      }
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error fetching employee by EID:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+  static normalizeItemType(rawType) {
+    if (!rawType) return 'bonus';
+    const value = String(rawType).trim().toLowerCase();
+    const mapping = {
+      bonus: 'bonus',
+      incentive: 'incentive',
+      performance_bonus: 'bonus',
+      'performance bonus': 'bonus',
+      spot_award: 'bonus',
+      'spot award': 'bonus',
+      innovation_reward: 'bonus',
+      'innovation reward': 'bonus',
+      recognition: 'bonus',
+    };
+
+    return mapping[value] || 'bonus';
+  }
+
   /**
    * Create a new approval request (DRAFT status)
    */
@@ -14,7 +74,6 @@ export class ApprovalRequestService {
     try {
       const {
         budget_id,
-        title,
         description,
         total_request_amount,
         submitted_by,
@@ -30,7 +89,6 @@ export class ApprovalRequestService {
           {
             budget_id,
             request_number: requestNumber,
-            title,
             description,
             total_request_amount: parseFloat(total_request_amount),
             submitted_by,
@@ -142,7 +200,7 @@ export class ApprovalRequestService {
 
       if (filters.search) {
         query = query.or(
-          `request_number.ilike.%${filters.search}%,title.ilike.%${filters.search}%`
+          `request_number.ilike.%${filters.search}%`
         );
       }
 
@@ -171,7 +229,6 @@ export class ApprovalRequestService {
   static async updateApprovalRequest(requestId, updateData) {
     try {
       const {
-        title,
         description,
         total_request_amount,
         overall_status,
@@ -188,7 +245,6 @@ export class ApprovalRequestService {
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
         .update({
-          ...(title && { title }),
           ...(description && { description }),
           ...(total_request_amount !== undefined && {
             total_request_amount: parseFloat(total_request_amount),
@@ -366,7 +422,7 @@ export class ApprovalRequestService {
             employee_name,
             department,
             position,
-            item_type,
+            item_type: this.normalizeItemType(item_type),
             item_description,
             amount: parseFloat(amount),
             is_deduction: is_deduction || false,
@@ -407,7 +463,7 @@ export class ApprovalRequestService {
         employee_name: item.employee_name,
         department: item.department,
         position: item.position,
-        item_type: item.item_type || 'bonus',
+        item_type: this.normalizeItemType(item.item_type),
         item_description: item.item_description,
         amount: parseFloat(item.amount),
         is_deduction: item.is_deduction || item.amount < 0,
@@ -713,7 +769,7 @@ export class ApprovalRequestService {
   static async getAttachmentsByRequestId(requestId) {
     try {
       const { data, error } = await supabase
-        .from('tblbudgetapprovalrequests_attachments')
+        .from('tblbudgetapprovalrequests_attachments_logs')
         .select('*')
         .eq('request_id', requestId);
 
@@ -799,7 +855,7 @@ export class ApprovalRequestService {
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_approvals')
         .select('*')
-        .eq('assigned_to_primary', userId)
+        .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId}`)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
 

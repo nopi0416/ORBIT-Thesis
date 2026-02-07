@@ -12,10 +12,25 @@ export const validateBudgetConfig = (data) => {
     errors.budgetName = 'Budget name is required';
   }
 
-  // Period validation (camelCase from frontend)
-  const validPeriods = ['Monthly', 'Quarterly', 'Semi-Annual', 'Yearly'];
-  if (!data.period || !validPeriods.includes(data.period)) {
-    errors.period = `Period must be one of: ${validPeriods.join(', ')}`;
+  // Date range validation (camelCase from frontend)
+  if (!data.startDate) {
+    errors.startDate = 'Start date is required';
+  }
+  if (!data.endDate) {
+    errors.endDate = 'End date is required';
+  }
+  if (data.startDate && data.endDate) {
+    const start = new Date(data.startDate);
+    const end = new Date(data.endDate);
+    if (Number.isNaN(start.getTime())) {
+      errors.startDate = 'Start date must be a valid date';
+    }
+    if (Number.isNaN(end.getTime())) {
+      errors.endDate = 'End date must be a valid date';
+    }
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start > end) {
+      errors.dateRange = 'Start date must be on or before end date';
+    }
   }
 
   // Min/Max limit validation
@@ -28,6 +43,12 @@ export const validateBudgetConfig = (data) => {
   // Budget control validation
   if (data.budgetControlEnabled && (!data.budgetControlLimit || data.budgetControlLimit <= 0)) {
     errors.budgetControlLimit = 'Budget limit is required when control is enabled';
+  }
+
+  // Payroll cycle validation
+  const payCycle = data.payCycle || data.pay_cycle;
+  if (!payCycle) {
+    errors.payCycle = 'Payroll cycle is required';
   }
 
   // Approver validation - check if approvers are valid users
@@ -61,13 +82,15 @@ export const validateScopeFields = (data) => {
 
   // At least one scope should be provided
   // Check both possible field name formats
-  const geoScope = data.geo_scope || data.geoScope || data.countries;
-  const locationScope = data.location_scope || data.locationScope || data.siteLocation;
-  const departmentScope = data.department_scope || data.departmentScope || data.ou;
-  
-  const hasScope = geoScope || locationScope || departmentScope;
+  const geoScope = data.geo || data.geo_scope || data.geoScope || data.countries;
+  const locationScope = data.location || data.location_scope || data.locationScope || data.siteLocation;
+  const clientScope = data.client || data.clients || data.clientScope;
+  const accessOuScope = data.access_ou || data.accessibleOUPaths || data.accessOu || data.accessOuPaths;
+  const affectedOuScope = data.affected_ou || data.affectedOUPaths || data.affectedOu || data.affectedOuPaths;
+
+  const hasScope = geoScope || locationScope || clientScope || accessOuScope || affectedOuScope;
   if (!hasScope) {
-    errors.scope = 'At least one scope (geo, location, or department) is required';
+    errors.scope = 'At least one scope (geo, location, client, access OU, or affected OU) is required';
   }
 
   return {

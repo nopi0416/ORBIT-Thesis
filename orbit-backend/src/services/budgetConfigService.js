@@ -18,13 +18,20 @@ export class BudgetConfigService {
         min_limit,
         max_limit,
         budget_control,
-        carryover_enabled,
-        client_sponsored,
-        period_type,
+        budget_limit,
+        currency,
+        pay_cycle,
+        start_date,
+        end_date,
         created_by,
-        tenure_groups,
         approvers,
-        access_scopes,
+        geo,
+        location,
+        client,
+        access_ou,
+        affected_ou,
+        tenure_group,
+        budget_description,
       } = configData;
 
       // Step 1: Create main budget configuration (without geo/location/department scopes)
@@ -36,9 +43,18 @@ export class BudgetConfigService {
             min_limit: min_limit ? parseFloat(min_limit) : null,
             max_limit: max_limit ? parseFloat(max_limit) : null,
             budget_control: budget_control || false,
-            carryover_enabled: carryover_enabled || false,
-            client_sponsored: client_sponsored || false,
-            period_type,
+            budget_limit: budget_limit ? parseFloat(budget_limit) : null,
+            currency: currency || null,
+            pay_cycle: pay_cycle || null,
+            geo: geo || null,
+            location: location || null,
+            client: client || null,
+            access_ou: access_ou || null,
+            affected_ou: affected_ou || null,
+            tenure_group: tenure_group || null,
+            start_date: start_date || null,
+            end_date: end_date || null,
+            budget_description: budget_description || null,
             created_by,
             created_at: new Date().toISOString(),
           },
@@ -51,34 +67,9 @@ export class BudgetConfigService {
       
       console.log('=== Budget Created ===');
       console.log('Budget ID:', budget_id);
-      console.log('Tenure Groups to Insert:', tenure_groups);
       console.log('Approvers to Insert:', approvers);
-      console.log('Access Scopes to Insert:', access_scopes);
       console.log('=======================');
-
-      // Step 2: Insert tenure groups if provided
-      if (tenure_groups && Array.isArray(tenure_groups) && tenure_groups.length > 0) {
-        const tenureRecords = tenure_groups.map((group) => ({
-          budget_id,
-          tenure_group: group,
-          created_at: new Date().toISOString(),
-        }));
-
-        console.log('Inserting tenure records:', tenureRecords);
-        const { error: tenureError } = await supabase
-          .from('tblbudgetconfig_tenure_groups')
-          .insert(tenureRecords);
-
-        if (tenureError) {
-          console.error('Tenure Insert Error:', tenureError);
-          throw tenureError;
-        }
-        console.log('Tenure groups inserted successfully');
-      } else {
-        console.log('No tenure groups to insert');
-      }
-
-      // Step 3: Insert approvers if provided
+      // Step 2: Insert approvers if provided
       if (approvers && Array.isArray(approvers) && approvers.length > 0) {
         const approverRecords = approvers.map((approver) => ({
           budget_id,
@@ -103,59 +94,7 @@ export class BudgetConfigService {
         console.log('No approvers to insert');
       }
 
-      // Step 4: Insert access scopes (renamed to scopes table with 5 scope types)
-      if (access_scopes && Array.isArray(access_scopes) && access_scopes.length > 0) {
-        const scopeRecords = access_scopes.map((scope) => ({
-          budget_id,
-          scope_type: scope.scope_type,
-          scope_value: scope.scope_value,
-          created_by,
-          created_at: new Date().toISOString(),
-        }));
-
-        console.log('Inserting scope records (5 types: Access_OU, Geo, Location, Client, Affected_OU):', scopeRecords);
-        const { error: scopeError } = await supabase
-          .from('tblbudgetconfig_scopes')
-          .insert(scopeRecords);
-
-        if (scopeError) {
-          console.error('Scope Insert Error:', scopeError);
-          throw scopeError;
-        }
-        console.log('Scopes inserted successfully');
-      } else {
-        console.log('No scopes to insert');
-      }
-
-      // Step 5: Create initial budget tracking record for current period
-      const now = new Date();
-      const currentPeriod = `${now.toLocaleString('default', { month: 'long' })} ${now.getFullYear()}`;
-      const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-      const { error: trackingError } = await supabase
-        .from('tblbudgetconfig_budget_tracking')
-        .insert([
-          {
-            budget_id,
-            period_start: periodStart.toISOString().split('T')[0],
-            period_end: periodEnd.toISOString().split('T')[0],
-            period_label: currentPeriod,
-            total_budget: max_limit || 0,
-            budget_used: 0,
-            budget_carryover: 0,
-            approval_count_total: 0,
-            approval_count_approved: 0,
-            approval_count_rejected: 0,
-            approval_count_pending: 0,
-          },
-        ]);
-
-      if (trackingError) {
-        console.error('Budget Tracking Insert Error:', trackingError);
-        throw trackingError;
-      }
-      console.log('Budget tracking record created successfully');
+      // Budget tracking table removed; skip tracking initialization.
 
       // Return complete configuration with related data
       const completeConfig = await this.getBudgetConfigById(budget_id);
@@ -186,16 +125,16 @@ export class BudgetConfigService {
         query = query.ilike('budget_name', `%${filters.budget_name}%`);
       }
 
-      if (filters.period_type) {
-        query = query.eq('period_type', filters.period_type);
+      if (filters.geo) {
+        query = query.ilike('geo', `%${filters.geo}%`);
       }
 
-      if (filters.geo_scope) {
-        query = query.eq('geo_scope', filters.geo_scope);
+      if (filters.location) {
+        query = query.ilike('location', `%${filters.location}%`);
       }
 
-      if (filters.department_scope) {
-        query = query.eq('department_scope', filters.department_scope);
+      if (filters.client) {
+        query = query.ilike('client', `%${filters.client}%`);
       }
 
       const { data, error } = await query.order('created_at', { ascending: false });
@@ -205,19 +144,14 @@ export class BudgetConfigService {
       // Fetch related data for each config
       const configsWithRelations = await Promise.all(
         data.map(async (config) => {
-          const [tenureGroups, approvers, accessScopes, budgetTracking] = await Promise.all([
-            this.getTenureGroupsByBudgetId(config.budget_id),
+          const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
-            this.getAccessScopesByBudgetId(config.budget_id),
-            this.getBudgetTrackingByBudgetId(config.budget_id),
           ]);
 
           return {
             ...config,
-            tenure_groups: tenureGroups.data || [],
             approvers: approvers.data || [],
-            access_scopes: accessScopes.data || [],
-            budget_tracking: budgetTracking.data || [],
+            budget_tracking: [],
           };
         })
       );
@@ -249,19 +183,15 @@ export class BudgetConfigService {
       if (error) throw error;
 
       // Fetch related data
-      const [tenureGroups, approvers, accessScopes] = await Promise.all([
-        this.getTenureGroupsByBudgetId(budgetId),
+      const [approvers] = await Promise.all([
         this.getApproversByBudgetId(budgetId),
-        this.getAccessScopesByBudgetId(budgetId),
       ]);
 
       return {
         success: true,
         data: {
           ...data,
-          tenure_groups: tenureGroups.data || [],
           approvers: approvers.data || [],
-          access_scopes: accessScopes.data || [],
         },
       };
     } catch (error) {
@@ -283,16 +213,19 @@ export class BudgetConfigService {
         min_limit,
         max_limit,
         budget_control,
-        carryover_enabled,
-        client_sponsored,
-        period_type,
-        geo_scope,
-        location_scope,
-        department_scope,
+        budget_limit,
+        currency,
+        pay_cycle,
+        start_date,
+        end_date,
+        geo,
+        location,
+        client,
+        access_ou,
+        affected_ou,
+        tenure_group,
+        budget_description,
         updated_by,
-        tenure_groups,
-        approvers,
-        access_scopes,
       } = updateData;
 
       // Update main budget configuration
@@ -303,12 +236,18 @@ export class BudgetConfigService {
           ...(min_limit !== undefined && { min_limit: min_limit ? parseFloat(min_limit) : null }),
           ...(max_limit !== undefined && { max_limit: max_limit ? parseFloat(max_limit) : null }),
           ...(budget_control !== undefined && { budget_control }),
-          ...(carryover_enabled !== undefined && { carryover_enabled }),
-          ...(client_sponsored !== undefined && { client_sponsored }),
-          ...(period_type && { period_type }),
-          ...(geo_scope && { geo_scope }),
-          ...(location_scope && { location_scope }),
-          ...(department_scope && { department_scope }),
+          ...(budget_limit !== undefined && { budget_limit: budget_limit ? parseFloat(budget_limit) : null }),
+          ...(currency !== undefined && { currency }),
+          ...(pay_cycle !== undefined && { pay_cycle }),
+          ...(start_date !== undefined && { start_date }),
+          ...(end_date !== undefined && { end_date }),
+          ...(geo !== undefined && { geo }),
+          ...(location !== undefined && { location }),
+          ...(client !== undefined && { client }),
+          ...(access_ou !== undefined && { access_ou }),
+          ...(affected_ou !== undefined && { affected_ou }),
+          ...(tenure_group !== undefined && { tenure_group }),
+          ...(budget_description !== undefined && { budget_description }),
           updated_by,
           updated_at: new Date().toISOString(),
         })
@@ -379,17 +318,13 @@ export class BudgetConfigService {
       // Fetch related data for each config
       const configsWithRelations = await Promise.all(
         data.map(async (config) => {
-          const [tenureGroups, approvers, accessScopes] = await Promise.all([
-            this.getTenureGroupsByBudgetId(config.budget_id),
+          const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
-            this.getAccessScopesByBudgetId(config.budget_id),
           ]);
 
           return {
             ...config,
-            tenure_groups: tenureGroups.data || [],
             approvers: approvers.data || [],
-            access_scopes: accessScopes.data || [],
           };
         })
       );
@@ -507,17 +442,44 @@ export class BudgetConfigService {
 
       if (error) throw error;
 
+      const userIds = Array.from(
+        new Set(
+          data
+            .flatMap((approver) => [approver.primary_approver, approver.backup_approver])
+            .filter(Boolean)
+        )
+      );
+
+      let userMap = {};
+      if (userIds.length > 0) {
+        const { data: usersData, error: usersError } = await supabase
+          .from('tblusers')
+          .select('user_id, first_name, last_name, email')
+          .in('user_id', userIds);
+
+        if (usersError) throw usersError;
+
+        userMap = (usersData || []).reduce((acc, user) => {
+          acc[user.user_id] = user;
+          return acc;
+        }, {});
+      }
+
       // Map UUIDs to user names and emails
       const enrichedApprovers = data.map((approver) => {
-        const primaryDetails = getUserDetailsFromUUID(approver.primary_approver);
-        const backupDetails = approver.backup_approver ? getUserDetailsFromUUID(approver.backup_approver) : null;
+        const primaryDetails = userMap[approver.primary_approver];
+        const backupDetails = approver.backup_approver ? userMap[approver.backup_approver] : null;
 
         return {
           ...approver,
-          approver_name: primaryDetails.name,
-          approver_email: primaryDetails.email,
-          backup_approver_name: backupDetails?.name,
-          backup_approver_email: backupDetails?.email,
+          approver_name: primaryDetails
+            ? `${primaryDetails.first_name || ''} ${primaryDetails.last_name || ''}`.trim()
+            : null,
+          approver_email: primaryDetails?.email || null,
+          backup_approver_name: backupDetails
+            ? `${backupDetails.first_name || ''} ${backupDetails.last_name || ''}`.trim()
+            : null,
+          backup_approver_email: backupDetails?.email || null,
         };
       });
 
@@ -863,17 +825,9 @@ export class BudgetConfigService {
    */
   static async getBudgetTrackingByBudgetId(budgetId) {
     try {
-      const { data, error } = await supabase
-        .from('tblbudgetconfig_budget_tracking')
-        .select('*')
-        .eq('budget_id', budgetId)
-        .order('period_start', { ascending: false });
-
-      if (error) throw error;
-
       return {
         success: true,
-        data,
+        data: [],
       };
     } catch (error) {
       console.error('Error fetching budget tracking:', error);
@@ -945,6 +899,190 @@ export class BudgetConfigService {
       };
     } catch (error) {
       console.error('Error fetching organizations:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
+   * Get all geos
+   */
+  static async getAllGeo() {
+    try {
+      const { data, error } = await supabase
+        .from('tblgeo')
+        .select('geo_id, geo_code, geo_name')
+        .order('geo_name', { ascending: true });
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: data || [],
+      };
+    } catch (error) {
+      console.error('Error fetching geo list:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
+   * Get locations (optionally by geo)
+   */
+  static async getLocations(geoId = null) {
+    try {
+      let query = supabase
+        .from('tbllocation')
+        .select('location_id, geo_id, location_code, location_name')
+        .order('location_name', { ascending: true });
+
+      if (geoId) {
+        query = query.eq('geo_id', geoId);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: data || [],
+      };
+    } catch (error) {
+      console.error('Error fetching locations:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
+   * Get organization to geo/location mapping
+   */
+  static async getOrganizationGeoLocations() {
+    try {
+      const { data, error } = await supabase
+        .from('tblorganization_to_geo_location')
+        .select(`
+          org_geo_loc_id,
+          org_id,
+          geo_id,
+          location_id,
+          tblorganization!inner ( org_id, org_name ),
+          tblgeo!inner ( geo_id, geo_code, geo_name ),
+          tbllocation!inner ( location_id, location_code, location_name )
+        `);
+
+      if (error) throw error;
+
+      const normalized = (data || []).map((row) => ({
+        org_geo_loc_id: row.org_geo_loc_id,
+        org_id: row.org_id,
+        org_name: row.tblorganization?.org_name,
+        geo_id: row.geo_id,
+        geo_code: row.tblgeo?.geo_code,
+        geo_name: row.tblgeo?.geo_name,
+        location_id: row.location_id,
+        location_code: row.tbllocation?.location_code,
+        location_name: row.tbllocation?.location_name,
+      }));
+
+      return {
+        success: true,
+        data: normalized,
+      };
+    } catch (error) {
+      console.error('Error fetching organization geo/location mapping:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
+   * Get organization to geo/location mapping filtered by org IDs
+   */
+  static async getOrganizationGeoLocationsByOrgIds(orgIds = []) {
+    try {
+      if (!orgIds.length) {
+        return { success: true, data: [] };
+      }
+
+      const { data, error } = await supabase
+        .from('tblorganization_to_geo_location')
+        .select(`
+          org_geo_loc_id,
+          org_id,
+          geo_id,
+          location_id,
+          tblorganization!inner ( org_id, org_name ),
+          tblgeo!inner ( geo_id, geo_code, geo_name ),
+          tbllocation!inner ( location_id, location_code, location_name )
+        `)
+        .in('org_id', orgIds);
+
+      if (error) throw error;
+
+      const normalized = (data || []).map((row) => ({
+        org_geo_loc_id: row.org_geo_loc_id,
+        org_id: row.org_id,
+        org_name: row.tblorganization?.org_name,
+        geo_id: row.geo_id,
+        geo_code: row.tblgeo?.geo_code,
+        geo_name: row.tblgeo?.geo_name,
+        location_id: row.location_id,
+        location_code: row.tbllocation?.location_code,
+        location_name: row.tbllocation?.location_name,
+      }));
+
+      return {
+        success: true,
+        data: normalized,
+      };
+    } catch (error) {
+      console.error('Error fetching organization geo/location mapping by org IDs:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
+   * Get clients by parent organization IDs
+   */
+  static async getClientsByParentOrgIds(parentOrgIds = []) {
+    try {
+      if (!parentOrgIds.length) {
+        return { success: true, data: [] };
+      }
+
+      const { data, error } = await supabase
+        .from('tblclient_organization')
+        .select('client_org_id, parent_org_id, client_code, client_name, client_status')
+        .in('parent_org_id', parentOrgIds)
+        .order('client_name', { ascending: true });
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: data || [],
+      };
+    } catch (error) {
+      console.error('Error fetching clients by parent org IDs:', error);
       return {
         success: false,
         error: error.message,
@@ -1151,6 +1289,69 @@ export class BudgetConfigService {
         success: false,
         error: error.message,
         data: null,
+      };
+    }
+  }
+
+  /**
+   * Get all users with their active roles
+   */
+  static async getAllUsers() {
+    try {
+      const { data, error } = await supabase
+        .from('tblusers')
+        .select(`
+          user_id,
+          employee_id,
+          first_name,
+          last_name,
+          email,
+          department,
+          status,
+          tbluserroles (
+            is_active,
+            tblroles (
+              role_id,
+              role_name
+            )
+          )
+        `)
+        .order('first_name', { ascending: true });
+
+      if (error) throw error;
+
+      const formatted = (data || []).map((user) => {
+        const roles = (user.tbluserroles || [])
+          .filter((role) => role.is_active !== false)
+          .map((role) => {
+            const roleObj = Array.isArray(role.tblroles) ? role.tblroles[0] : role.tblroles;
+            return roleObj?.role_name || null;
+          })
+          .filter(Boolean);
+
+        return {
+          user_id: user.user_id,
+          employee_id: user.employee_id,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          email: user.email,
+          department: user.department,
+          status: user.status,
+          roles,
+          full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+        };
+      });
+
+      return {
+        success: true,
+        data: formatted,
+      };
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
       };
     }
   }

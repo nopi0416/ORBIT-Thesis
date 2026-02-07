@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ChevronDown } from '../icons';
-import { Button } from './button';
-import { Popover, PopoverContent, PopoverTrigger } from './popover';
+import { Popover, PopoverContent } from './popover';
 import { Checkbox } from './checkbox';
 import { Label } from './label';
+import { Input } from './input';
 
 export function MultiSelect({
   options,
@@ -11,10 +11,13 @@ export function MultiSelect({
   onChange,
   placeholder = "Select...",
   hasAllOption = false,
+  disabled = false,
 }) {
   const [open, setOpen] = useState(false);
+  const [searchValue, setSearchValue] = useState('');
 
   const handleToggle = (value) => {
+    if (disabled) return;
     if (value === "all") {
       if (selected.length === options.length) {
         onChange([]);
@@ -32,51 +35,94 @@ export function MultiSelect({
 
   const allSelected = hasAllOption && selected.length === options.length;
 
+  const normalizedSearch = searchValue.trim().toLowerCase();
+  const filteredOptions = useMemo(() => {
+    if (!normalizedSearch) return options;
+    return options.filter((option) => {
+      const label = `${option.label ?? ''}`.toLowerCase();
+      const value = `${option.value ?? ''}`.toLowerCase();
+      return label.includes(normalizedSearch) || value.includes(normalizedSearch);
+    });
+  }, [options, normalizedSearch]);
+
+  const handleSearchKeyDown = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (filteredOptions.length > 0) {
+      handleToggle(filteredOptions[0].value);
+      setSearchValue('');
+    } else {
+      setSearchValue('');
+    }
+  };
+
+  const handleOpenChange = (nextOpen) => {
+    if (disabled) return;
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      setSearchValue('');
+    }
+  };
+
+  const summaryText =
+    selected.length === 0
+      ? ''
+      : selected.length === options.length && hasAllOption
+        ? 'All'
+        : `${selected.length} selected`;
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
+    <Popover open={disabled ? false : open} onOpenChange={handleOpenChange}>
+      <div className="relative w-full">
+        <Input
           role="combobox"
           aria-expanded={open}
-          className="w-full justify-between font-normal bg-transparent"
-        >
-          <span className="truncate">
-            {selected.length === 0
-              ? placeholder
-              : selected.length === options.length && hasAllOption
-                ? "All"
-                : `${selected.length} selected`}
-          </span>
-          <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-full p-0" align="start">
-        <div className="max-h-64 overflow-auto p-2">
-          {hasAllOption && (
-            <div className="flex items-center space-x-2 rounded-sm px-2 py-2 hover:bg-accent">
+          disabled={disabled}
+          value={open ? searchValue : summaryText}
+          placeholder={placeholder}
+          onFocus={() => !disabled && setOpen(true)}
+          onClick={() => !disabled && setOpen(true)}
+          onChange={(event) => {
+            if (!open) setOpen(true);
+            setSearchValue(event.target.value);
+          }}
+          onKeyDown={handleSearchKeyDown}
+          className="w-full bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 pr-8"
+        />
+        <ChevronDown className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-50 pointer-events-none" />
+      </div>
+      <PopoverContent className="w-full p-0 bg-slate-800 border-gray-300 text-white" align="start">
+        <div className="max-h-64 overflow-auto">
+          {hasAllOption && !normalizedSearch && (
+            <div className="flex items-center space-x-2 px-3 py-2 hover:bg-slate-700">
               <Checkbox 
                 id="option-all" 
                 checked={allSelected} 
+                disabled={disabled}
                 onCheckedChange={() => handleToggle("all")} 
               />
-              <Label htmlFor="option-all" className="flex-1 cursor-pointer text-sm font-medium">
+              <Label htmlFor="option-all" className="flex-1 cursor-pointer text-sm font-medium text-white">
                 All
               </Label>
             </div>
           )}
-          {options.map((option) => (
-            <div key={option.value} className="flex items-center space-x-2 rounded-sm px-2 py-2 hover:bg-accent">
-              <Checkbox
-                id={`option-${option.value}`}
-                checked={selected.includes(option.value)}
-                onCheckedChange={() => handleToggle(option.value)}
-              />
-              <Label htmlFor={`option-${option.value}`} className="flex-1 cursor-pointer text-sm">
-                {option.label}
-              </Label>
-            </div>
-          ))}
+          {filteredOptions.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-gray-400">No results.</div>
+          ) : (
+            filteredOptions.map((option) => (
+              <div key={option.value} className="flex items-center space-x-2 px-3 py-2 hover:bg-slate-700">
+                <Checkbox
+                  id={`option-${option.value}`}
+                  checked={selected.includes(option.value)}
+                  disabled={disabled || option.disabled}
+                  onCheckedChange={() => handleToggle(option.value)}
+                />
+                <Label htmlFor={`option-${option.value}`} className="flex-1 cursor-pointer text-sm text-white">
+                  {option.label}
+                </Label>
+              </div>
+            ))
+          )}
         </div>
       </PopoverContent>
     </Popover>
