@@ -385,7 +385,7 @@ export class AuthService {
 
       const userRole = userRoleData.tblroles.role_name;
 
-      // Check if user agreement is accepted (first-time login)
+      // Check if user agreement is accepted OR if first-time login flag is set
       const { data: userAgreements, error: agreementError } = await supabase
         .from('tbluser_agreements')
         .select('*')
@@ -393,16 +393,22 @@ export class AuthService {
 
       console.log(`[COMPLETE LOGIN] User agreement check for user ${userId}:`, {
         hasAgreement: userAgreements && userAgreements.length > 0,
+        isFirstLogin: user.is_first_login,
         error: agreementError?.message,
         recordCount: userAgreements?.length,
       });
 
-      if (!userAgreements || userAgreements.length === 0) {
-        // User hasn't accepted user agreement yet - first time login
+      // Check if user is in first-time login (no agreement OR is_first_login flag is true)
+      if (!userAgreements || userAgreements.length === 0 || user.is_first_login === true) {
+        // Generate token for first-time user so they can make authenticated requests
+        const token = this.generateToken(userId, user.email, userRole);
+        
+        // User hasn't completed first-time login setup
         return {
           success: true,
           data: {
             requiresUserAgreement: true,
+            token,
             userId,
             email: user.email,
             role: userRole,

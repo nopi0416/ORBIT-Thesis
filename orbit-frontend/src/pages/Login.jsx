@@ -212,13 +212,10 @@ export default function Login() {
         if (result.success) {
           // Check if user agreement is required (first-time login)
           if (result.requiresUserAgreement) {
-            console.log('[LOGIN FORM] User agreement required, redirecting to user-agreement');
+            console.log('[LOGIN FORM] User agreement required, token already saved, redirecting');
             navigate(`/user-agreement?email=${encodeURIComponent(email)}&userId=${result.userId}&role=${encodeURIComponent(result.role || 'requestor')}`);
-          } else if (result.requiresPasswordChange) {
-            console.log('[LOGIN FORM] Password change required, redirecting to first-time-password');
-            navigate(`/first-time-password?email=${encodeURIComponent(email)}&role=${encodeURIComponent(result.role || 'requestor')}`);
           } else {
-            // OTP verified, redirect to role-specific dashboard
+            // OTP verified and user is not first-time - redirect to dashboard
             const dashboardRoute = getDashboardRoute(result.role);
             console.log('[LOGIN FORM] OTP verified, redirecting to', dashboardRoute, 'for role:', result.role);
             navigate(dashboardRoute);
@@ -244,7 +241,7 @@ export default function Login() {
             setOtp(['', '', '', '', '', '']);
             setFieldErrors({});
           } else {
-            // Direct login successful - redirect to role-specific dashboard
+            // Direct login successful - token already saved by login function
             const dashboardRoute = getDashboardRoute(result.role);
             console.log('[LOGIN FORM] Direct login successful, redirecting to', dashboardRoute, 'for role:', result.role);
             navigate(dashboardRoute);
