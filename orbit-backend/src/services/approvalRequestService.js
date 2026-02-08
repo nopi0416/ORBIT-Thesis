@@ -1,4 +1,5 @@
 import supabase, { supabaseSecondary } from '../config/database.js';
+import { getUserDetailsFromUUID } from '../utils/userMapping.js';
 
 /**
  * Approval Request Service
@@ -8,6 +9,25 @@ import supabase, { supabaseSecondary } from '../config/database.js';
 
 export class ApprovalRequestService {
   static defaultCompanyId = 'caaa0000-0000-0000-0000-000000000001';
+
+  static async getUserNameMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblusers')
+      .select('user_id, first_name, last_name')
+      .in('user_id', uniqueIds);
+
+    if (error) throw error;
+
+    return new Map(
+      (data || []).map((user) => [
+        user.user_id,
+        `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+      ])
+    );
+  }
 
   static computeLineItemCounts(lineItems = []) {
     const lineItemsCount = Array.isArray(lineItems) ? lineItems.length : 0;
@@ -43,6 +63,8 @@ export class ApprovalRequestService {
     const l3Approved = statusByLevel.get(3) === 'approved';
     const payrollStatus = statusByLevel.get(4);
     const payrollApproved = payrollStatus === 'approved' || payrollStatus === 'completed';
+
+    if (payrollStatus === 'completed') return 'completed';
 
     if (payrollApproved) return 'pending_payment_completion';
     if (l1Approved && l2Approved && l3Approved) return 'pending_payroll_approval';
@@ -318,6 +340,17 @@ export class ApprovalRequestService {
       const { lineItemsCount, deductionCount, toBePaidCount } = this.computeLineItemCounts(lineItemsData);
       const approvalStageStatus = this.computeApprovalStageStatus(approvalsData, data?.overall_status);
 
+      let submitterName = null;
+      try {
+        const userMap = await this.getUserNameMap([data?.submitted_by || data?.created_by]);
+        submitterName = userMap.get(data?.submitted_by || data?.created_by) || null;
+      } catch (lookupError) {
+        console.warn('[getApprovalRequestById] User lookup failed:', lookupError?.message || lookupError);
+      }
+      const submitterDetails = submitterName
+        ? { name: submitterName }
+        : getUserDetailsFromUUID(data?.submitted_by || data?.created_by);
+
       return {
         success: true,
         data: {
@@ -330,6 +363,7 @@ export class ApprovalRequestService {
           deduction_count: deductionCount,
           to_be_paid_count: toBePaidCount,
           approval_stage_status: approvalStageStatus,
+          submitted_by_name: submitterDetails?.name || data?.submitted_by,
         },
       };
     } catch (error) {
@@ -419,7 +453,7 @@ export class ApprovalRequestService {
 
         const { data: approvalRows, error: approvalError } = await supabase
           .from('tblbudgetapprovalrequests_approvals')
-          .select('request_id, approval_level, status')
+          .select('request_id, approval_level, status, is_self_request')
           .in('request_id', requestIds);
 
         if (approvalError) throw approvalError;
@@ -432,11 +466,22 @@ export class ApprovalRequestService {
       }
 
       // Merge budget config data with requests
+      const userIds = (data || []).flatMap((request) => [request?.submitted_by, request?.created_by]).filter(Boolean);
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap(userIds);
+      } catch (lookupError) {
+        console.warn('[getAllApprovalRequests] User lookup failed:', lookupError?.message || lookupError);
+      }
+
       const normalizedData = (data || []).map((request) => {
         const counts = countsMap.get(request.request_id) || { line_items_count: 0, deduction_count: 0 };
         const toBePaidCount = Math.max(0, counts.line_items_count - counts.deduction_count);
         const approvalsForRequest = approvalsMap.get(request.request_id) || [];
         const approvalStageStatus = this.computeApprovalStageStatus(approvalsForRequest, request?.overall_status);
+        const submitterId = request?.submitted_by || request?.created_by;
+        const submitterName = userNameMap.get(submitterId) || null;
+        const submitterDetails = submitterName ? { name: submitterName } : getUserDetailsFromUUID(submitterId);
 
         return {
           ...request,
@@ -446,12 +491,24 @@ export class ApprovalRequestService {
           deduction_count: counts.deduction_count,
           to_be_paid_count: toBePaidCount,
           approval_stage_status: approvalStageStatus,
+          approvals: approvalsForRequest,
+          submitted_by_name: submitterDetails?.name || request?.submitted_by,
         };
       });
 
+      const stageFilterRaw = String(filters.approval_stage_status || '').toLowerCase();
+      const stageFilterList = stageFilterRaw
+        ? stageFilterRaw.split(',').map((value) => value.trim()).filter(Boolean)
+        : [];
+      const filteredByStage = stageFilterList.length && !stageFilterList.includes('all')
+        ? normalizedData.filter((request) =>
+            stageFilterList.includes(String(request.approval_stage_status || '').toLowerCase())
+          )
+        : normalizedData;
+
       return {
         success: true,
-        data: normalizedData,
+        data: filteredByStage,
       };
     } catch (error) {
       console.error('Error fetching approval requests:', error);
@@ -718,7 +775,7 @@ export class ApprovalRequestService {
         supabase
           .from('tblbudgetapprovalrequests')
           .update({
-            overall_status: 'l1_approved',
+            overall_status: 'in_progress',
             updated_at: new Date().toISOString(),
           })
           .eq('request_id', requestId),
@@ -825,12 +882,12 @@ export class ApprovalRequestService {
         department: item.department || '',
         position: item.position || '',
         item_type: this.normalizeItemType(item.item_type || 'bonus'),
-        item_description: item.item_description || item.notes || 'Bulk upload item',
+        item_description: item.item_description || item.notes || null,
         amount: parseFloat(item.amount) || 0,
         is_deduction: item.is_deduction || item.amount < 0,
         has_warning: item.has_warning || false,
         warning_reason: item.warning_reason || '',
-        notes: item.notes || '',
+        notes: item.notes || null,
         // New fields from updated schema
         email: item.email || null,
         employee_status: item.employee_status || item.employeeStatus || null,
@@ -951,11 +1008,12 @@ export class ApprovalRequestService {
       const approvalsSnapshot = await this.getApprovalsByRequestId(requestId);
       const approvalStageStatus = this.computeApprovalStageStatus(
         approvalsSnapshot.data || [],
-        allApprovalsComplete ? 'pending_payment_completion' : 'ongoing_approval'
+        allApprovalsComplete ? 'approved' : 'in_progress'
       );
+      const overallStatus = allApprovalsComplete ? 'approved' : 'in_progress';
 
       await this.updateApprovalRequest(requestId, {
-        overall_status: approvalStageStatus,
+        overall_status: overallStatus,
         ...(allApprovalsComplete && { approved_date: new Date().toISOString() }),
         updated_by: approved_by,
       });
@@ -1027,6 +1085,57 @@ export class ApprovalRequestService {
       };
     } catch (error) {
       console.error('Error rejecting request:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Complete payroll payment for a request (Payroll step 2)
+   */
+  static async completePayrollPayment(requestId, completionData) {
+    try {
+      const { completed_by, approver_name, approval_notes } = completionData;
+
+      const { data, error } = await supabase
+        .from('tblbudgetapprovalrequests_approvals')
+        .update({
+          status: 'approved',
+          approved_by: completed_by,
+          approver_name,
+          approval_decision: 'approved',
+          approval_notes: approval_notes || 'Payment completed',
+          approval_date: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('request_id', requestId)
+        .eq('approval_level', 4)
+        .select();
+
+      if (error) throw error;
+
+      await this.updateApprovalRequest(requestId, {
+        overall_status: 'completed',
+        submission_status: 'completed',
+        updated_by: completed_by,
+      });
+
+      await this.addActivityLog(
+        requestId,
+        'payment_completed',
+        completed_by,
+        'Payroll payment completed'
+      );
+
+      return {
+        success: true,
+        data: data[0],
+        message: 'Payroll payment completed',
+      };
+    } catch (error) {
+      console.error('Error completing payroll payment:', error);
       return {
         success: false,
         error: error.message,

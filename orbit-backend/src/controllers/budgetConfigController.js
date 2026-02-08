@@ -149,6 +149,7 @@ export class BudgetConfigController {
         geo: req.query.geo,
         location: req.query.location,
         client: req.query.client,
+        status: req.query.status,
         ...(restrictByOrg ? { org_id: orgId } : {}),
       };
 
@@ -218,6 +219,16 @@ export class BudgetConfigController {
         if (!accessCheck.success || !accessCheck.data) {
           return sendError(res, 'Access denied for this budget configuration', 403);
         }
+      }
+
+      const currentConfig = await BudgetConfigService.getBudgetConfigById(id);
+      if (!currentConfig.success) {
+        return sendError(res, currentConfig.error || 'Budget configuration not found', 404);
+      }
+
+      const creatorId = currentConfig.data?.created_by;
+      if (creatorId && userId && String(creatorId) !== String(userId)) {
+        return sendError(res, 'Only the configuration creator can modify this configuration', 403);
       }
 
       const result = await BudgetConfigService.updateBudgetConfig(id, safeUpdate);

@@ -112,6 +112,13 @@ router.post('/:id/approvals/approve', authenticateToken, ApprovalRequestControll
 router.post('/:id/approvals/reject', authenticateToken, ApprovalRequestController.rejectRequest);
 
 /**
+ * POST /api/approval-requests/:id/approvals/complete-payment
+ * Complete payroll payment step
+ * Body: { approval_notes }
+ */
+router.post('/:id/approvals/complete-payment', authenticateToken, ApprovalRequestController.completePayrollPayment);
+
+/**
  * ATTACHMENTS ENDPOINTS
  */
 

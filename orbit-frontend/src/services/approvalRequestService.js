@@ -35,6 +35,7 @@ const getApprovalRequests = async (filters = {}, token) => {
   if (filters.status) queryParams.append('status', filters.status);
   if (filters.search) queryParams.append('search', filters.search);
   if (filters.submitted_by) queryParams.append('submitted_by', filters.submitted_by);
+  if (filters.approval_stage_status) queryParams.append('approval_stage_status', filters.approval_stage_status);
 
   const url = `${API_BASE_URL}/approval-requests${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
   const response = await fetch(url, {
@@ -82,6 +83,16 @@ const rejectRequest = async (requestId, payload, token) => {
     method: 'POST',
     headers: getHeaders(token),
     body: JSON.stringify(payload),
+  });
+
+  return parseResponse(response);
+};
+
+const completePayrollPayment = async (requestId, payload, token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/approvals/complete-payment`, {
+    method: 'POST',
+    headers: getHeaders(token),
+    body: JSON.stringify(payload || {}),
   });
 
   return parseResponse(response);
@@ -192,6 +203,7 @@ export default {
   getPendingApprovals,
   approveRequest,
   rejectRequest,
+  completePayrollPayment,
   createApprovalRequest,
   submitApprovalRequest,
   getEmployeeByEid,

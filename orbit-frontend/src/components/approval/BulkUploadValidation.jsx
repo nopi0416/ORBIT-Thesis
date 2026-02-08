@@ -38,65 +38,65 @@ const BulkTableRow = React.memo(({
   
   return (
     <tr className={`border-t border-slate-600 ${rowClass}`}>
-      <td className="px-2 py-2 text-gray-300 border-r border-slate-600 text-center text-sm">{item.index + 1}</td>
-      <td className="px-2 py-2 border-r border-slate-600">
+      <td className="px-2 py-1 text-gray-300 border-r border-slate-600 text-center text-xs">{item.index + 1}</td>
+      <td className="px-2 py-1 border-r border-slate-600">
         <Input
           value={item.employee_id}
           disabled
-          className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed text-sm h-7"
+          className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed text-xs h-6"
           placeholder="Required"
         />
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.employee_name || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.position || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.department || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.employeeData?.employee_status || item.employeeData?.active_status || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.employeeData?.geo || item.employeeData?.region || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.employeeData?.location || item.employeeData?.site || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.employeeData?.hire_date || item.employeeData?.date_hired || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-slate-300 text-sm">
+      <td className="px-2 py-1 border-r border-slate-600 text-slate-300 text-xs">
         {item.employeeData?.termination_date || item.employeeData?.end_date || item.employeeData?.exit_date || '—'}
       </td>
-      <td className="px-2 py-2 border-r border-slate-600">
+      <td className="px-2 py-1 border-r border-slate-600">
         <Input
           type="number"
           value={item.amount}
           onChange={(e) => handleUpdate(item.index, 'amount', Number(e.target.value))}
-          className="bg-slate-700 border-gray-600 text-white text-sm h-7"
+          className="bg-slate-700 border-gray-600 text-white text-xs h-6"
           placeholder="Required"
         />
       </td>
-      <td className="px-2 py-2 border-r border-slate-600 text-center">
+      <td className="px-2 py-1 border-r border-slate-600 text-center">
         <Checkbox
           checked={item.is_deduction}
           onCheckedChange={(checked) => handleUpdate(item.index, 'is_deduction', checked)}
           className="border-gray-600"
         />
       </td>
-      <td className="px-2 py-2 border-r border-slate-600">
+      <td className="px-2 py-1 border-r border-slate-600">
         <Textarea
           value={item.notes || ''}
           onChange={(e) => handleUpdate(item.index, 'notes', e.target.value)}
-          className="bg-slate-700 border-gray-600 text-white text-sm min-h-[28px] resize-none"
+          className="bg-slate-700 border-gray-600 text-white text-xs min-h-[24px] h-6 resize-none leading-tight"
           rows={1}
           placeholder="Optional"
         />
       </td>
-      <td className="px-2 py-2">
+      <td className="px-2 py-1">
         <div className="space-y-1">
           {getStatusBadge(item.status)}
           {item.validation.errors && item.validation.errors.length > 0 && (
@@ -286,24 +286,24 @@ const BulkUploadValidation = ({
         </TabsList>
         
         <TabsContent value={activeTab} className="flex-1 min-h-0 mt-2 flex flex-col">
-          <div className="border border-slate-600 rounded-md overflow-x-auto overflow-y-auto flex-1 max-h-[50vh]">
-            <table className="w-full min-w-[1400px] border-collapse">
+          <div className="border border-slate-600 rounded-md overflow-x-auto overflow-y-auto flex-1 max-h-[320px] sm:max-h-[360px]">
+            <table className="w-full min-w-[900px] md:min-w-[1100px] border-collapse text-xs">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '40px' }}>#</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '100px' }}>Employee ID</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '140px' }}>Employee Name</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '100px' }}>Position</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '100px' }}>Department</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '80px' }}>Status</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '80px' }}>Geo</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '100px' }}>Location</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '90px' }}>Hire Date</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '90px' }}>Termination Date</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '100px' }}>Amount</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '70px' }}>Deduction</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold border-r border-slate-600 text-sm" style={{ minWidth: '150px' }}>Notes</th>
-                  <th className="px-2 py-2 text-left text-white font-semibold text-sm" style={{ minWidth: '90px' }}>Validation</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '36px' }}>#</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '90px' }}>Employee ID</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '130px' }}>Employee Name</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '90px' }}>Position</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '90px' }}>Department</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '70px' }}>Status</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '70px' }}>Geo</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '90px' }}>Location</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '80px' }}>Hire Date</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '90px' }}>Termination Date</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '90px' }}>Amount</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '60px' }}>Deduction</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold border-r border-slate-600 text-xs" style={{ minWidth: '120px' }}>Notes</th>
+                  <th className="px-2 py-1 text-left text-white font-semibold text-xs" style={{ minWidth: '80px' }}>Validation</th>
                 </tr>
               </thead>
               <tbody>

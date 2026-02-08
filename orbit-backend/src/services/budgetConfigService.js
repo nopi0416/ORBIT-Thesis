@@ -34,6 +34,38 @@ const containsOrgId = (value, orgId) => {
  */
 
 export class BudgetConfigService {
+  static async getUserNameMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblusers')
+      .select('user_id, first_name, last_name')
+      .in('user_id', uniqueIds);
+
+    if (error) throw error;
+
+    return new Map(
+      (data || []).map((user) => [
+        user.user_id,
+        `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+      ])
+    );
+  }
+  static computeConfigStatus(config) {
+    const storedStatus = String(config?.status || '').toLowerCase();
+    if (storedStatus === 'deactivated') return 'deactivated';
+
+    const endDateValue = config?.end_date || config?.endDate || null;
+    if (endDateValue) {
+      const endDate = new Date(endDateValue);
+      if (!Number.isNaN(endDate.getTime()) && endDate < new Date()) {
+        return 'expired';
+      }
+    }
+
+    return 'active';
+  }
   /**
    * Create a new budget configuration with tenure groups, approvers, and access scopes
    */
@@ -58,6 +90,7 @@ export class BudgetConfigService {
         affected_ou,
         tenure_group,
         budget_description,
+        status,
       } = configData;
 
       // Step 1: Create main budget configuration (without geo/location/department scopes)
@@ -81,6 +114,7 @@ export class BudgetConfigService {
             start_date: start_date || null,
             end_date: end_date || null,
             budget_description: budget_description || null,
+            status: status || 'active',
             created_by,
             created_at: new Date().toISOString(),
           },
@@ -179,23 +213,40 @@ export class BudgetConfigService {
       }
 
       // Fetch related data for each config
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap((filteredByOrg || []).map((row) => row.created_by));
+      } catch (lookupError) {
+        console.warn('[getAllBudgetConfigs] User lookup failed:', lookupError?.message || lookupError);
+      }
+
       const configsWithRelations = await Promise.all(
         filteredByOrg.map(async (config) => {
           const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
           ]);
+          const creatorName = userNameMap.get(config.created_by);
+          const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
+          const computedStatus = this.computeConfigStatus(config);
 
           return {
             ...config,
             approvers: approvers.data || [],
             budget_tracking: [],
+            status: computedStatus,
+            created_by_name: creatorDetails?.name || config.created_by,
           };
         })
       );
 
+      const statusFilter = String(filters.status || '').toLowerCase();
+      const filteredByStatus = statusFilter && statusFilter !== 'all'
+        ? configsWithRelations.filter((config) => String(config.status || '').toLowerCase() === statusFilter)
+        : configsWithRelations;
+
       return {
         success: true,
-        data: configsWithRelations,
+        data: filteredByStatus,
       };
     } catch (error) {
       console.error('Error fetching budget configs:', error);
@@ -224,11 +275,23 @@ export class BudgetConfigService {
         this.getApproversByBudgetId(budgetId),
       ]);
 
+      let creatorName = null;
+      try {
+        const userNameMap = await this.getUserNameMap([data.created_by]);
+        creatorName = userNameMap.get(data.created_by) || null;
+      } catch (lookupError) {
+        console.warn('[getBudgetConfigById] User lookup failed:', lookupError?.message || lookupError);
+      }
+      const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(data.created_by);
+      const computedStatus = this.computeConfigStatus(data);
+
       return {
         success: true,
         data: {
           ...data,
           approvers: approvers.data || [],
+          status: computedStatus,
+          created_by_name: creatorDetails?.name || data.created_by,
         },
       };
     } catch (error) {
@@ -262,6 +325,7 @@ export class BudgetConfigService {
         affected_ou,
         tenure_group,
         budget_description,
+        status,
         updated_by,
       } = updateData;
 
@@ -285,6 +349,7 @@ export class BudgetConfigService {
           ...(affected_ou !== undefined && { affected_ou }),
           ...(tenure_group !== undefined && { tenure_group }),
           ...(budget_description !== undefined && { budget_description }),
+          ...(status !== undefined && { status }),
           updated_by,
           updated_at: new Date().toISOString(),
         })
@@ -353,15 +418,27 @@ export class BudgetConfigService {
       if (error) throw error;
 
       // Fetch related data for each config
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap((data || []).map((row) => row.created_by));
+      } catch (lookupError) {
+        console.warn('[getConfigsByUser] User lookup failed:', lookupError?.message || lookupError);
+      }
+
       const configsWithRelations = await Promise.all(
         data.map(async (config) => {
           const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
           ]);
+          const creatorName = userNameMap.get(config.created_by);
+          const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
+          const computedStatus = this.computeConfigStatus(config);
 
           return {
             ...config,
             approvers: approvers.data || [],
+            status: computedStatus,
+            created_by_name: creatorDetails?.name || config.created_by,
           };
         })
       );

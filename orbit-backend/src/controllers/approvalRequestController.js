@@ -140,7 +140,7 @@ export class ApprovalRequestController {
    */
   static async getAllApprovalRequests(req, res) {
     try {
-      const { budget_id, status, search, submitted_by } = req.query;
+      const { budget_id, status, search, submitted_by, approval_stage_status } = req.query;
       const orgId = req.user?.org_id || null;
       const isUuid = (value) =>
         typeof value === 'string' &&
@@ -151,6 +151,7 @@ export class ApprovalRequestController {
         ...(status && { status }),
         ...(search && { search }),
         ...(submitted_by && isUuid(submitted_by) && { submitted_by }),
+        ...(approval_stage_status && { approval_stage_status }),
       };
 
       if (orgId) {
@@ -381,6 +382,43 @@ export class ApprovalRequestController {
       sendSuccess(res, result.data, result.message, 200);
     } catch (error) {
       console.error('Error in rejectRequest:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * Complete payroll payment (Step 2)
+   * POST /api/approval-requests/:id/approvals/complete-payment
+   */
+  static async completePayrollPayment(req, res) {
+    try {
+      const { id } = req.params;
+      const { approval_notes } = req.body;
+      const userId = req.user?.id || req.body.user_id;
+
+      if (!userId) {
+        return sendError(res, 'user_id is required', 400);
+      }
+
+      const result = await ApprovalRequestService.completePayrollPayment(id, {
+        completed_by: userId,
+        approver_name: req.user?.name || req.user?.full_name || req.user?.email || 'Payroll',
+        approval_notes,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      broadcast('approval_request_updated', {
+        action: 'payment_completed',
+        request_id: result.data?.request_id || id,
+        approval_level: 4,
+      });
+
+      sendSuccess(res, result.data, result.message, 200);
+    } catch (error) {
+      console.error('Error in completePayrollPayment:', error);
       sendError(res, error.message, 500);
     }
   }

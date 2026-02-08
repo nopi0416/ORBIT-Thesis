@@ -112,6 +112,7 @@ function ConfigurationList() {
   const [filterGeo, setFilterGeo] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("active");
   const [configurations, setConfigurations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -180,6 +181,9 @@ function ConfigurationList() {
       id: config.budget_id || config.id,
       name: config.budget_name || config.name || "Unnamed Configuration",
       description: config.description || config.budget_description || "No description provided",
+      status: config.status || config.configuration_status || "active",
+      createdById: config.created_by || config.createdBy || null,
+      createdByName: config.created_by_name || config.createdByName || config.created_by || "—",
       startDate,
       endDate,
       dateRangeLabel,
@@ -348,6 +352,28 @@ function ConfigurationList() {
   }, [token, selectedConfig?.id]);
 
   useEffect(() => {
+    if (!detailsOpen || !selectedConfig?.id) return;
+    let isActive = true;
+
+    const fetchConfigDetails = async () => {
+      try {
+        const data = await budgetConfigService.getBudgetConfigurationById(selectedConfig.id, token);
+        if (!isActive || !data) return;
+        const normalized = transformConfig(data);
+        setSelectedConfig((prev) => (prev && prev.id === normalized.id ? { ...prev, ...normalized } : prev));
+      } catch (err) {
+        console.error('Failed to refresh configuration details:', err);
+      }
+    };
+
+    fetchConfigDetails();
+
+    return () => {
+      isActive = false;
+    };
+  }, [detailsOpen, selectedConfig?.id, token, transformConfig]);
+
+  useEffect(() => {
     if (!selectedConfig) {
       setEditConfig(null);
       setEditError(null);
@@ -368,6 +394,9 @@ function ConfigurationList() {
       id: selectedConfig.id,
       name: selectedConfig.name || "",
       description: selectedConfig.description || "",
+      status: selectedConfig.status || "active",
+      createdById: selectedConfig.createdById || null,
+      createdByName: selectedConfig.createdByName || "—",
       startDate: selectedConfig.startDate || "",
       endDate: selectedConfig.endDate || "",
       limitMin: selectedConfig.limitMin || "",
@@ -457,6 +486,11 @@ function ConfigurationList() {
 
   const handleSaveEdit = async () => {
     if (!editConfig?.id) return;
+    const isOwner = String(editConfig.createdById || '') && String(editConfig.createdById) === String(user?.id || '');
+    if (!isOwner) {
+      setEditError('Only the configuration creator can modify this configuration.');
+      return;
+    }
     setEditSaving(true);
     setEditError(null);
     setEditSuccess(false);
@@ -484,6 +518,7 @@ function ConfigurationList() {
         backupApproverL2: editConfig.backupApproverL2 || null,
         approverL3: editConfig.approverL3 || null,
         backupApproverL3: editConfig.backupApproverL3 || null,
+        status: editConfig.status || 'active',
       };
 
       await budgetConfigService.updateBudgetConfiguration(editConfig.id, payload, token);
@@ -513,6 +548,7 @@ function ConfigurationList() {
                 backupApproverL2: editConfig.backupApproverL2,
                 approverL3: editConfig.approverL3,
                 backupApproverL3: editConfig.backupApproverL3,
+                status: editConfig.status || config.status,
               }
             : config
         )
@@ -550,11 +586,14 @@ function ConfigurationList() {
     const matchesGeo = filterGeo === "all" || config.geo.includes(filterGeo);
     const matchesLocation = filterLocation === "all" || config.location.includes(filterLocation);
     const matchesClient = filterClient === "all" || config.clients.includes(filterClient);
-    return matchesSearch && matchesGeo && matchesLocation && matchesClient;
+    const statusNormalized = String(config.status || "active").toLowerCase();
+    const matchesStatus = statusFilter === "all" || statusNormalized === statusFilter;
+    return matchesSearch && matchesGeo && matchesLocation && matchesClient && matchesStatus;
   });
 
   const historyItems = selectedConfig?.history || [];
   const logItems = selectedConfig?.logs || selectedConfig?.logEntries || [];
+  const isOwner = editConfig && String(editConfig.createdById || '') === String(user?.id || '');
 
   return (
     <div className="space-y-6">
@@ -630,6 +669,22 @@ function ConfigurationList() {
           <CardDescription className="text-gray-400">All budget configurations</CardDescription>
         </CardHeader>
         <CardContent>
+          <Tabs value={statusFilter} onValueChange={setStatusFilter} className="mb-4">
+            <TabsList className="bg-slate-700/60 border-slate-600 p-1">
+              <TabsTrigger value="active" className="data-[state=active]:bg-emerald-600 data-[state=active]:text-white text-gray-300 border-0">
+                Active
+              </TabsTrigger>
+              <TabsTrigger value="expired" className="data-[state=active]:bg-amber-600 data-[state=active]:text-white text-gray-300 border-0">
+                Expired
+              </TabsTrigger>
+              <TabsTrigger value="deactivated" className="data-[state=active]:bg-rose-600 data-[state=active]:text-white text-gray-300 border-0">
+                Deactivated
+              </TabsTrigger>
+              <TabsTrigger value="all" className="data-[state=active]:bg-slate-600 data-[state=active]:text-white text-gray-300 border-0">
+                All
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <Loader className="h-6 w-6 text-pink-500 animate-spin" />
@@ -640,56 +695,76 @@ function ConfigurationList() {
             <div className="text-sm text-gray-400">No configurations found.</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full text-sm text-left text-gray-300 border-collapse">
-                <thead className="text-xs uppercase bg-slate-700 text-gray-300 sticky top-0">
+              <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0">
                   <tr>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[200px] max-w-[400px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[160px] max-w-[280px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Configuration
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[150px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[90px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Status
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Created By
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[130px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Period
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[110px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Budget Limit
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[100px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[90px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Min - Max
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[100px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Geo
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[100px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Location
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[150px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Client
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       L1 Approver
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       L2 Approver
                     </th>
-                    <th className="px-3 py-3 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       L3 Approver
                     </th>
-                    <th className="px-3 py-3 min-w-[80px]">Actions</th>
+                    <th className="px-2 py-2 min-w-[70px]">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredConfigurations.map((config) => (
                     <tr key={config.id} className="border-b border-slate-700 hover:bg-slate-700/50 transition-colors">
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="font-medium text-white">{config.name}</div>
                         {config.description && (
                           <div className="text-xs text-gray-400 mt-1 line-clamp-2">{config.description}</div>
                         )}
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <Badge className={`text-[10px] ${
+                          String(config.status || '').toLowerCase() === 'active'
+                            ? 'bg-emerald-600 text-white'
+                            : String(config.status || '').toLowerCase() === 'expired'
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-rose-600 text-white'
+                        }`}>
+                          {String(config.status || 'active').charAt(0).toUpperCase() + String(config.status || 'active').slice(1)}
+                        </Badge>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">{config.createdByName || '—'}</div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="text-xs">{config.dateRangeLabel}</div>
                         <div className="text-xs text-gray-400">{config.payCycle === 'SEMI_MONTHLY' ? 'Semi-Monthly' : config.payCycle}</div>
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600 text-right">
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
                         {config.budgetControlEnabled ? (
                           <div className="font-medium text-green-400">
                             {config.currency} {Number(config.budgetLimit || 0).toLocaleString()}
@@ -698,18 +773,18 @@ function ConfigurationList() {
                           <div className="text-xs text-gray-400">No limit</div>
                         )}
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600 text-right">
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
                         <div className="text-xs">
                           {config.currency} {Number(config.limitMin || 0).toLocaleString()} - {Number(config.limitMax || 0).toLocaleString()}
                         </div>
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="text-xs">{config.geo?.length ? config.geo.join(', ') : 'All'}</div>
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="text-xs">{config.location?.length ? config.location.join(', ') : 'All'}</div>
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="text-xs">
                           {Array.isArray(config.clients) && config.clients.length > 0
                             ? config.clients.length > 2
@@ -718,7 +793,7 @@ function ConfigurationList() {
                             : 'All'}
                         </div>
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="text-xs text-gray-300">
                           {config.approverL1Name || config.approverL1 || '—'}
                           {config.backupApproverL1Name && (
@@ -726,7 +801,7 @@ function ConfigurationList() {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="text-xs text-gray-300">
                           {config.approverL2Name || config.approverL2 || '—'}
                           {config.backupApproverL2Name && (
@@ -734,7 +809,7 @@ function ConfigurationList() {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-3 border-r border-slate-600">
+                      <td className="px-2 py-2 border-r border-slate-600">
                         <div className="text-xs text-gray-300">
                           {config.approverL3Name || config.approverL3 || '—'}
                           {config.backupApproverL3Name && (
@@ -742,7 +817,7 @@ function ConfigurationList() {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-3">
+                      <td className="px-2 py-2">
                         <Button
                           onClick={() => {
                             setSelectedConfig(config);
@@ -764,7 +839,7 @@ function ConfigurationList() {
       </Card>
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[90vw] max-w-2xl">
+        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] 2xl:w-[50vw] max-w-[900px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-white">{selectedConfig?.name || "Configuration"}</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -799,6 +874,11 @@ function ConfigurationList() {
                 <p className="text-sm text-gray-400">Select a configuration to edit.</p>
               ) : (
                 <div className="space-y-4">
+                  {!String(editConfig.createdById || '') || String(editConfig.createdById) !== String(user?.id || '') ? (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">
+                      Only the configuration creator can modify this configuration.
+                    </div>
+                  ) : null}
                   {editError && (
                     <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
                       {editError}
@@ -812,11 +892,35 @@ function ConfigurationList() {
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
+                      <Label className="text-white">Status</Label>
+                      <SearchableSelect
+                        value={editConfig.status || "active"}
+                        onValueChange={(value) => handleEditChange("status", value)}
+                        options={[
+                          { value: "active", label: "Active" },
+                          { value: "expired", label: "Expired" },
+                          { value: "deactivated", label: "Deactivated" },
+                        ]}
+                        placeholder="Select status"
+                        searchPlaceholder="Search status..."
+                        disabled={!isOwner}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Created By</Label>
+                      <Input
+                        value={editConfig.createdByName || "—"}
+                        disabled
+                        className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
+                      />
+                    </div>
+                    <div className="space-y-2">
                       <Label className="text-white">Budget Name</Label>
                       <Input
                         value={editConfig.name}
                         onChange={(e) => handleEditChange("name", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                     <div className="space-y-2">
@@ -838,6 +942,7 @@ function ConfigurationList() {
                         value={editConfig.startDate || ""}
                         onChange={(e) => handleEditChange("startDate", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                     <div className="space-y-2">
@@ -847,6 +952,7 @@ function ConfigurationList() {
                         value={editConfig.endDate || ""}
                         onChange={(e) => handleEditChange("endDate", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                     <div className="space-y-2">
@@ -867,6 +973,7 @@ function ConfigurationList() {
                           checked={editConfig.budgetControlEnabled}
                           onCheckedChange={(checked) => handleEditChange("budgetControlEnabled", Boolean(checked))}
                           className="border-blue-400 bg-slate-600"
+                          disabled={!isOwner}
                         />
                         <Label htmlFor="edit-budget-control" className="text-white text-sm">Enable</Label>
                       </div>
@@ -878,7 +985,7 @@ function ConfigurationList() {
                         value={editConfig.budgetControlLimit}
                         onChange={(e) => handleEditChange("budgetControlLimit", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
-                        disabled={!editConfig.budgetControlEnabled}
+                        disabled={!isOwner || !editConfig.budgetControlEnabled}
                       />
                     </div>
                     <div className="space-y-2">
@@ -888,6 +995,7 @@ function ConfigurationList() {
                         value={editConfig.limitMin}
                         onChange={(e) => handleEditChange("limitMin", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                     <div className="space-y-2">
@@ -897,6 +1005,7 @@ function ConfigurationList() {
                         value={editConfig.limitMax}
                         onChange={(e) => handleEditChange("limitMax", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                   </div>
@@ -908,6 +1017,7 @@ function ConfigurationList() {
                       onChange={(e) => handleEditChange("description", e.target.value)}
                       rows={3}
                       className="w-full rounded-md bg-slate-700 border border-gray-300 px-3 py-2 text-white"
+                      disabled={!isOwner}
                     />
                   </div>
 
@@ -926,7 +1036,7 @@ function ConfigurationList() {
                           value: approver.user_id,
                           label: `${approver.first_name} ${approver.last_name}`,
                         }))}
-                        disabled={approvalsLoading}
+                        disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                         searchPlaceholder="Search approver..."
                       />
@@ -942,7 +1052,7 @@ function ConfigurationList() {
                             value: approver.user_id,
                             label: `${approver.first_name} ${approver.last_name}`,
                           }))}
-                        disabled={approvalsLoading}
+                        disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                         searchPlaceholder="Search backup..."
                       />
@@ -961,7 +1071,7 @@ function ConfigurationList() {
                           value: approver.user_id,
                           label: `${approver.first_name} ${approver.last_name}`,
                         }))}
-                        disabled={approvalsLoading}
+                        disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                         searchPlaceholder="Search approver..."
                       />
@@ -977,7 +1087,7 @@ function ConfigurationList() {
                             value: approver.user_id,
                             label: `${approver.first_name} ${approver.last_name}`,
                           }))}
-                        disabled={approvalsLoading}
+                        disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                         searchPlaceholder="Search backup..."
                       />
@@ -996,7 +1106,7 @@ function ConfigurationList() {
                           value: approver.user_id,
                           label: `${approver.first_name} ${approver.last_name}`,
                         }))}
-                        disabled={approvalsLoading}
+                        disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                         searchPlaceholder="Search approver..."
                       />
@@ -1012,7 +1122,7 @@ function ConfigurationList() {
                             value: approver.user_id,
                             label: `${approver.first_name} ${approver.last_name}`,
                           }))}
-                        disabled={approvalsLoading}
+                        disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                         searchPlaceholder="Search backup..."
                       />
@@ -1022,7 +1132,7 @@ function ConfigurationList() {
                   <div className="flex justify-end">
                     <Button
                       onClick={handleSaveEdit}
-                      disabled={editSaving}
+                      disabled={editSaving || String(editConfig.createdById || '') !== String(user?.id || '')}
                       className="bg-blue-600 hover:bg-blue-700 text-white"
                     >
                       {editSaving ? "Saving..." : "Save Changes"}

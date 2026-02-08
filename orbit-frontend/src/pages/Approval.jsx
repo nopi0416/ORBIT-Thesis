@@ -167,6 +167,8 @@ const normalizeRequest = (request) => {
     requestNumber: request.request_number || request.requestNumber || null,
     approvals: request.approvals || [],
     is_self_request: request.is_self_request || false,
+    submittedByName: request.submitted_by_name || request.submittedByName || null,
+    submittedBy: request.submitted_by || request.submittedBy || null,
     lineItemsCount,
     deductionCount,
     toBePaidCount,
@@ -306,6 +308,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [requestDetailsData, setRequestDetailsData] = useState(null);
   const [requestConfigDetails, setRequestConfigDetails] = useState(null);
   const [detailSearch, setDetailSearch] = useState('');
+  const [detailVisibleCount, setDetailVisibleCount] = useState(10);
+  const detailTableRef = useRef(null);
 
   const [showModal, setShowModal] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
@@ -503,35 +507,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setRequestsLoading(true);
       setRequestsError(null);
       try {
-        const data = await approvalRequestService.getApprovalRequests({ submitted_by: userId }, token);
-        
-        // Fetch approvals for each request
-        const requestsWithApprovals = await Promise.all(
-          (data || []).map(async (request) => {
-            try {
-              const requestId = request.approval_request_id || request.request_id;
-              const approvalsResponse = await fetch(
-                `http://localhost:3001/api/approval-requests/${requestId}/approvals`,
-                {
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                  },
-                }
-              );
-              const approvalsJson = await approvalsResponse.json();
-              return {
-                ...request,
-                approvals: approvalsJson.data || [],
-              };
-            } catch (error) {
-              console.error('Failed to fetch approvals for request:', error);
-              return { ...request, approvals: [] };
-            }
-          })
+        const data = await fetchWithCache(
+          'myRequests',
+          `submitted_${userId}`,
+          () => approvalRequestService.getApprovalRequests({ submitted_by: userId }, token),
+          60 * 1000
         );
-        
-        setMyRequests(requestsWithApprovals.map(normalizeRequest));
+
+        setMyRequests((data || []).map(normalizeRequest));
       } catch (error) {
         setRequestsError(error.message || 'Failed to load requests');
         setMyRequests([]);
@@ -546,6 +529,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const applyRequestUpdate = async (requestId, action, submittedBy) => {
     if (!requestId || !userId) return;
     if (action === 'deleted') {
+      invalidateNamespace('myRequests');
+      invalidateNamespace('approvalRequestDetails');
       setMyRequests((prev) => prev.filter((item) => item.id !== requestId));
       if (selectedRequest?.id === requestId) {
         setDetailsOpen(false);
@@ -556,7 +541,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     if (submittedBy && submittedBy !== userId) return;
 
     try {
-      const data = await approvalRequestService.getApprovalRequest(requestId, token);
+      invalidateNamespace('myRequests');
+      invalidateNamespace('approvalRequestDetails');
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        requestId,
+        () => approvalRequestService.getApprovalRequest(requestId, token),
+        60 * 1000
+      );
       if (!data || data.submitted_by !== userId) return;
       const normalized = normalizeRequest(data);
 
@@ -993,7 +985,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     setRequestConfigDetails(null);
 
     try {
-      const data = await approvalRequestService.getApprovalRequest(request.id, token);
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        request.id,
+        () => approvalRequestService.getApprovalRequest(request.id, token),
+        60 * 1000
+      );
       setRequestDetailsData(data || null);
 
       if (request.budgetId) {
@@ -1010,7 +1007,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const refreshSelectedRequestDetails = async () => {
     if (!selectedRequest?.id) return;
     try {
-      const data = await approvalRequestService.getApprovalRequest(selectedRequest.id, token);
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        selectedRequest.id,
+        () => approvalRequestService.getApprovalRequest(selectedRequest.id, token),
+        60 * 1000
+      );
       setRequestDetailsData(data || null);
 
       if (selectedRequest.budgetId) {
@@ -1024,9 +1026,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
+    setDetailVisibleCount(10);
     refreshSelectedRequestDetails();
     return undefined;
   }, [detailsOpen, selectedRequest?.id, token]);
+
+  const handleDetailTableScroll = useCallback((event) => {
+    const el = event.currentTarget;
+    if (!el) return;
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+    if (nearBottom) {
+      setDetailVisibleCount((prev) => prev + 10);
+    }
+  }, []);
 
   const getApprovalBadgeClass = (status, isSelfRequest = false) => {
     // Self request gets blue color
@@ -1569,7 +1581,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           department: individualRequest.department,
           position: individualRequest.position,
           item_type: 'other',
-          item_description: requestDetails.details.trim(),
+          item_description: individualRequest.notes?.trim() || null,
           amount: amountValue,
           is_deduction: individualRequest.isDeduction,
           notes: individualRequest.notes,
@@ -1578,6 +1590,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       );
 
       const submitResult = await approvalRequestService.submitApprovalRequest(requestId, token);
+
+      invalidateNamespace('myRequests');
+      invalidateNamespace('approvalRequests');
+      invalidateNamespace('approvalRequestDetails');
+      invalidateNamespace('pendingApprovals');
 
       // Backend now handles auto-approval for Self-Request
       const successMsg = submitResult?.autoApproved 
@@ -1714,12 +1731,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         hire_date: item.hire_date || item.hireDate || item.employeeData?.hire_date || item.employeeData?.date_hired || '',
         termination_date: item.termination_date || item.terminationDate || item.employeeData?.termination_date || item.employeeData?.end_date || '',
         item_type: 'bonus', // Default type
-        item_description: requestDetails.details?.trim() || item.approval_description || item.notes || 'Bulk upload item',
+        item_description: item.notes?.trim() || null,
         amount: Number(item.amount || 0),
         is_deduction: Boolean(item.is_deduction),
         has_warning: Boolean(item.has_warning),
         warning_reason: item.warning_reason || '',
-        notes: item.notes || '',
+        notes: item.notes || null,
       }));
 
       console.log('[handleSubmitBulk] Transformed line items:', lineItemsForBackend);
@@ -1736,6 +1753,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       console.log('[handleSubmitBulk] Submitting request...');
       const submitResult = await approvalRequestService.submitApprovalRequest(requestId, token);
       console.log('[handleSubmitBulk] Submit result:', submitResult);
+
+      invalidateNamespace('myRequests');
+      invalidateNamespace('approvalRequests');
+      invalidateNamespace('approvalRequestDetails');
+      invalidateNamespace('pendingApprovals');
 
       // Backend now handles auto-approval for Self-Request
       let successMsg = validItems.length < bulkItems.length 
@@ -1848,6 +1870,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
+  const visibleLineItems = filteredLineItems.slice(0, detailVisibleCount);
   const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
   const budgetUsed = Number(requestConfigDetails?.budget_used || requestConfigDetails?.usedAmount || 0);
   const budgetMax = Number(
@@ -1877,6 +1900,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         },
         getToken()
       );
+
+      invalidateNamespace('approvalRequests');
+      invalidateNamespace('approvalRequestDetails');
+      invalidateNamespace('pendingApprovals');
+      invalidateNamespace('myRequests');
 
       await refreshDetails();
       await fetchApprovals();
@@ -1908,6 +1936,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         },
         getToken()
       );
+
+      invalidateNamespace('approvalRequests');
+      invalidateNamespace('approvalRequestDetails');
+      invalidateNamespace('pendingApprovals');
+      invalidateNamespace('myRequests');
 
       await refreshDetails();
       await fetchApprovals();
@@ -2502,7 +2535,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           }
         }}
       >
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[90vw] max-w-none max-h-[90vh] overflow-y-auto p-5">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[98vw] md:w-[92vw] lg:w-[85vw] xl:w-[70vw] max-w-none max-h-[85vh] overflow-y-auto p-5">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request Details</DialogTitle>
 
@@ -2581,7 +2614,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     className="bg-slate-700 border-gray-300 text-white"
                   />
                 </div>
-                <div className="mt-3 overflow-x-auto rounded-lg border border-slate-700">
+                <div
+                  ref={detailTableRef}
+                  onScroll={handleDetailTableScroll}
+                  className="mt-3 max-h-[360px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700"
+                >
                   <table className="w-full text-sm">
                     <thead className="bg-slate-800">
                       <tr>
@@ -2601,14 +2638,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-700">
-                      {filteredLineItems.length === 0 ? (
+                      {visibleLineItems.length === 0 ? (
                         <tr>
                           <td colSpan={13} className="px-3 py-6 text-center text-sm text-slate-400">
                             No line items found.
                           </td>
                         </tr>
                       ) : (
-                        filteredLineItems.map((item) => {
+                        visibleLineItems.map((item) => {
                           const amountValue = Number(item.amount || 0);
                           const isWarning = item.has_warning || amountValue < 0;
                           return (
@@ -2853,7 +2890,7 @@ function ApprovalRequests({ refreshKey }) {
   const [detailSearch, setDetailSearch] = useState('');
   const [decisionNotes, setDecisionNotes] = useState('');
   const [actionError, setActionError] = useState(null);
-  const [detailVisibleCount, setDetailVisibleCount] = useState(20);
+  const [detailVisibleCount, setDetailVisibleCount] = useState(10);
   const detailTableRef = useRef(null);
 
   const formatDatePHT = (dateString) => {
@@ -2919,60 +2956,80 @@ function ApprovalRequests({ refreshKey }) {
     setLoading(true);
     setError(null);
     try {
+      const effectiveStatusFilter =
+        userRole === 'requestor'
+          ? statusFilter
+          : statusFilter === 'submitted'
+            ? 'pending'
+            : statusFilter;
+
+      const cacheTTL = 60 * 1000;
+      const getApprovalRequestsCached = (filters, key) =>
+        fetchWithCache('approvalRequests', key, () => approvalRequestService.getApprovalRequests(filters, getToken()), cacheTTL);
+      const getApprovalRequestCached = (requestId) =>
+        fetchWithCache('approvalRequestDetails', requestId, () => approvalRequestService.getApprovalRequest(requestId, getToken()), cacheTTL);
+
       if (userRole === 'requestor') {
         const filters = {
-          ...(statusFilter === 'all' ? {} : { status: statusFilter }),
+          ...(effectiveStatusFilter === 'all' ? {} : { status: effectiveStatusFilter }),
           submitted_by: user.id,
         };
-        const data = await approvalRequestService.getApprovalRequests(filters, getToken());
+        const data = await getApprovalRequestsCached(filters, `requestor_${user.id}_${effectiveStatusFilter || 'all'}`);
         setApprovals((data || []).map(normalizeRequest));
         setApprovalStatusMap({});
       } else if (userRole === 'payroll') {
-        // Payroll sees all submitted/in-progress requests from their parent OU
-        const userOrgId = user?.organization_id || user?.organizationId || user?.org_id;
-        const allRequests = await approvalRequestService.getApprovalRequests({}, getToken());
-        
-        // Filter by OU and status (submitted or in approval stages)
-        const filteredRequests = (allRequests || []).filter(request => {
-          const requestOrgId = request.organization_id || request.organizationId || request.org_id;
-          const statusOk = ['submitted', 'l1_approved', 'l2_approved', 'l3_approved'].includes(
-            String(request.overall_status || request.status).toLowerCase()
-          );
-          return requestOrgId === userOrgId && statusOk;
-        });
-        
-        setApprovals(filteredRequests.map(normalizeRequest));
-        setApprovalStatusMap({});
+        // Payroll sees requests that are pending payroll approval within their org scope
+        const payrollStage = 'pending_payroll_approval,pending_payment_completion';
+        const data = await getApprovalRequestsCached(
+          { approval_stage_status: payrollStage },
+          `payroll_${user.id}_${payrollStage}`
+        );
+
+        const normalizedRequests = (data || []).map(normalizeRequest);
+        const normalizedFilter = String(effectiveStatusFilter || '').toLowerCase();
+        const filteredByStatus =
+          normalizedFilter === 'all' || normalizedFilter === 'pending' || normalizedFilter === 'submitted'
+            ? normalizedRequests
+            : normalizedRequests.filter(
+                (request) => String(request.status || '').toLowerCase() === normalizedFilter
+              );
+
+        const statusMap = (data || []).reduce((acc, request) => {
+          const id = request?.request_id || request?.id;
+          if (!id) return acc;
+          acc[id] = request.approvals || [];
+          return acc;
+        }, {});
+
+        setApprovals(filteredByStatus);
+        setApprovalStatusMap(statusMap);
       } else {
         // Other roles (L1/L2/L3) see pending approvals + already approved by them (but not completed/rejected)
-        const pendingApprovals = await approvalRequestService.getPendingApprovals(user.id, getToken());
+        const pendingApprovals = await fetchWithCache(
+          'pendingApprovals',
+          user.id,
+          () => approvalRequestService.getPendingApprovals(user.id, getToken()),
+          cacheTTL
+        );
         const requestIds = Array.from(new Set((pendingApprovals || []).map((entry) => entry.request_id).filter(Boolean)));
-        const submittedRequests = await approvalRequestService.getApprovalRequests(
+        const submittedRequests = await getApprovalRequestsCached(
           { submitted_by: user.id },
-          getToken()
+          `submitted_${user.id}`
         );
         const submittedRequestIds = (submittedRequests || [])
           .map((request) => request?.request_id || request?.id)
           .filter(Boolean);
         const allRequestIds = Array.from(new Set([...requestIds, ...submittedRequestIds]));
         const requestDetails = await Promise.all(
-          allRequestIds.map((requestId) => approvalRequestService.getApprovalRequest(requestId, getToken()))
+          allRequestIds.map((requestId) => getApprovalRequestCached(requestId))
         );
 
         const normalizedRequests = requestDetails
           .filter(Boolean)
           .map((request) => normalizeRequest(request));
 
-        // Include requests where user has already approved at their level, but request is not completed/rejected
-        const expandedRequests = await Promise.all(
-          normalizedRequests.map(async (request) => {
-            const details = await approvalRequestService.getApprovalRequestDetails(request.id, getToken());
-            return { ...request, approvals: details?.approvals || [] };
-          })
-        );
-
         // Filter: show if pending for user OR user approved but not completed/rejected
-        const visibleRequests = expandedRequests.filter((request) => {
+        const visibleRequests = normalizedRequests.filter((request) => {
           const status = String(request.status || '').toLowerCase();
           if (status === 'rejected' || status === 'completed') return false;
           const userApprovals = (request.approvals || []).filter(
@@ -2981,7 +3038,7 @@ function ApprovalRequests({ refreshKey }) {
           return userApprovals.length > 0 || String(request.submitted_by || '') === String(user.id);
         });
 
-        const normalizedFilter = String(statusFilter || '').toLowerCase();
+        const normalizedFilter = String(effectiveStatusFilter || '').toLowerCase();
         const filteredByStatus = (normalizedFilter === 'all' || normalizedFilter === 'pending')
           ? visibleRequests
           : visibleRequests.filter((request) => String(request.status || '').toLowerCase() === normalizedFilter);
@@ -3012,6 +3069,9 @@ function ApprovalRequests({ refreshKey }) {
   const applyRequestUpdate = async (requestId, action) => {
     if (!requestId) return;
     if (action === 'deleted') {
+      invalidateNamespace('approvalRequests');
+      invalidateNamespace('approvalRequestDetails');
+      invalidateNamespace('pendingApprovals');
       setApprovals((prev) => prev.filter((item) => item.id !== requestId));
       setApprovalStatusMap((prev) => {
         const next = { ...prev };
@@ -3025,7 +3085,15 @@ function ApprovalRequests({ refreshKey }) {
     }
 
     try {
-      const data = await approvalRequestService.getApprovalRequest(requestId, getToken());
+      invalidateNamespace('approvalRequests');
+      invalidateNamespace('approvalRequestDetails');
+      invalidateNamespace('pendingApprovals');
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        requestId,
+        () => approvalRequestService.getApprovalRequest(requestId, getToken()),
+        60 * 1000
+      );
       if (!data) return;
 
       const isRequestorOwner = userRole === 'requestor' && data.submitted_by === user?.id;
@@ -3089,7 +3157,12 @@ function ApprovalRequests({ refreshKey }) {
     setActionError(null);
 
     try {
-      const data = await approvalRequestService.getApprovalRequest(approval.id, getToken());
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        approval.id,
+        () => approvalRequestService.getApprovalRequest(approval.id, getToken()),
+        60 * 1000
+      );
       setRequestDetailsData(data || null);
 
       if (approval.budgetId) {
@@ -3106,7 +3179,12 @@ function ApprovalRequests({ refreshKey }) {
   const refreshDetails = async () => {
     if (!selectedRequest?.id) return;
     try {
-      const data = await approvalRequestService.getApprovalRequest(selectedRequest.id, getToken());
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        selectedRequest.id,
+        () => approvalRequestService.getApprovalRequest(selectedRequest.id, getToken()),
+        60 * 1000
+      );
       setRequestDetailsData(data || null);
 
       if (selectedRequest.budgetId) {
@@ -3120,7 +3198,7 @@ function ApprovalRequests({ refreshKey }) {
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
-    setDetailVisibleCount(20);
+    setDetailVisibleCount(10);
     refreshDetails();
     return undefined;
   }, [detailsOpen, selectedRequest?.id]);
@@ -3130,7 +3208,7 @@ function ApprovalRequests({ refreshKey }) {
     if (!el) return;
     const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
     if (nearBottom) {
-      setDetailVisibleCount((prev) => prev + 20);
+      setDetailVisibleCount((prev) => prev + 10);
     }
   }, []);
 
@@ -3218,8 +3296,25 @@ function ApprovalRequests({ refreshKey }) {
     (approval.assigned_to_primary === user?.id || approval.assigned_to_backup === user?.id) &&
     String(approval.status || '').toLowerCase() === 'approved'
   );
-  
-  const canActOnRequest = Boolean(currentApprovalLevel && userRole !== 'requestor' && !userHasApproved);
+
+  const payrollApproval = approvalsForDetail.find(
+    (approval) => Number(approval.approval_level) === 4
+  );
+  const payrollApprovalStatus = String(payrollApproval?.status || '').toLowerCase();
+  const isPayrollUser = userRole === 'payroll';
+  const canPayrollApprove =
+    isPayrollUser &&
+    currentApprovalLevel === 4 &&
+    payrollApprovalStatus === 'pending' &&
+    String(detailStageStatus || '').toLowerCase() === 'pending_payroll_approval';
+  const canPayrollComplete =
+    isPayrollUser &&
+    payrollApprovalStatus === 'approved' &&
+    String(detailStageStatus || '').toLowerCase() === 'pending_payment_completion';
+
+  const canActOnRequest = isPayrollUser
+    ? (canPayrollApprove || canPayrollComplete)
+    : Boolean(currentApprovalLevel && userRole !== 'requestor' && !userHasApproved);
   const filteredLineItems = detailLineItems.filter((item) => {
     if (!detailSearch.trim()) return true;
     const term = detailSearch.toLowerCase();
@@ -3334,6 +3429,45 @@ function ApprovalRequests({ refreshKey }) {
       }, 5000);
     } catch (error) {
       console.error('[ApprovalRequests.handleReject] Error:', error);
+      setActionError(extractErrorMessage(error));
+      setConfirmAction(null);
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+
+  const handleCompletePayment = async () => {
+    if (!selectedRequest?.id || !isPayrollUser) return;
+
+    if (!confirmAction) {
+      setConfirmAction('complete-payment');
+      return;
+    }
+
+    setConfirmAction(null);
+    setActionSubmitting(true);
+    setActionError(null);
+    try {
+      await approvalRequestService.completePayrollPayment(
+        selectedRequest.id,
+        {
+          approval_notes: decisionNotes || '',
+          user_id: user?.id,
+        },
+        getToken()
+      );
+
+      setSuccessMessage('Payroll payment completed successfully.');
+      setShowSuccessModal(true);
+
+      setTimeout(() => {
+        setShowSuccessModal(false);
+        setDetailsOpen(false);
+        setDecisionNotes('');
+        fetchApprovals();
+      }, 5000);
+    } catch (error) {
+      console.error('[ApprovalRequests.handleCompletePayment] Error:', error);
       setActionError(extractErrorMessage(error));
       setConfirmAction(null);
     } finally {
@@ -3502,7 +3636,7 @@ function ApprovalRequests({ refreshKey }) {
                         </Badge>
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-300">
-                        {approval.submittedBy || approval.submitted_by || '—'}
+                        {approval.submittedByName || approval.submitted_by_name || approval.submittedBy || approval.submitted_by || '—'}
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-400">
                         {approval.submittedAt ? formatDatePHT(approval.submittedAt) : '—'}
@@ -3798,20 +3932,54 @@ function ApprovalRequests({ refreshKey }) {
             </Button>
             {canActOnRequest && (
               <>
-                <Button
-                  className="bg-red-600 hover:bg-red-700 text-white"
-                  onClick={handleReject}
-                  disabled={actionSubmitting}
-                >
-                  Reject
-                </Button>
-                <Button
-                  className="bg-green-600 hover:bg-green-700 text-white"
-                  onClick={handleApprove}
-                  disabled={actionSubmitting}
-                >
-                  Approve
-                </Button>
+                {isPayrollUser ? (
+                  <>
+                    {canPayrollApprove && (
+                      <>
+                        <Button
+                          className="bg-red-600 hover:bg-red-700 text-white"
+                          onClick={handleReject}
+                          disabled={actionSubmitting}
+                        >
+                          Reject
+                        </Button>
+                        <Button
+                          className="bg-green-600 hover:bg-green-700 text-white"
+                          onClick={handleApprove}
+                          disabled={actionSubmitting}
+                        >
+                          Approve Payroll
+                        </Button>
+                      </>
+                    )}
+                    {canPayrollComplete && (
+                      <Button
+                        className="bg-blue-600 hover:bg-blue-700 text-white"
+                        onClick={handleCompletePayment}
+                        disabled={actionSubmitting}
+                      >
+                        Complete Payment
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      className="bg-red-600 hover:bg-red-700 text-white"
+                      onClick={handleReject}
+                      disabled={actionSubmitting}
+                    >
+                      Reject
+                    </Button>
+                    <Button
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                      onClick={handleApprove}
+                      disabled={actionSubmitting}
+                    >
+                      Approve
+                    </Button>
+                  </>
+                )}
               </>
             )}
           </DialogFooter>
@@ -3823,12 +3991,14 @@ function ApprovalRequests({ refreshKey }) {
         <DialogContent className="bg-slate-900 border-slate-700 text-white w-[400px]">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">
-              Confirm {confirmAction === 'approve' ? 'Approval' : 'Rejection'}
+              Confirm {confirmAction === 'approve' ? 'Approval' : confirmAction === 'complete-payment' ? 'Payment Completion' : 'Rejection'}
             </DialogTitle>
             <DialogDescription className="text-gray-400">
               {confirmAction === 'approve' 
                 ? 'Are you sure you want to approve this request?' 
-                : 'Are you sure you want to reject this request?'}
+                : confirmAction === 'complete-payment'
+                  ? 'Are you sure you want to mark this payment as completed?'
+                  : 'Are you sure you want to reject this request?'}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="flex justify-end gap-3">
@@ -3841,11 +4011,11 @@ function ApprovalRequests({ refreshKey }) {
               Cancel
             </Button>
             <Button
-              className={confirmAction === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-rose-600 hover:bg-rose-700 text-white'}
-              onClick={confirmAction === 'approve' ? handleApprove : handleReject}
+              className={confirmAction === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : confirmAction === 'complete-payment' ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-rose-600 hover:bg-rose-700 text-white'}
+              onClick={confirmAction === 'approve' ? handleApprove : confirmAction === 'complete-payment' ? handleCompletePayment : handleReject}
               disabled={actionSubmitting}
             >
-              {actionSubmitting ? 'Processing...' : `Confirm ${confirmAction === 'approve' ? 'Approval' : 'Rejection'}`}
+              {actionSubmitting ? 'Processing...' : `Confirm ${confirmAction === 'approve' ? 'Approval' : confirmAction === 'complete-payment' ? 'Completion' : 'Rejection'}`}
             </Button>
           </DialogFooter>
         </DialogContent>
