@@ -9,6 +9,48 @@ import supabase, { supabaseSecondary } from '../config/database.js';
 export class ApprovalRequestService {
   static defaultCompanyId = 'caaa0000-0000-0000-0000-000000000001';
 
+  static computeLineItemCounts(lineItems = []) {
+    const lineItemsCount = Array.isArray(lineItems) ? lineItems.length : 0;
+    const deductionCount = Array.isArray(lineItems)
+      ? lineItems.filter((item) => Boolean(item?.is_deduction)).length
+      : 0;
+    const toBePaidCount = Math.max(0, lineItemsCount - deductionCount);
+
+    return { lineItemsCount, deductionCount, toBePaidCount };
+  }
+
+  static computeApprovalStageStatus(approvals = [], overallStatus = '') {
+    const normalizedOverall = String(overallStatus || '').toLowerCase();
+
+    if (normalizedOverall === 'rejected' || normalizedOverall === 'completed') {
+      return normalizedOverall;
+    }
+
+    const rejected = (approvals || []).find(
+      (approval) => String(approval?.status || '').toLowerCase() === 'rejected'
+    );
+    if (rejected) return 'rejected';
+
+    const statusByLevel = new Map(
+      (approvals || []).map((approval) => [
+        Number(approval?.approval_level),
+        String(approval?.status || '').toLowerCase(),
+      ])
+    );
+
+    const l1Approved = statusByLevel.get(1) === 'approved';
+    const l2Approved = statusByLevel.get(2) === 'approved';
+    const l3Approved = statusByLevel.get(3) === 'approved';
+    const payrollStatus = statusByLevel.get(4);
+    const payrollApproved = payrollStatus === 'approved' || payrollStatus === 'completed';
+
+    if (payrollApproved) return 'pending_payment_completion';
+    if (l1Approved && l2Approved && l3Approved) return 'pending_payroll_approval';
+    if (normalizedOverall === 'draft') return 'draft';
+
+    return 'ongoing_approval';
+  }
+
   /**
    * Get employee details by EID and company ID
    */
@@ -175,6 +217,8 @@ export class ApprovalRequestService {
    */
   static async createApprovalRequest(requestData) {
     try {
+      console.log('[createApprovalRequest] Creating new request:', requestData);
+      
       const {
         budget_id,
         description,
@@ -185,6 +229,7 @@ export class ApprovalRequestService {
 
       // Generate request number
       const requestNumber = await this.generateRequestNumber();
+      console.log('[createApprovalRequest] Generated request number:', requestNumber);
 
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
@@ -202,7 +247,12 @@ export class ApprovalRequestService {
         ])
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[createApprovalRequest] Database error:', error);
+        throw error;
+      }
+
+      console.log('[createApprovalRequest] Request created successfully:', data[0]?.request_id);
 
       return {
         success: true,
@@ -210,7 +260,8 @@ export class ApprovalRequestService {
         message: 'Approval request created successfully',
       };
     } catch (error) {
-      console.error('Error creating approval request:', error);
+      console.error('[createApprovalRequest] Error creating approval request:', error);
+      console.error('[createApprovalRequest] Error stack:', error.stack);
       return {
         success: false,
         error: error.message,
@@ -262,14 +313,23 @@ export class ApprovalRequestService {
         this.getActivityLogByRequestId(requestId),
       ]);
 
+      const lineItemsData = lineItems.data || [];
+      const approvalsData = approvals.data || [];
+      const { lineItemsCount, deductionCount, toBePaidCount } = this.computeLineItemCounts(lineItemsData);
+      const approvalStageStatus = this.computeApprovalStageStatus(approvalsData, data?.overall_status);
+
       return {
         success: true,
         data: {
           ...data,
-          line_items: lineItems.data || [],
-          approvals: approvals.data || [],
+          line_items: lineItemsData,
+          approvals: approvalsData,
           attachments: attachments.data || [],
           activity_log: activityLog.data || [],
+          line_items_count: lineItemsCount,
+          deduction_count: deductionCount,
+          to_be_paid_count: toBePaidCount,
+          approval_stage_status: approvalStageStatus,
         },
       };
     } catch (error) {
@@ -286,7 +346,9 @@ export class ApprovalRequestService {
    */
   static async getAllApprovalRequests(filters = {}) {
     try {
-      let query = supabase.from('tblbudgetapprovalrequests').select('*');
+      let query = supabase
+        .from('tblbudgetapprovalrequests')
+        .select('*');
 
       // Apply filters
       if (filters.budget_id) {
@@ -317,9 +379,79 @@ export class ApprovalRequestService {
 
       if (error) throw error;
 
+      // Get unique budget IDs from the requests
+      const budgetIds = [...new Set((data || []).map(req => req.budget_id).filter(Boolean))];
+      
+      // Fetch budget configurations separately
+      let budgetConfigMap = {};
+      if (budgetIds.length > 0) {
+        const { data: budgetConfigs, error: budgetError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name, budget_description')
+          .in('budget_id', budgetIds);
+        
+        if (!budgetError && budgetConfigs) {
+          budgetConfigMap = budgetConfigs.reduce((acc, config) => {
+            acc[config.budget_id] = config;
+            return acc;
+          }, {});
+        }
+      }
+
+      const requestIds = (data || []).map((request) => request.request_id).filter(Boolean);
+      const countsMap = new Map();
+      const approvalsMap = new Map();
+
+      if (requestIds.length > 0) {
+        const { data: lineItemRows, error: lineItemError } = await supabase
+          .from('tblbudgetapprovalrequests_line_items')
+          .select('request_id, is_deduction')
+          .in('request_id', requestIds);
+
+        if (lineItemError) throw lineItemError;
+
+        (lineItemRows || []).forEach((row) => {
+          const current = countsMap.get(row.request_id) || { line_items_count: 0, deduction_count: 0 };
+          current.line_items_count += 1;
+          if (row.is_deduction) current.deduction_count += 1;
+          countsMap.set(row.request_id, current);
+        });
+
+        const { data: approvalRows, error: approvalError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status')
+          .in('request_id', requestIds);
+
+        if (approvalError) throw approvalError;
+
+        (approvalRows || []).forEach((row) => {
+          const existing = approvalsMap.get(row.request_id) || [];
+          existing.push(row);
+          approvalsMap.set(row.request_id, existing);
+        });
+      }
+
+      // Merge budget config data with requests
+      const normalizedData = (data || []).map((request) => {
+        const counts = countsMap.get(request.request_id) || { line_items_count: 0, deduction_count: 0 };
+        const toBePaidCount = Math.max(0, counts.line_items_count - counts.deduction_count);
+        const approvalsForRequest = approvalsMap.get(request.request_id) || [];
+        const approvalStageStatus = this.computeApprovalStageStatus(approvalsForRequest, request?.overall_status);
+
+        return {
+          ...request,
+          budget_name: budgetConfigMap[request.budget_id]?.budget_name || null,
+          budget_description: budgetConfigMap[request.budget_id]?.budget_description || null,
+          line_items_count: counts.line_items_count,
+          deduction_count: counts.deduction_count,
+          to_be_paid_count: toBePaidCount,
+          approval_stage_status: approvalStageStatus,
+        };
+      });
+
       return {
         success: true,
-        data,
+        data: normalizedData,
       };
     } catch (error) {
       console.error('Error fetching approval requests:', error);
@@ -397,6 +529,8 @@ export class ApprovalRequestService {
    */
   static async submitApprovalRequest(requestId, submittedBy) {
     try {
+      console.log('[submitApprovalRequest] Starting submission for request:', requestId, 'by:', submittedBy);
+      
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
         .update({
@@ -409,21 +543,48 @@ export class ApprovalRequestService {
         .eq('request_id', requestId)
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[submitApprovalRequest] Database error updating request:', error);
+        throw error;
+      }
+      
+      console.log('[submitApprovalRequest] Request updated to submitted status');
 
-      // Log activity
-      await this.addActivityLog(requestId, 'submitted', submittedBy);
+      console.log('[submitApprovalRequest] Request updated to submitted status');
 
-      // Create approval levels
-      await this.initializeApprovalWorkflow(requestId);
+      // Run these operations in parallel for better performance
+      console.log('[submitApprovalRequest] Running parallel operations: activity log, workflow init, auto-approval check');
+      const [activityResult, workflowResult, autoApprovalResult] = await Promise.allSettled([
+        this.addActivityLog(requestId, 'submitted', submittedBy),
+        this.initializeApprovalWorkflow(requestId),
+        this.checkAndAutoApproveL1(requestId, submittedBy),
+      ]);
+
+      console.log('[submitApprovalRequest] Parallel operations completed');
+      
+      // Log any errors but don't fail the submission
+      if (activityResult.status === 'rejected') {
+        console.warn('Activity log failed:', activityResult.reason);
+      }
+      if (workflowResult.status === 'rejected') {
+        console.warn('Workflow initialization failed:', workflowResult.reason);
+      }
+
+      const autoApproved = autoApprovalResult.status === 'fulfilled' && autoApprovalResult.value?.autoApproved;
+      
+      console.log('[submitApprovalRequest] Submission complete. Auto-approved:', autoApproved);
 
       return {
         success: true,
         data: data[0],
-        message: 'Approval request submitted successfully',
+        autoApproved: autoApproved || false,
+        message: autoApproved 
+          ? 'Approval request submitted and L1 auto-approved (Self-Request)' 
+          : 'Approval request submitted successfully',
       };
     } catch (error) {
-      console.error('Error submitting approval request:', error);
+      console.error('[submitApprovalRequest] Error submitting approval request:', error);
+      console.error('[submitApprovalRequest] Error stack:', error.stack);
       return {
         success: false,
         error: error.message,
@@ -436,7 +597,7 @@ export class ApprovalRequestService {
    */
   static async initializeApprovalWorkflow(requestId) {
     try {
-      // Get budget configuration with approvers
+      // Get budget configuration first
       const { data: request, error: reqError } = await supabase
         .from('tblbudgetapprovalrequests')
         .select('budget_id')
@@ -445,14 +606,13 @@ export class ApprovalRequestService {
 
       if (reqError) throw reqError;
 
-      // Get approvers from budget config
-      const { data: approvers, error: appError } = await supabase
+      // Get approvers for the budget configuration
+      const { data: approvers, error: approverError } = await supabase
         .from('tblbudgetconfig_approvers')
-        .select('*')
-        .eq('budget_id', request.budget_id)
-        .order('approval_level', { ascending: true });
+        .select('approval_level, primary_approver, backup_approver')
+        .eq('budget_id', request?.budget_id);
 
-      if (appError) throw appError;
+      if (approverError) throw approverError;
 
       // Create approval records for each level
       const approvalRecords = approvers.map((approver) => ({
@@ -497,6 +657,83 @@ export class ApprovalRequestService {
         success: false,
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Check if submitter is L1 approver and auto-approve (Self-Request)
+   */
+  static async checkAndAutoApproveL1(requestId, submittedBy) {
+    try {
+      // Get request budget id
+      const { data: request, error: reqError } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('budget_id, submitted_by, created_by')
+        .eq('request_id', requestId)
+        .single();
+
+      if (reqError) throw reqError;
+
+      const effectiveSubmittedBy = String(submittedBy || request?.submitted_by || request?.created_by || '').trim();
+      if (!effectiveSubmittedBy) {
+        return { autoApproved: false };
+      }
+
+      // Get L1 approvers for the budget configuration
+      const { data: l1Approvers, error: approverError } = await supabase
+        .from('tblbudgetconfig_approvers')
+        .select('primary_approver, backup_approver')
+        .eq('budget_id', request?.budget_id)
+        .eq('approval_level', 1);
+
+      if (approverError) throw approverError;
+
+      // Check if submittedBy matches any L1 approver UUID
+      const isL1Approver = l1Approvers.some((approver) => {
+        const primary = String(approver.primary_approver || '').trim();
+        const backup = String(approver.backup_approver || '').trim();
+        return primary === effectiveSubmittedBy || backup === effectiveSubmittedBy;
+      });
+
+      if (!isL1Approver) {
+        return { autoApproved: false };
+      }
+
+      // Auto-approve L1 level and update request status in parallel
+      const [approvalUpdate, requestUpdate, activityLog] = await Promise.all([
+        supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .update({
+            status: 'approved',
+            approved_by: effectiveSubmittedBy,
+            approver_name: 'Self',
+            approver_title: 'L1 Approver (Self-Request)',
+            approval_notes: 'Auto-approved: Self-request by L1 approver',
+            approval_date: new Date().toISOString(),
+            is_self_request: true,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('request_id', requestId)
+          .eq('approval_level', 1),
+        supabase
+          .from('tblbudgetapprovalrequests')
+          .update({
+            overall_status: 'l1_approved',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('request_id', requestId),
+        this.addActivityLog(requestId, 'approved', effectiveSubmittedBy, 'Auto-approved: Self-request by L1 approver')
+      ]);
+
+      if (approvalUpdate.error) throw approvalUpdate.error;
+
+      console.log(`[Auto-Approve] L1 auto-approved for request ${requestId} (Self-Request)`);
+
+      return { autoApproved: true };
+    } catch (error) {
+      console.error('Error in L1 auto-approval check:', error);
+      // Don't fail the entire submission if auto-approval fails
+      return { autoApproved: false };
     }
   }
 
@@ -563,30 +800,65 @@ export class ApprovalRequestService {
    */
   static async addLineItemsBulk(requestId, lineItems, createdBy) {
     try {
+      console.log('[addLineItemsBulk] Starting bulk insert');
+      console.log('[addLineItemsBulk] Request ID:', requestId);
+      console.log('[addLineItemsBulk] Created by:', createdBy);
+      console.log('[addLineItemsBulk] Line items received:', Array.isArray(lineItems) ? lineItems.length : 'NOT AN ARRAY');
+      
+      if (!Array.isArray(lineItems)) {
+        console.error('[addLineItemsBulk] lineItems is not an array:', typeof lineItems, lineItems);
+        throw new Error('lineItems must be an array');
+      }
+      
+      if (lineItems.length === 0) {
+        console.error('[addLineItemsBulk] lineItems array is empty');
+        throw new Error('lineItems array cannot be empty');
+      }
+      
+      console.log('[addLineItemsBulk] First item structure:', JSON.stringify(lineItems[0], null, 2));
+      
       const records = lineItems.map((item, index) => ({
         request_id: requestId,
         item_number: index + 1,
-        employee_id: item.employee_id,
-        employee_name: item.employee_name,
-        department: item.department,
-        position: item.position,
-        item_type: this.normalizeItemType(item.item_type),
-        item_description: item.item_description,
-        amount: parseFloat(item.amount),
+        employee_id: item.employee_id || '',
+        employee_name: item.employee_name || '',
+        department: item.department || '',
+        position: item.position || '',
+        item_type: this.normalizeItemType(item.item_type || 'bonus'),
+        item_description: item.item_description || item.notes || 'Bulk upload item',
+        amount: parseFloat(item.amount) || 0,
         is_deduction: item.is_deduction || item.amount < 0,
         has_warning: item.has_warning || false,
-        warning_reason: item.warning_reason,
-        notes: item.notes,
+        warning_reason: item.warning_reason || '',
+        notes: item.notes || '',
+        // New fields from updated schema
+        email: item.email || null,
+        employee_status: item.employee_status || item.employeeStatus || null,
+        geo: item.geo || null,
+        Location: item.location || item.Location || null,
+        hire_date: item.hire_date || item.hireDate || null,
+        termination_date: item.termination_date || item.terminationDate || null,
         created_at: new Date().toISOString(),
       }));
 
+      console.log('[addLineItemsBulk] Mapped records count:', records.length);
+      console.log('[addLineItemsBulk] First mapped record:', JSON.stringify(records[0], null, 2));
+      console.log('[addLineItemsBulk] Inserting records into database...');
+      
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_line_items')
         .insert(records)
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[addLineItemsBulk] Database error:', error);
+        console.error('[addLineItemsBulk] Error details:', JSON.stringify(error, null, 2));
+        throw error;
+      }
 
+      console.log('[addLineItemsBulk] Line items inserted successfully:', data?.length || 0);
+      console.log('[addLineItemsBulk] Updating employee count...');
+      
       // Update request with employee count
       await this.updateApprovalRequest(requestId, {
         employee_count: lineItems.length,
@@ -596,13 +868,19 @@ export class ApprovalRequestService {
       // Log activity
       await this.addActivityLog(requestId, 'line_item_added', createdBy);
 
+      console.log('[addLineItemsBulk] Bulk insert complete:', data.length, 'items added');
+
       return {
         success: true,
         data,
         message: `${data.length} line items added successfully`,
       };
     } catch (error) {
-      console.error('Error adding line items:', error);
+      console.error('[addLineItemsBulk] ❌ ERROR IN BULK INSERT ❌');
+      console.error('[addLineItemsBulk] Error type:', error.constructor.name);
+      console.error('[addLineItemsBulk] Error message:', error.message);
+      console.error('[addLineItemsBulk] Error stack:', error.stack);
+      console.error('[addLineItemsBulk] Full error:', JSON.stringify(error, null, 2));
       return {
         success: false,
         error: error.message,
@@ -669,22 +947,18 @@ export class ApprovalRequestService {
 
       if (error) throw error;
 
-      // Check if all approvals are complete
       const allApprovalsComplete = await this.checkAllApprovalsComplete(requestId);
-      if (allApprovalsComplete) {
-        // Update main request status
-        await this.updateApprovalRequest(requestId, {
-          overall_status: 'approved',
-          approved_date: new Date().toISOString(),
-          updated_by: approved_by,
-        });
-      } else {
-        // Update to in_progress if not already
-        await this.updateApprovalRequest(requestId, {
-          overall_status: 'in_progress',
-          updated_by: approved_by,
-        });
-      }
+      const approvalsSnapshot = await this.getApprovalsByRequestId(requestId);
+      const approvalStageStatus = this.computeApprovalStageStatus(
+        approvalsSnapshot.data || [],
+        allApprovalsComplete ? 'pending_payment_completion' : 'ongoing_approval'
+      );
+
+      await this.updateApprovalRequest(requestId, {
+        overall_status: approvalStageStatus,
+        ...(allApprovalsComplete && { approved_date: new Date().toISOString() }),
+        updated_by: approved_by,
+      });
 
       // Log activity
       await this.addActivityLog(

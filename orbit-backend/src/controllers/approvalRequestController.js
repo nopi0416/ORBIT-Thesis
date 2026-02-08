@@ -396,10 +396,10 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getApprovalsByRequestId(id);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, 'Approvals retrieved', result.data);
+      sendSuccess(res, result.data, 'Approvals retrieved', 200);
     } catch (error) {
       console.error('Error in getApprovals:', error);
       sendError(res, 500, error.message);

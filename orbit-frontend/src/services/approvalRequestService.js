@@ -11,11 +11,22 @@ const getHeaders = (token) => ({
 });
 
 const parseResponse = async (response) => {
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || data.message || 'Request failed');
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    console.error('[parseResponse] Failed to parse JSON:', error);
+    throw new Error(`Failed to parse server response: ${response.statusText}`);
   }
-  return data.data || [];
+  
+  console.log('[parseResponse] Response status:', response.status, 'Data:', data);
+  
+  if (!response.ok) {
+    const errorMessage = data.error || data.message || `Request failed with status ${response.status}`;
+    console.error('[parseResponse] Request failed:', errorMessage, 'Full data:', data);
+    throw new Error(errorMessage);
+  }
+  return data.data || data || [];
 };
 
 const getApprovalRequests = async (filters = {}, token) => {
@@ -77,22 +88,34 @@ const rejectRequest = async (requestId, payload, token) => {
 };
 
 const createApprovalRequest = async (payload, token) => {
-  const response = await fetch(`${API_BASE_URL}/approval-requests`, {
-    method: 'POST',
-    headers: getHeaders(token),
-    body: JSON.stringify(payload),
-  });
-
-  return parseResponse(response);
+  try {
+    console.log('[createApprovalRequest] Sending request with payload:', payload);
+    const response = await fetch(`${API_BASE_URL}/approval-requests`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+    console.log('[createApprovalRequest] Response received:', response.status);
+    return parseResponse(response);
+  } catch (error) {
+    console.error('[createApprovalRequest] Network or parsing error:', error);
+    throw error;
+  }
 };
 
 const submitApprovalRequest = async (requestId, token) => {
-  const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/submit`, {
-    method: 'POST',
-    headers: getHeaders(token),
-  });
-
-  return parseResponse(response);
+  try {
+    console.log('[submitApprovalRequest] Submitting request:', requestId);
+    const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/submit`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    console.log('[submitApprovalRequest] Response received:', response.status);
+    return parseResponse(response);
+  } catch (error) {
+    console.error('[submitApprovalRequest] Network or parsing error:', error);
+    throw error;
+  }
 };
 
 const getEmployeeByEid = async (eid, companyId, token) => {
@@ -120,10 +143,29 @@ const addLineItem = async (requestId, payload, token) => {
 };
 
 const addLineItemsBulk = async (requestId, payload, token) => {
-  const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/line-items/bulk`, {
-    method: 'POST',
+  try {
+    console.log('[addLineItemsBulk] Adding line items to request:', requestId, 'Count:', payload?.line_items?.length);
+    const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/line-items/bulk`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+    console.log('[addLineItemsBulk] Response received:', response.status);
+    return parseResponse(response);
+  } catch (error) {
+    console.error('[addLineItemsBulk] Network or parsing error:', error);
+    throw error;
+  }
+};
+
+const getMySubmittedRequests = async (userId, token) => {
+  const queryParams = new URLSearchParams();
+  if (userId) queryParams.append('submitted_by', userId);
+  const url = `${API_BASE_URL}/approval-requests${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
     headers: getHeaders(token),
-    body: JSON.stringify(payload),
   });
 
   return parseResponse(response);
@@ -145,6 +187,8 @@ const getEmployeesBatch = async (eids, companyId, token) => {
 export default {
   getApprovalRequests,
   getApprovalRequest,
+  getApprovalRequestDetails: getApprovalRequest, // Alias for compatibility
+  getMySubmittedRequests,
   getPendingApprovals,
   approveRequest,
   rejectRequest,
