@@ -1,209 +1,48 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react';
 import { PageHeader } from '../components/PageHeader';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { Badge } from '../components/ui/badge';
-import { Progress } from '../components/ui/progress';
 import { useAuth } from '../context/AuthContext';
-import { cn } from '../utils/cn';
 import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
-import {
-  TrendingUp,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  FileText,
-  DollarSign,
-  Users,
-  ArrowUpRight,
-  Settings,
-  Download,
-  BarChart,
-  Bell,
-} from '../components/icons';
+import aiInsightsService from '../services/aiInsightsService';
+
+const getToken = () => localStorage.getItem('authToken') || '';
 
 export default function DashboardPage() {
   const { user } = useAuth();
   const userRole = resolveUserRole(user);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState(null);
+  const [aiData, setAiData] = useState(null);
+  const [metricsData, setMetricsData] = useState(null);
+  const [metricsError, setMetricsError] = useState(null);
 
-  const getStatsForRole = () => {
-    switch (userRole) {
-      case "requestor":
-        return [
-          {
-            title: "My Requests",
-            value: "8",
-            change: "+2 from last period",
-            changeType: "positive",
-            icon: <FileText className="h-4 w-4" />,
-            iconColor: "text-blue-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-blue-500",
-          },
-          {
-            title: "Pending",
-            value: "3",
-            change: "+1 from last period",
-            changeType: "neutral",
-            icon: <Clock className="h-4 w-4" />,
-            iconColor: "text-yellow-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-yellow-500",
-          },
-          {
-            title: "Approved",
-            value: "4",
-            change: "+1 from last period",
-            changeType: "positive",
-            icon: <CheckCircle2 className="h-4 w-4" />,
-            iconColor: "text-blue-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-blue-500",
-          },
-          {
-            title: "Total Amount",
-            value: "₱12,400",
-            change: "+₱2,500 from last period",
-            changeType: "positive",
-            icon: <DollarSign className="h-4 w-4" />,
-            iconColor: "text-green-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-green-500",
-          },
-        ];
-      case "l1":
-      case "l2":
-      case "l3":
-        return [
-          {
-            title: "Pending Approvals",
-            value: "12",
-            change: "+3 from last period",
-            changeType: "neutral",
-            icon: <Clock className="h-4 w-4" />,
-            iconColor: "text-yellow-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-yellow-500",
-          },
-          {
-            title: "Approved",
-            value: "48",
-            change: "+12 from last period",
-            changeType: "positive",
-            icon: <CheckCircle2 className="h-4 w-4" />,
-            iconColor: "text-blue-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-blue-500",
-          },
-          {
-            title: "Rejected",
-            value: "3",
-            change: "-1 from last period",
-            changeType: "positive",
-            icon: <XCircle className="h-4 w-4" />,
-            iconColor: "text-red-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-red-500",
-          },
-          {
-            title: "Total Budget",
-            value: "₱124,500",
-            change: "+₱15,000 from last period",
-            changeType: "positive",
-            icon: <DollarSign className="h-4 w-4" />,
-            iconColor: "text-green-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-green-500",
-          },
-        ];
-      case "payroll":
-        return [
-          {
-            title: "To Process",
-            value: "15",
-            change: "+5 from last period",
-            changeType: "neutral",
-            icon: <Clock className="h-4 w-4" />,
-            iconColor: "text-yellow-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-yellow-500",
-          },
-          {
-            title: "Completed",
-            value: "89",
-            change: "+23 from last period",
-            changeType: "positive",
-            icon: <CheckCircle2 className="h-4 w-4" />,
-            iconColor: "text-blue-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-blue-500",
-          },
-          {
-            title: "Cancelled",
-            value: "2",
-            change: "0 from last period",
-            changeType: "neutral",
-            icon: <XCircle className="h-4 w-4" />,
-            iconColor: "text-red-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-red-500",
-          },
-          {
-            title: "Total Processed",
-            value: "₱245,800",
-            change: "+₱45,000 from last period",
-            changeType: "positive",
-            icon: <DollarSign className="h-4 w-4" />,
-            iconColor: "text-green-400",
-            bgColor: "bg-slate-800",
-            borderColor: "border-green-500",
-          },
-        ];
-      default:
-        return [];
+  const handleGenerateInsights = async () => {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const data = await aiInsightsService.getAiInsights({}, getToken());
+      setAiData(data);
+    } catch (error) {
+      setAiError(error.message || 'Failed to generate AI insights.');
+    } finally {
+      setAiLoading(false);
     }
   };
 
-  const stats = getStatsForRole();
+  const handleLoadMetrics = async () => {
+    setMetricsError(null);
+    try {
+      const data = await aiInsightsService.getRealtimeMetrics({}, getToken());
+      setMetricsData(data);
+    } catch (error) {
+      setMetricsError(error.message || 'Failed to load realtime metrics.');
+    }
+  };
 
-  const recentRequests = [
-    {
-      id: "REQ-2024-001",
-      status: "pending",
-      amount: "₱2,500",
-      department: "IT Department",
-      date: "2 hours ago",
-    },
-    {
-      id: "REQ-2024-002",
-      status: "approved",
-      amount: "₱1,800",
-      department: "HR Department",
-      date: "5 hours ago",
-    },
-    { 
-      id: "REQ-2024-003", 
-      status: "pending", 
-      amount: "₱3,200", 
-      department: "Marketing", 
-      date: "1 day ago" 
-    },
-    { 
-      id: "REQ-2024-004", 
-      status: "approved", 
-      amount: "₱950", 
-      department: "Operations", 
-      date: "2 days ago" 
-    },
-  ];
-
-  const budgetData = [
-    { department: "IT Department", used: 75000, total: 100000, color: "bg-blue-600" },
-    { department: "HR Department", used: 48000, total: 80000, color: "bg-green-600" },
-    { department: "Marketing", used: 54000, total: 120000, color: "bg-yellow-500" },
-    { department: "Operations", used: 76500, total: 90000, color: "bg-purple-600" },
-  ];
+  React.useEffect(() => {
+    handleLoadMetrics();
+  }, []);
 
   return (
     <div>
@@ -213,339 +52,323 @@ export default function DashboardPage() {
       />
 
       <div className="p-6 space-y-6">
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {stats.map((stat) => (
-            <StatsCard key={stat.title} {...stat} />
+        <PayrollInsightsLayout
+          loading={aiLoading}
+          error={aiError}
+          data={aiData}
+          metrics={metricsData}
+          metricsError={metricsError}
+          onGenerate={handleGenerateInsights}
+        />
+        <LatestUpdatesTable updates={metricsData?.latest_updates} error={metricsError} />
+      </div>
+    </div>
+  );
+}
+
+function PayrollInsightsLayout({ loading, error, data, metrics, metricsError, onGenerate }) {
+  const coerceChartArray = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'object') {
+      return Object.entries(value).map(([label, rawValue]) => ({
+        label,
+        value: Number(rawValue || 0),
+      }));
+    }
+    return [];
+  };
+
+  const charts = metrics?.charts || {};
+  const statusBreakdown = coerceChartArray(charts.status_breakdown);
+  const statusAmounts = coerceChartArray(charts.status_amounts);
+  const topBudgets = Array.isArray(charts.top_budgets) ? charts.top_budgets : [];
+  const monthlySeries = Array.isArray(charts.monthly_series) ? charts.monthly_series : [];
+
+  const generatedAt = data?.generated_at ? new Date(data.generated_at) : null;
+  const generatedLabel = generatedAt && !Number.isNaN(generatedAt.getTime())
+    ? generatedAt.toLocaleString('en-PH', { timeZone: 'Asia/Manila' })
+    : '—';
+
+  return (
+    <Card className="bg-slate-800">
+      <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="space-y-1">
+          <CardTitle className="text-white">Payroll AI Dashboard</CardTitle>
+          <p className="text-xs text-gray-400">
+            Financial insights based on your role scope · Generated: {generatedLabel}
+          </p>
+        </div>
+        <Button
+          onClick={onGenerate}
+          className="bg-blue-600 hover:bg-blue-700 text-white"
+          disabled={loading}
+        >
+          {loading ? 'Generating…' : 'Run AI Insights'}
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error && (
+          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {error}
+          </div>
+        )}
+
+        {metricsError && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            {metricsError}
+          </div>
+        )}
+
+        {!data && !loading && !error && (
+          <div className="text-sm text-gray-400">
+            Click “Run AI Insights” to generate the latest summary.
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <InsightCard title="Executive Summary" content={data?.summary} />
+            <InsightList title="Key Insights" items={data?.insights} emptyLabel="No insights available." />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <InsightList title="Risk Signals" items={data?.risks} emptyLabel="No risks flagged." />
+            <InsightList title="Recommended Actions" items={data?.actions} emptyLabel="No actions available." />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <PieChartCard
+              title="Approvals Status Breakdown"
+              data={statusBreakdown}
+              totalLabel="Total"
+            />
+            <PieChartCard
+              title="Approvals Amount Breakdown"
+              data={statusAmounts}
+              totalLabel="Total"
+              valueFormatter={(value) => `₱${Number(value || 0).toLocaleString()}`}
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[2fr_1.2fr]">
+            <TopBudgetsBarChart data={topBudgets} />
+            <MonthlyApprovalsChart data={monthlySeries} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function InsightCard({ title, content }) {
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+      <div className="text-sm text-white font-semibold mb-2">{title}</div>
+      <p className="text-sm text-slate-300">{content || 'No data available.'}</p>
+    </div>
+  );
+}
+
+function InsightList({ title, items = [], emptyLabel }) {
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+      <div className="text-sm text-white font-semibold mb-2">{title}</div>
+      {Array.isArray(items) && items.length ? (
+        <ul className="list-disc list-inside space-y-1 text-sm text-slate-300">
+          {items.map((item, index) => (
+            <li key={`${title}-${index}`}>{item}</li>
           ))}
-        </div>
+        </ul>
+      ) : (
+        <div className="text-xs text-slate-400">{emptyLabel}</div>
+      )}
+    </div>
+  );
+}
 
-        <div className="grid gap-6 lg:grid-cols-2">
-          <RecentRequests
-            requests={recentRequests}
-            title={userRole === "requestor" ? "My Recent Requests" : "Recent Requests"}
-          />
-          <BudgetUtilization budgets={budgetData} />
-        </div>
+function PieChartCard({ title, data, valueFormatter, totalLabel }) {
+  const total = data.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  const sections = data.filter((item) => Number(item.value || 0) > 0);
 
-        {/* Analytics and Notifications Section */}
-        <div className="grid gap-6 grid-cols-1 lg:grid-cols-5">
-          <div className="lg:col-span-3">
-            <Analytics />
+  const colors = ['#60a5fa', '#34d399', '#fbbf24', '#f87171', '#a78bfa'];
+  const coloredSections = sections.map((item, index) => ({
+    ...item,
+    color: colors[index % colors.length],
+  }));
+  const gradient = coloredSections.length
+    ? coloredSections.reduce((acc, item) => {
+        const start = acc.offset;
+        const value = Number(item.value || 0);
+        const percent = total ? (value / total) * 100 : 0;
+        const nextOffset = start + percent;
+        return {
+          offset: nextOffset,
+          stops: [...acc.stops, `${item.color} ${start}% ${nextOffset}%`],
+        };
+      }, { offset: 0, stops: [] }).stops.join(', ')
+    : '#1f2937';
+
+  const formatValue = (value) => (valueFormatter ? valueFormatter(value) : value);
+
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+      <div className="text-sm text-white font-semibold mb-2">{title}</div>
+      <div className="flex flex-col md:flex-row gap-4 items-center">
+        <div
+          className="h-36 w-36 rounded-full"
+          style={{ background: `conic-gradient(${gradient})` }}
+        />
+        <div className="flex-1 space-y-1 text-sm text-slate-300">
+          <div className="flex items-center justify-between font-semibold text-white">
+            <span>{totalLabel}</span>
+            <span>{formatValue(total)}</span>
           </div>
-          <div className="lg:col-span-2">
-            <Notifications />
-          </div>
+          {coloredSections.length ? (
+            coloredSections.map((item) => {
+              const percent = total ? (Number(item.value || 0) / total) * 100 : 0;
+              return (
+              <div key={item.label} className="flex items-center justify-between">
+                <span className="capitalize" style={{ color: item.color }}>
+                  {String(item.label || '').replace(/_/g, ' ')} · {percent.toFixed(1)}%
+                </span>
+                <span style={{ color: item.color }}>
+                  {formatValue(item.value)}
+                </span>
+              </div>
+            );
+            })
+          ) : (
+            <div className="text-xs text-slate-400">No data</div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// Stats Card Component
-function StatsCard({ title, value, change, changeType = "neutral", icon, iconColor, bgColor, borderColor }) {
+function TopBudgetsBarChart({ data }) {
+  if (!data.length) {
+    return (
+      <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+        <div className="text-sm text-white font-semibold mb-2">Top Budgets</div>
+        <div className="text-xs text-slate-400">No budget data available.</div>
+      </div>
+    );
+  }
+
+  const maxAmount = Math.max(...data.map((item) => Number(item.total_amount || 0)), 1);
+
   return (
-    <Card className={cn("border-l-4", bgColor, borderColor)}>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-white">{title}</CardTitle>
-        <div className={cn("h-4 w-4", iconColor)}>{icon}</div>
+    <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+      <div className="text-sm text-white font-semibold mb-2">Top 5 Budgets by Amount</div>
+      <div className="space-y-3">
+        {data.map((item) => {
+          const total = Number(item.total_amount || 0);
+          const completed = Number(item.completed_amount || 0);
+          const ongoing = Number(item.ongoing_amount || 0);
+          const totalPercent = (total / maxAmount) * 100;
+
+          return (
+            <div key={item.budget_id} className="space-y-1">
+              <div className="flex items-center justify-between text-sm text-slate-300">
+                <span className="truncate max-w-[240px]">{item.budget_name}</span>
+                <span className="text-white font-semibold">₱{total.toLocaleString()}</span>
+              </div>
+              <div className="h-2 w-full rounded-full bg-slate-700">
+                <div className="h-2 rounded-full bg-blue-500" style={{ width: `${totalPercent}%` }} />
+              </div>
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>Completed: ₱{completed.toLocaleString()}</span>
+                <span>Ongoing: ₱{ongoing.toLocaleString()}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MonthlyApprovalsChart({ data }) {
+  const safeData = Array.isArray(data) ? data : [];
+  const maxValue = Math.max(...safeData.map((item) => Number(item.amount || 0)), 1);
+
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+      <div className="text-sm text-white font-semibold mb-2">Monthly Approval Amounts</div>
+      {safeData.length ? (
+        <div className="space-y-3">
+          <div className="flex items-end gap-3">
+            {safeData.map((item) => (
+              <div key={item.month} className="flex flex-col items-center gap-2">
+                <div
+                  className="w-8 rounded bg-emerald-500"
+                  style={{ height: `${(Number(item.amount || 0) / maxValue) * 120}px` }}
+                />
+                <span className="text-xs text-slate-400">{item.month}</span>
+                <span className="text-[10px] text-slate-500">₱{Number(item.amount || 0).toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="text-xs text-slate-400">No historical data available.</div>
+      )}
+    </div>
+  );
+}
+
+function LatestUpdatesTable({ updates = [], error }) {
+  const rows = Array.isArray(updates) ? updates : [];
+
+  return (
+    <Card className="bg-slate-800">
+      <CardHeader>
+        <CardTitle className="text-white">Latest Payroll Updates</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold text-white">{value}</div>
-        {change && (
-          <p className="text-xs text-gray-400 mt-1">
-            {change}
-          </p>
+        {error && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 mb-3">
+            {error}
+          </div>
         )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// Recent Requests Component
-function RecentRequests({ requests, title }) {
-  const getStatusColor = (status) => {
-    switch (status) {
-      case "pending":
-        return "bg-orange-500";
-      case "approved":
-        return "bg-blue-500";
-      case "rejected":
-        return "bg-red-500";
-      default:
-        return "bg-gray-500";
-    }
-  };
-
-  return (
-    <Card className="bg-slate-800">
-      <CardHeader>
-        <CardTitle className="text-white">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {requests.map((request) => (
-            <div key={request.id} className="flex items-center justify-between">
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-white">{request.id}</p>
-                <p className="text-xs text-gray-400">{request.department}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span
-                  className={cn(
-                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium text-white",
-                    getStatusColor(request.status)
-                  )}
-                >
-                  {request.status}
-                </span>
-                <p className="text-sm font-medium text-white">{request.amount}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// Budget Utilization Component
-function BudgetUtilization({ budgets }) {
-  return (
-    <Card className="bg-slate-800">
-      <CardHeader>
-        <CardTitle className="text-white">Budget Utilization</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {budgets.map((budget) => {
-            const percentage = (budget.used / budget.total) * 100;
-            return (
-              <div key={budget.department} className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium text-white">{budget.department}</span>
-                  <span className="text-gray-400">
-                    ₱{budget.used.toLocaleString()} / ₱{budget.total.toLocaleString()}
-                  </span>
-                </div>
-                <div className="w-full bg-gray-700 rounded-full h-2">
-                  <div
-                    className="bg-blue-500 h-2 rounded-full transition-all"
-                    style={{ width: `${percentage}%` }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// Analytics Component with Bar Chart
-function Analytics() {
-  const monthlyData = [
-    { year: '2020', itDepartment: 35, hrDepartment: 25 },
-    { year: '2021', itDepartment: 40, hrDepartment: 43 },
-    { year: '2022', itDepartment: 25, hrDepartment: 28 },
-    { year: '2023', itDepartment: 30, hrDepartment: 40 },
-    { year: '2024', itDepartment: 43, hrDepartment: 22 },
-  ];
-
-  const maxValue = 45; // Fixed max value to match the scale
-  const chartHeight = 180; // Reduced chart height to fit properly
-
-  return (
-    <Card className="bg-slate-800">
-      <CardHeader>
-        <CardTitle className="text-white flex items-center gap-2">
-          <BarChart className="h-5 w-5" />
-          Budget Analysis by Department
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="p-4">
-        <div className="relative">
-          {/* Chart Container */}
-          <div className="relative mb-6" style={{ height: `${chartHeight + 40}px` }}>
-            {/* Y-axis labels */}
-            <div className="absolute left-0 top-0 flex flex-col justify-between text-xs text-gray-400" style={{ height: `${chartHeight}px` }}>
-              <span>45</span>
-              <span>40</span>
-              <span>35</span>
-              <span>30</span>
-              <span>25</span>
-              <span>20</span>
-              <span>15</span>
-              <span>10</span>
-              <span>5</span>
-              <span>0</span>
-            </div>
-            
-            {/* Chart area with bars */}
-            <div className="ml-8 flex items-end justify-between gap-3" style={{ height: `${chartHeight}px` }}>
-              {monthlyData.map((data, index) => (
-                <div key={data.year} className="flex items-end justify-center gap-1" style={{ width: '50px' }}>
-                  {/* IT Department bar */}
-                  <div className="w-5 flex items-end">
-                    <div
-                      className="bg-red-500 w-full min-h-[2px]"
-                      style={{ 
-                        height: `${(data.itDepartment / maxValue) * chartHeight}px`,
-                      }}
-                    />
-                  </div>
-                  {/* HR Department bar */}
-                  <div className="w-5 flex items-end">
-                    <div
-                      className="bg-blue-500 w-full min-h-[2px]"
-                      style={{ 
-                        height: `${(data.hrDepartment / maxValue) * chartHeight}px`,
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-            
-            {/* X-axis labels */}
-            <div className="absolute ml-8 flex justify-between gap-3" style={{ top: `${chartHeight + 5}px`, width: 'calc(100% - 32px)' }}>
-              {monthlyData.map((data) => (
-                <div key={data.year} className="text-center" style={{ width: '50px' }}>
-                  <span className="text-blue-400 font-bold text-sm">{data.year}</span>
-                </div>
-              ))}
-            </div>
+        {rows.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-slate-300">
+              <thead className="text-xs uppercase text-slate-400">
+                <tr className="border-b border-slate-700">
+                  <th className="py-2 text-left">Budget Config Name</th>
+                  <th className="py-2 text-left">Request ID</th>
+                  <th className="py-2 text-left">Status</th>
+                  <th className="py-2 text-left">Amount</th>
+                  <th className="py-2 text-left">Requested By</th>
+                  <th className="py-2 text-left">Action</th>
+                  <th className="py-2 text-left">Action By</th>
+                  <th className="py-2 text-left">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id} className="border-b border-slate-700/40">
+                    <td className="py-2">{row.budget_name || 'Unknown Budget'}</td>
+                    <td className="py-2 font-medium text-white">{row.request_number || row.id}</td>
+                    <td className="py-2 capitalize">{String(row.status || '').replace(/_/g, ' ')}</td>
+                    <td className="py-2">₱{Number(row.amount || 0).toLocaleString()}</td>
+                    <td className="py-2">{row.requested_by || 'Unknown'}</td>
+                    <td className="py-2 capitalize">{String(row.action || '').replace(/_/g, ' ')}</td>
+                    <td className="py-2">{row.action_by || 'System'}</td>
+                    <td className="py-2 text-slate-400">
+                      {row.created_at ? new Date(row.created_at).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          
-          {/* Legend */}
-          <div className="flex justify-center gap-6 mb-3">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-red-500"></div>
-              <span className="text-gray-300 text-xs">IT Department</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-blue-500"></div>
-              <span className="text-gray-300 text-xs">HR Department</span>
-            </div>
-          </div>
-          
-          {/* X-axis label */}
-          <div className="text-center mb-2">
-            <span className="text-red-500 font-bold text-xs">Years →</span>
-          </div>
-          
-          {/* Scale info */}
-          <div className="text-right">
-            <span className="text-gray-500 text-xs">Scale: 1 unit length = 5k budget</span>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// Notifications Component
-function Notifications() {
-  const notifications = [
-    {
-      id: 1,
-      type: 'approval',
-      title: 'Budget Request Approved',
-      message: 'Your request REQ-2024-001 has been approved by L2 Approver',
-      time: '2 hours ago',
-      unread: true,
-    },
-    {
-      id: 2,
-      type: 'warning',
-      title: 'Budget Limit Warning',
-      message: 'IT Department has reached 85% of monthly budget',
-      time: '4 hours ago',
-      unread: true,
-    },
-    {
-      id: 3,
-      type: 'info',
-      title: 'New Budget Configuration',
-      message: 'Q4 budget configuration is now available for review',
-      time: '1 day ago',
-      unread: false,
-    },
-    {
-      id: 4,
-      type: 'approval',
-      title: 'Request Submitted',
-      message: 'REQ-2024-004 has been submitted for L1 approval',
-      time: '2 days ago',
-      unread: false,
-    },
-    {
-      id: 5,
-      type: 'info',
-      title: 'Monthly Report Generated',
-      message: 'September budget report is ready for download',
-      time: '3 days ago',
-      unread: false,
-    },
-  ];
-
-  const getNotificationIcon = (type) => {
-    switch (type) {
-      case 'approval':
-        return <CheckCircle2 className="h-4 w-4 text-green-400" />;
-      case 'warning':
-        return <Clock className="h-4 w-4 text-yellow-400" />;
-      case 'info':
-        return <Bell className="h-4 w-4 text-blue-400" />;
-      default:
-        return <Bell className="h-4 w-4 text-gray-400" />;
-    }
-  };
-
-  return (
-    <Card className="bg-slate-800">
-      <CardHeader>
-        <CardTitle className="text-white flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Bell className="h-5 w-5" />
-            Notifications
-          </div>
-          <span className="text-xs text-blue-400 bg-blue-500/20 px-2 py-1 rounded-full">
-            {notifications.filter(n => n.unread).length} new
-          </span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3 max-h-80 overflow-y-auto">
-          {notifications.map((notification) => (
-            <div
-              key={notification.id}
-              className={cn(
-                "flex gap-3 p-3 rounded-lg transition-colors hover:bg-slate-700",
-                notification.unread ? "bg-slate-700/50" : "bg-transparent"
-              )}
-            >
-              <div className="flex-shrink-0 mt-1">
-                {getNotificationIcon(notification.type)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-start justify-between">
-                  <h4 className={cn(
-                    "text-sm font-medium",
-                    notification.unread ? "text-white" : "text-gray-300"
-                  )}>
-                    {notification.title}
-                  </h4>
-                  {notification.unread && (
-                    <div className="w-2 h-2 bg-blue-500 rounded-full flex-shrink-0 mt-1"></div>
-                  )}
-                </div>
-                <p className="text-xs text-gray-400 mt-1">{notification.message}</p>
-                <p className="text-xs text-gray-500 mt-2">{notification.time}</p>
-              </div>
-            </div>
-          ))}
-        </div>
+        ) : (
+          <div className="text-sm text-slate-400">No recent payroll updates available.</div>
+        )}
       </CardContent>
     </Card>
   );
