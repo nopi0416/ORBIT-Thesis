@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { useAuth } from '../context/AuthContext';
 import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 import aiInsightsService from '../services/aiInsightsService';
+import approvalRequestService from '../services/approvalRequestService';
 import { fetchWithCache } from '../utils/dataCache';
 
 const getToken = () => localStorage.getItem('authToken') || '';
@@ -17,9 +18,13 @@ export default function DashboardPage() {
   const [aiData, setAiData] = useState(null);
   const [metricsData, setMetricsData] = useState(null);
   const [metricsError, setMetricsError] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [notificationsError, setNotificationsError] = useState(null);
   const cacheKey = `aiInsightsCache:${user?.id || 'anon'}`;
   const cacheTtlMs = 5 * 60 * 1000;
   const metricsCacheKey = `dashboardMetrics:${user?.id || 'anon'}`;
+  const notificationsCacheKey = `dashboardNotifications:${user?.id || 'anon'}`;
+  const showNotifications = ['requestor', 'l1', 'l2', 'l3'].includes(userRole);
 
   const handleGenerateInsights = async () => {
     setAiLoading(true);
@@ -53,6 +58,28 @@ export default function DashboardPage() {
   React.useEffect(() => {
     handleLoadMetrics();
   }, []);
+
+  React.useEffect(() => {
+    if (!showNotifications) return;
+
+    const loadNotifications = async () => {
+      setNotificationsError(null);
+      try {
+        const data = await fetchWithCache(
+          'dashboardNotifications',
+          notificationsCacheKey,
+          () => approvalRequestService.getUserNotifications({ role: userRole }, getToken()),
+          2 * 60 * 1000
+        );
+        setNotifications(Array.isArray(data) ? data : []);
+      } catch (error) {
+        setNotificationsError(error.message || 'Failed to load notifications.');
+        setNotifications([]);
+      }
+    };
+
+    loadNotifications();
+  }, [showNotifications, notificationsCacheKey, userRole]);
 
   React.useEffect(() => {
     const cached = localStorage.getItem(cacheKey);
@@ -109,18 +136,139 @@ export default function DashboardPage() {
             <LatestUpdatesTable updates={metricsData?.latest_updates} error={metricsError} />
           </>
         ) : (
-          <RoleInsightsLayout
-            loading={aiLoading}
-            error={aiError}
-            data={aiData}
-            role={userRole}
-            metrics={metricsData}
-            metricsError={metricsError}
-            onGenerate={handleGenerateInsights}
-          />
+          <>
+            <RoleInsightsLayout
+              loading={aiLoading}
+              error={aiError}
+              data={aiData}
+              role={userRole}
+              metrics={metricsData}
+              metricsError={metricsError}
+              onGenerate={handleGenerateInsights}
+            />
+            {showNotifications && (
+              <ApprovalNotificationsTable
+                items={notifications}
+                error={notificationsError}
+                role={userRole}
+              />
+            )}
+          </>
         )}
       </div>
     </div>
+  );
+}
+
+function ApprovalNotificationsTable({ items = [], error, role }) {
+  const rows = Array.isArray(items) ? items : [];
+  const formatLabel = (value) => String(value || 'pending').replace(/_/g, ' ');
+  const formatDate = (value) => {
+    if (!value) return '—';
+    try {
+      return new Date(value).toLocaleString('en-US', {
+        timeZone: 'Asia/Manila',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      }).replace(', ', ' ');
+    } catch {
+      return value;
+    }
+  };
+
+  return (
+    <Card className="bg-slate-800">
+      <CardHeader>
+        <CardTitle className="text-white">Approval Notifications</CardTitle>
+        <p className="text-xs text-slate-400">
+          {role === 'requestor'
+            ? 'Your submitted approvals and approvals tied to configurations you created.'
+            : 'Approvals assigned to you and requests you already approved.'}
+        </p>
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {error}
+          </div>
+        )}
+
+        {!error && rows.length === 0 && (
+          <div className="text-sm text-slate-400">No approval notifications available.</div>
+        )}
+
+        {rows.length > 0 && (
+          <div className="border border-slate-700 rounded-md overflow-auto">
+            <table className="w-full text-sm text-slate-300 border-collapse">
+              <thead className="bg-slate-700 sticky top-0 z-10">
+                <tr>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Request #
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Budget
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Submitted By
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Stage
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Amount
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Updated
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Context
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700">
+                {rows.map((item) => (
+                  <tr key={item.request_id} className="hover:bg-slate-700/50">
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {item.request_number || '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-sm font-medium text-white">{item.budget_name || '—'}</div>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {item.submitted_by_name || '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200">
+                        {formatLabel(item.overall_status)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {formatLabel(item.approval_stage_status)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-white">
+                      ₱{Number(item.total_request_amount || 0).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {formatDate(item.updated_at || item.created_at)}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {(item.context_tags || []).length ? item.context_tags.join(' • ') : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

@@ -10,6 +10,47 @@ import { broadcast } from '../realtime/websocketServer.js';
 
 export class ApprovalRequestController {
   /**
+   * Get notification list for requestor/approver dashboards
+   * GET /api/approval-requests/notifications
+   */
+  static async getUserNotifications(req, res) {
+    try {
+      const userId = req.user?.id;
+      const roleRaw = req.user?.role || req.user?.userType || req.query.role || 'requestor';
+      const role = String(roleRaw || '').toLowerCase();
+      const orgId = req.user?.org_id || null;
+
+      if (!userId) {
+        return sendError(res, 'User ID is required', 400);
+      }
+
+      let allowedBudgetIds = null;
+      if (orgId) {
+        const allowedBudgets = await BudgetConfigService.getBudgetIdsByOrgId(orgId);
+        const budgetIds = allowedBudgets.data || [];
+        if (!budgetIds.length) {
+          return sendSuccess(res, [], 'Notifications retrieved', 200);
+        }
+        allowedBudgetIds = budgetIds;
+      }
+
+      const result = await ApprovalRequestService.getUserNotifications({
+        userId,
+        role,
+        allowedBudgetIds,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      return sendSuccess(res, result.data, 'Notifications retrieved', 200);
+    } catch (error) {
+      console.error('Error in getUserNotifications:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
+  /**
    * Get employee by EID (company scoped)
    * GET /api/approval-requests/employees/:eid?company_id=uuid
    */

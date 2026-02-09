@@ -520,6 +520,201 @@ export class ApprovalRequestService {
   }
 
   /**
+   * Get notifications for requestor/approver dashboards
+   */
+  static async getUserNotifications({ userId, role = 'requestor', allowedBudgetIds = null }) {
+    try {
+      const normalizedRole = String(role || 'requestor').toLowerCase();
+      const isApprover = normalizedRole.includes('l1') || normalizedRole.includes('l2') || normalizedRole.includes('l3');
+      const isRequestor = normalizedRole.includes('requestor');
+
+      const requestMap = new Map();
+      const contextMap = new Map();
+      const addContext = (requestId, label) => {
+        if (!requestId || !label) return;
+        const existing = contextMap.get(requestId) || new Set();
+        existing.add(label);
+        contextMap.set(requestId, existing);
+      };
+
+      let createdBudgetIds = [];
+
+      if (isRequestor) {
+        const { data: createdBudgets, error: createdBudgetError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id')
+          .eq('created_by', userId);
+
+        if (createdBudgetError) throw createdBudgetError;
+
+        createdBudgetIds = (createdBudgets || []).map((row) => row.budget_id).filter(Boolean);
+
+        const { data: submittedRequests, error: submittedError } = await supabase
+          .from('tblbudgetapprovalrequests')
+          .select('*')
+          .or(`submitted_by.eq.${userId},created_by.eq.${userId}`)
+          .order('created_at', { ascending: false });
+
+        if (submittedError) throw submittedError;
+
+        (submittedRequests || []).forEach((request) => {
+          requestMap.set(request.request_id, request);
+          addContext(request.request_id, 'Your submission');
+        });
+
+        if (createdBudgetIds.length > 0) {
+          const { data: configRequests, error: configError } = await supabase
+            .from('tblbudgetapprovalrequests')
+            .select('*')
+            .in('budget_id', createdBudgetIds)
+            .order('created_at', { ascending: false });
+
+          if (configError) throw configError;
+
+          (configRequests || []).forEach((request) => {
+            requestMap.set(request.request_id, request);
+            addContext(request.request_id, 'Your configuration');
+          });
+        }
+      }
+
+      if (isApprover) {
+        const { data: assignedRows, error: assignedError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, assigned_to_primary, assigned_to_backup, approved_by, updated_at, approval_date')
+          .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId}`)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false });
+
+        if (assignedError) throw assignedError;
+
+        const { data: approvedRows, error: approvedError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, assigned_to_primary, assigned_to_backup, approved_by, updated_at, approval_date')
+          .eq('approved_by', userId)
+          .eq('status', 'approved')
+          .order('updated_at', { ascending: false });
+
+        if (approvedError) throw approvedError;
+
+        [...(assignedRows || []), ...(approvedRows || [])].forEach((row) => {
+          if (!row.request_id) return;
+          addContext(row.request_id, row.status === 'pending' ? 'Assigned to you' : 'Approved by you');
+        });
+
+        const requestIds = Array.from(new Set([...(assignedRows || []), ...(approvedRows || [])].map((row) => row.request_id).filter(Boolean)));
+
+        if (requestIds.length > 0) {
+          const { data: approverRequests, error: approverRequestsError } = await supabase
+            .from('tblbudgetapprovalrequests')
+            .select('*')
+            .in('request_id', requestIds)
+            .order('created_at', { ascending: false });
+
+          if (approverRequestsError) throw approverRequestsError;
+
+          (approverRequests || []).forEach((request) => {
+            requestMap.set(request.request_id, request);
+          });
+        }
+      }
+
+      let requests = Array.from(requestMap.values());
+
+      if (Array.isArray(allowedBudgetIds)) {
+        if (!allowedBudgetIds.length) {
+          return { success: true, data: [] };
+        }
+        requests = requests.filter((request) => allowedBudgetIds.includes(request.budget_id));
+      }
+
+      const requestIds = requests.map((request) => request.request_id).filter(Boolean);
+      const approvalsMap = new Map();
+
+      if (requestIds.length > 0) {
+        const { data: approvalRows, error: approvalsError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, approval_date, approver_name, approved_by, updated_at')
+          .in('request_id', requestIds);
+
+        if (approvalsError) throw approvalsError;
+
+        (approvalRows || []).forEach((row) => {
+          const existing = approvalsMap.get(row.request_id) || [];
+          existing.push(row);
+          approvalsMap.set(row.request_id, existing);
+        });
+      }
+
+      const budgetIds = [...new Set(requests.map((request) => request.budget_id).filter(Boolean))];
+      let budgetConfigMap = {};
+      if (budgetIds.length > 0) {
+        const { data: budgetConfigs, error: budgetError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name, budget_description')
+          .in('budget_id', budgetIds);
+
+        if (budgetError) throw budgetError;
+
+        budgetConfigMap = (budgetConfigs || []).reduce((acc, config) => {
+          acc[config.budget_id] = config;
+          return acc;
+        }, {});
+      }
+
+      const userIds = requests.flatMap((request) => [request?.submitted_by, request?.created_by]).filter(Boolean);
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap(userIds);
+      } catch (lookupError) {
+        console.warn('[getUserNotifications] User lookup failed:', lookupError?.message || lookupError);
+      }
+
+      const normalized = requests.map((request) => {
+        const approvalsForRequest = approvalsMap.get(request.request_id) || [];
+        const approvalStageStatus = this.computeApprovalStageStatus(approvalsForRequest, request?.overall_status);
+        const submitterId = request?.submitted_by || request?.created_by;
+        const submitterName = userNameMap.get(submitterId) || null;
+        const submitterDetails = submitterName ? { name: submitterName } : getUserDetailsFromUUID(submitterId);
+
+        return {
+          request_id: request.request_id,
+          request_number: request.request_number,
+          budget_id: request.budget_id,
+          budget_name: budgetConfigMap[request.budget_id]?.budget_name || null,
+          budget_description: budgetConfigMap[request.budget_id]?.budget_description || null,
+          submitted_by: request.submitted_by,
+          submitted_by_name: submitterDetails?.name || request?.submitted_by,
+          total_request_amount: request.total_request_amount || 0,
+          overall_status: request.overall_status,
+          approval_stage_status: approvalStageStatus,
+          created_at: request.created_at,
+          updated_at: request.updated_at,
+          context_tags: Array.from(contextMap.get(request.request_id) || []),
+        };
+      });
+
+      normalized.sort((a, b) => {
+        const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+        const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+        return bTime - aTime;
+      });
+
+      return {
+        success: true,
+        data: normalized,
+      };
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
    * Update approval request main fields
    */
   static async updateApprovalRequest(requestId, updateData) {

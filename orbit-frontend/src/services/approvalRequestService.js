@@ -182,6 +182,19 @@ const getMySubmittedRequests = async (userId, token) => {
   return parseResponse(response);
 };
 
+const getUserNotifications = async (filters = {}, token) => {
+  const queryParams = new URLSearchParams();
+  if (filters.role) queryParams.append('role', filters.role);
+  const url = `${API_BASE_URL}/approval-requests/notifications${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
 /**
  * Get multiple employees by EIDs in batch (optimized for bulk uploads)
  */
@@ -200,6 +213,7 @@ export default {
   getApprovalRequest,
   getApprovalRequestDetails: getApprovalRequest, // Alias for compatibility
   getMySubmittedRequests,
+  getUserNotifications,
   getPendingApprovals,
   approveRequest,
   rejectRequest,

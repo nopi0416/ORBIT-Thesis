@@ -38,6 +38,12 @@ router.post('/employees/batch', authenticateToken, ApprovalRequestController.get
 router.get('/employees/:eid', authenticateToken, ApprovalRequestController.getEmployeeByEid);
 
 /**
+ * GET /api/approval-requests/notifications
+ * Get notification list for requestor/approver dashboards
+ */
+router.get('/notifications', authenticateToken, ApprovalRequestController.getUserNotifications);
+
+/**
  * GET /api/approval-requests/:id
  * Get specific approval request with all related data
  */

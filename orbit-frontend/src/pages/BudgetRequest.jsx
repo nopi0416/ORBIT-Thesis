@@ -205,6 +205,8 @@ function ConfigurationList() {
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
+      history: config.history || config.history_entries || config.historyEntries || [],
+      logs: config.logs || config.logEntries || config.configuration_logs || config.log_entries || [],
       approvers: approversArray,
       approverL1: approverL1Id,
       backupApproverL1: backupApproverL1Id,
@@ -630,6 +632,24 @@ function ConfigurationList() {
   const historyItems = selectedConfig?.history || [];
   const logItems = selectedConfig?.logs || selectedConfig?.logEntries || [];
   const isOwner = editConfig && String(editConfig.createdById || '') === String(user?.id || '');
+  const canViewLogs = String((selectedConfig?.createdById || editConfig?.createdById) || '') === String(user?.id || '');
+
+  const normalizeLogItem = (item) => {
+    if (!item) return {};
+    if (typeof item === 'string') return { description: item };
+    return item;
+  };
+
+  const getLogValue = (item, fields, fallback = '—') => {
+    const entry = normalizeLogItem(item);
+    for (const field of fields) {
+      const value = entry?.[field];
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return value;
+      }
+    }
+    return fallback;
+  };
 
   return (
     <div className="space-y-6">
@@ -891,18 +911,22 @@ function ConfigurationList() {
               >
                 Edit
               </TabsTrigger>
-              <TabsTrigger
-                value="history"
-                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-              >
-                History
-              </TabsTrigger>
-              <TabsTrigger
-                value="logs"
-                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-              >
-                Logs
-              </TabsTrigger>
+              {canViewLogs && (
+                <>
+                  <TabsTrigger
+                    value="history"
+                    className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+                  >
+                    History
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="logs"
+                    className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+                  >
+                    Logs
+                  </TabsTrigger>
+                </>
+              )}
             </TabsList>
 
             <TabsContent value="edit" className="space-y-4">
@@ -1179,30 +1203,76 @@ function ConfigurationList() {
             </TabsContent>
 
             <TabsContent value="history" className="space-y-2">
-              {historyItems.length === 0 ? (
+              {!canViewLogs ? (
+                <p className="text-sm text-gray-400">Only the configuration creator can view history.</p>
+              ) : historyItems.length === 0 ? (
                 <p className="text-sm text-gray-400">No history available.</p>
               ) : (
-                <ul className="space-y-2 text-sm text-gray-200">
-                  {historyItems.map((item, index) => (
-                    <li key={`${item.id || item.timestamp || index}`} className="bg-slate-700/50 rounded p-3">
-                      {item.message || item.event || JSON.stringify(item)}
-                    </li>
-                  ))}
-                </ul>
+                <div className="border border-slate-700 rounded-md overflow-auto">
+                  <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                    <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0">
+                      <tr>
+                        <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Event</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {historyItems.map((item, index) => (
+                        <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-200">
+                            {getLogValue(item, ['event', 'action', 'action_type', 'type', 'message'], '—')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </TabsContent>
 
             <TabsContent value="logs" className="space-y-2">
-              {logItems.length === 0 ? (
+              {!canViewLogs ? (
+                <p className="text-sm text-gray-400">Only the configuration creator can view logs.</p>
+              ) : logItems.length === 0 ? (
                 <p className="text-sm text-gray-400">No logs available.</p>
               ) : (
-                <ul className="space-y-2 text-sm text-gray-200">
-                  {logItems.map((item, index) => (
-                    <li key={`${item.id || item.timestamp || index}`} className="bg-slate-700/50 rounded p-3">
-                      {item.message || item.event || JSON.stringify(item)}
-                    </li>
-                  ))}
-                </ul>
+                <div className="border border-slate-700 rounded-md overflow-auto">
+                  <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                    <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0">
+                      <tr>
+                        <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Action</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Description</th>
+                        <th className="px-3 py-2 border-b border-slate-600">By</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {logItems.map((item, index) => (
+                        <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-200">
+                            {getLogValue(item, ['action_type', 'action', 'event', 'type'], '—')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '—')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </TabsContent>
           </Tabs>

@@ -2178,10 +2178,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className={`bg-slate-800 border-slate-700 text-white flex flex-col ${
           requestMode === 'bulk' && bulkItems.length > 0
-            ? 'w-[90vw] max-w-none max-h-[85vh] p-0'
+            ? 'w-[95vw] max-w-[1300px] max-h-[85vh] p-0 overflow-y-auto'
             : 'w-[95vw] md:w-[80vw] xl:w-[60vw] max-w-none max-h-[90vh] overflow-y-auto p-4'
         }`}>
-<DialogHeader className={`flex-shrink-0 space-y-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-6 pt-6 pb-1' : 'pb-2'}`}>
+<DialogHeader className={`flex-shrink-0 space-y-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-5 pt-4 pb-1' : 'pb-2'}`}>
       <DialogTitle className="text-lg font-bold leading-tight">Submit Approval Request</DialogTitle>
       <DialogDescription className="text-gray-400 leading-tight">
         {selectedConfig?.name}
@@ -2196,7 +2196,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
  <div className={`flex-1 flex flex-col min-h-0 justify-start items-stretch ${
       requestMode === 'bulk' && bulkItems.length > 0 
-        ? 'px-6 pb-4' 
+        ? 'px-5 pb-4' 
         : 'mt-1'
     }`}>
       <Tabs value={requestMode} onValueChange={setRequestMode} className="flex-1 flex flex-col justify-start items-stretch min-h-0">
@@ -2493,7 +2493,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             </Tabs>
           </div>
 
-          <DialogFooter className={`flex justify-end gap-2 flex-shrink-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-6 py-4 border-t border-slate-700' : ''}`}>
+          <DialogFooter className={`flex justify-end gap-2 flex-shrink-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-5 py-3 border-t border-slate-700' : ''}`}>
             <Button
               variant="outline"
               onClick={() => setShowModal(false)}
@@ -3907,21 +3907,10 @@ function ApprovalRequests({ refreshKey }) {
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4 space-y-2">
-                <Label className="text-white">Approval/Rejection Description</Label>
-                {actionError && (
-                  <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                    {actionError}
-                  </div>
-                )}
-                <Textarea
-                  rows={3}
-                  className="bg-slate-700 border-gray-300 text-white"
-                  placeholder="Enter your comments, notes, or reasons for approval/rejection..."
-                  value={decisionNotes}
-                  onChange={(e) => setDecisionNotes(e.target.value)}
-                />
-                <p className="text-xs text-slate-400">This description will be included with your approval/rejection decision.</p>
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                <div className="text-sm text-slate-300">
+                  This request is view-only. No actions can be taken from this screen.
+                </div>
               </div>
             </div>
           )}
@@ -3930,58 +3919,6 @@ function ApprovalRequests({ refreshKey }) {
             <Button variant="outline" className="border-slate-600 text-white hover:bg-slate-800" onClick={() => setDetailsOpen(false)}>
               Close
             </Button>
-            {canActOnRequest && (
-              <>
-                {isPayrollUser ? (
-                  <>
-                    {canPayrollApprove && (
-                      <>
-                        <Button
-                          className="bg-red-600 hover:bg-red-700 text-white"
-                          onClick={handleReject}
-                          disabled={actionSubmitting}
-                        >
-                          Reject
-                        </Button>
-                        <Button
-                          className="bg-green-600 hover:bg-green-700 text-white"
-                          onClick={handleApprove}
-                          disabled={actionSubmitting}
-                        >
-                          Approve Payroll
-                        </Button>
-                      </>
-                    )}
-                    {canPayrollComplete && (
-                      <Button
-                        className="bg-blue-600 hover:bg-blue-700 text-white"
-                        onClick={handleCompletePayment}
-                        disabled={actionSubmitting}
-                      >
-                        Complete Payment
-                      </Button>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <Button
-                      className="bg-red-600 hover:bg-red-700 text-white"
-                      onClick={handleReject}
-                      disabled={actionSubmitting}
-                    >
-                      Reject
-                    </Button>
-                    <Button
-                      className="bg-green-600 hover:bg-green-700 text-white"
-                      onClick={handleApprove}
-                      disabled={actionSubmitting}
-                    >
-                      Approve
-                    </Button>
-                  </>
-                )}
-              </>
-            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4057,6 +3994,10 @@ function ApprovalHistory({ refreshKey }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(null);
+  const [detailData, setDetailData] = useState(null);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -4084,6 +4025,46 @@ function ApprovalHistory({ refreshKey }) {
     );
   });
 
+  const handleViewHistory = async (record) => {
+    if (!record?.id) return;
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailError(null);
+    setDetailData(null);
+
+    try {
+      const data = await approvalRequestService.getApprovalRequest(record.id, getToken());
+      setDetailData(data || null);
+    } catch (error) {
+      setDetailError(error.message || 'Failed to load request details.');
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const formatDate = (value) => {
+    if (!value) return '—';
+    try {
+      return new Date(value).toLocaleString('en-PH', {
+        timeZone: 'Asia/Manila',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      });
+    } catch {
+      return value;
+    }
+  };
+
+  const formatStatusLabel = (value) => String(value || 'pending').replace(/_/g, ' ');
+  const getLevelLabel = (level) => {
+    if (Number(level) === 4) return 'Payroll';
+    return `L${level || '—'}`;
+  };
+
   return (
     <Card className="bg-slate-800 border-slate-700">
       <CardHeader>
@@ -4109,32 +4090,153 @@ function ApprovalHistory({ refreshKey }) {
         ) : filteredHistory.length === 0 ? (
           <div className="text-sm text-gray-400">No history records found.</div>
         ) : (
-          <div className="space-y-3">
-            {filteredHistory.map((record) => (
-              <div key={record.id} className="bg-slate-700/50 border border-slate-600 rounded-lg p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Badge className={getStatusBadgeClass(record.status)}>
-                        {record.status.replace(/_/g, ' ')}
+          <div className="border border-slate-600 rounded-md overflow-auto">
+            <table className="w-full border-collapse">
+              <thead className="bg-slate-700 sticky top-0 z-10">
+                <tr>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Request #
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Budget Name
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Amount
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Submitted
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Action
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700">
+                {filteredHistory.map((record) => (
+                  <tr key={record.id} className="hover:bg-slate-700/50">
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {record.requestNumber || '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-sm font-medium text-white">{record.budgetName || '—'}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge className={getStatusBadgeClass(record.status || 'pending')}>
+                        {(record.status || 'pending').replace(/_/g, ' ')}
                       </Badge>
-                      {record.requestNumber && (
-                        <span className="text-xs text-gray-400">{record.requestNumber}</span>
-                      )}
-                    </div>
-                    <h4 className="text-white font-medium">{record.budgetName}</h4>
-                    <p className="text-xs text-gray-300">{record.budgetName}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-lg font-semibold text-white">₱{Number(record.amount || 0).toLocaleString()}</p>
-                    <p className="text-xs text-gray-400">{record.submittedAt || '—'}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-white">
+                      ₱{Number(record.amount || 0).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {record.submittedAt || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewHistory(record)}
+                        className="h-7 text-xs text-blue-400 hover:text-blue-300 hover:bg-slate-700"
+                      >
+                        View
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </CardContent>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[900px] max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">Request History Details</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              {detailData?.request_number || 'Approval Request'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailLoading ? (
+            <div className="text-sm text-gray-400">Loading request details...</div>
+          ) : detailError ? (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+              {detailError}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget</div>
+                  <div className="text-sm font-semibold text-white">{detailData?.budget_name || '—'}</div>
+                  <div className="text-xs text-slate-400">{detailData?.budget_description || 'No description.'}</div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
+                  <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
+                    {formatStatusLabel(detailData?.overall_status)}
+                  </Badge>
+                  <div className="text-xs text-slate-400">Stage: {formatStatusLabel(detailData?.approval_stage_status)}</div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Submitted By</div>
+                  <div className="text-sm text-slate-200">{detailData?.submitted_by_name || detailData?.submitted_by || '—'}</div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Amount</div>
+                  <div className="text-lg font-semibold text-emerald-400">₱{Number(detailData?.total_request_amount || 0).toLocaleString()}</div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Submitted</div>
+                  <div className="text-sm text-slate-200">{formatDate(detailData?.created_at || detailData?.submitted_at)}</div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                <div className="text-sm font-semibold text-white mb-2">Approval History</div>
+                {(detailData?.approvals || []).length === 0 ? (
+                  <div className="text-xs text-slate-400">No approvals recorded.</div>
+                ) : (
+                  <div className="border border-slate-700 rounded-md overflow-auto">
+                    <table className="w-full text-xs text-left text-slate-300 border-collapse">
+                      <thead className="bg-slate-800 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 border-b border-slate-600">Level</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Status</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Approver</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-700">
+                        {(detailData?.approvals || []).map((approval, index) => (
+                          <tr key={`${approval.request_id || 'req'}-${approval.approval_level || index}`}>
+                            <td className="px-3 py-2 text-slate-200">{getLevelLabel(approval.approval_level)}</td>
+                            <td className="px-3 py-2">
+                              <Badge className={getStatusBadgeClass(approval.status || 'pending')}>
+                                {formatStatusLabel(approval.status)}
+                              </Badge>
+                            </td>
+                            <td className="px-3 py-2 text-slate-300">{approval.approver_name || approval.approved_by || '—'}</td>
+                            <td className="px-3 py-2 text-slate-300">{formatDate(approval.approval_date || approval.updated_at)}</td>
+                            <td className="px-3 py-2 text-slate-300">
+                              {approval.approval_notes || approval.rejection_reason || '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
