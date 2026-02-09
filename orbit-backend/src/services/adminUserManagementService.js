@@ -75,6 +75,43 @@ export class AdminUserManagementService {
   }
 
   /**
+   * Get the first available geo_id (fallback for user creation)
+   */
+  static async getDefaultGeoId() {
+    try {
+      const { data, error } = await supabase
+        .from('tblgeo')
+        .select('geo_id')
+        .limit(1)
+        .single();
+
+      if (error || !data) {
+        return null;
+      }
+      return data.geo_id;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Verify that geo exists in tblgeo
+   */
+  static async geoExists(geoId) {
+    const { data, error } = await supabase
+      .from('tblgeo')
+      .select('geo_id')
+      .eq('geo_id', geoId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    return !!data;
+  }
+
+  /**
    * Verify that role exists in tblroles
    */
   static async roleExists(roleId) {
@@ -123,13 +160,14 @@ export class AdminUserManagementService {
         department,
         roleId,
         organizationId,
+        geoId,
       } = userData;
 
       // Validation
-      if (!firstName || !lastName || !email || !employeeId || !roleId) {
+      if (!firstName || !lastName || !email || !employeeId || !roleId || !geoId) {
         return {
           success: false,
-          error: 'Missing required fields: firstName, lastName, email, employeeId, roleId',
+          error: 'Missing required fields: firstName, lastName, email, employeeId, roleId, geoId',
         };
       }
 
@@ -160,6 +198,15 @@ export class AdminUserManagementService {
         };
       }
 
+      // Verify geo exists
+      const geoValid = await this.geoExists(geoId);
+      if (!geoValid) {
+        return {
+          success: false,
+          error: `Geo with ID "${geoId}" does not exist`,
+        };
+      }
+
       // Verify organization exists (if provided)
       if (organizationId) {
         const orgValid = await this.organizationExists(organizationId);
@@ -184,11 +231,12 @@ export class AdminUserManagementService {
             first_name: firstName,
             last_name: lastName,
             email,
-            department: department || null,
+            org_id: organizationId || null,
+            geo_id: geoId,
             status: 'First_Time',
             is_first_login: true,
             password_hash: passwordHash,
-            created_by: adminUUID || null, // Set to null if adminUUID is not a valid user (for testing)
+            created_by: adminUUID || null,
             updated_by: adminUUID || null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -260,6 +308,8 @@ export class AdminUserManagementService {
    */
   static async getAllAdminUsers(filters = {}) {
     try {
+      console.log('[getAllAdminUsers] Starting user fetch with filters:', filters);
+
       let query = supabase
         .from('tblusers')
         .select(
@@ -268,18 +318,23 @@ export class AdminUserManagementService {
           first_name,
           last_name,
           email,
-          department,
+          org_id,
+          geo_id,
           status,
           is_first_login,
+          tblorganization(org_id, org_name),
+          tblgeo(geo_id, geo_name, geo_code),
           tbluserroles(role_id, tblroles(role_id, role_name))`
         );
 
       // Apply filters
       if (filters.status) {
+        console.log('[getAllAdminUsers] Applying status filter:', filters.status);
         query = query.eq('status', filters.status);
       }
 
       if (filters.search) {
+        console.log('[getAllAdminUsers] Applying search filter:', filters.search);
         // Search by email, first_name, last_name, employee_id
         query = query.or(
           `email.ilike.%${filters.search}%,first_name.ilike.%${filters.search}%,last_name.ilike.%${filters.search}%,employee_id.ilike.%${filters.search}%`
@@ -288,14 +343,21 @@ export class AdminUserManagementService {
 
       const { data, error } = await query;
 
-      if (error) throw error;
+      console.log('[getAllAdminUsers] Query result - Error:', error, 'Data Count:', data?.length || 0);
 
+      if (error) {
+        console.error('[getAllAdminUsers] Supabase error details:', error);
+        throw error;
+      }
+
+      console.log('[getAllAdminUsers] Returning', data?.length || 0, 'users');
       return {
         success: true,
         data: data || [],
       };
     } catch (error) {
-      console.error('Error fetching users:', error);
+      console.error('[getAllAdminUsers] Exception caught:', error.message);
+      console.error('[getAllAdminUsers] Full error:', error);
       return {
         success: false,
         error: error.message,
@@ -348,6 +410,32 @@ export class AdminUserManagementService {
       };
     } catch (error) {
       console.error('Error fetching organizations:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  /**
+   * Get all available geos
+   */
+  static async getAllGeos() {
+    try {
+      const { data, error } = await supabase
+        .from('tblgeo')
+        .select('geo_id, geo_name, geo_code')
+        .order('geo_name', { ascending: true });
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: data || [],
+      };
+    } catch (error) {
+      console.error('Error fetching geos:', error);
       return {
         success: false,
         error: error.message,

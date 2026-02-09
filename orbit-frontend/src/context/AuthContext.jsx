@@ -419,6 +419,29 @@ export function AuthProvider({ children }) {
   };
 
   /**
+   * DEBUG FUNCTION - Temporary admin login bypass
+   * ONLY FOR TESTING - REMOVE BEFORE PRODUCTION
+   * This function directly logs in a test admin user without OTP verification
+   */
+  const debugLoginAsAdmin = () => {
+    const adminData = {
+      id: 'debug-admin-id',
+      name: 'Debug Admin',
+      email: 'admin@test.local',
+      firstName: 'Debug',
+      lastName: 'Admin',
+      role: 'admin',
+    };
+    
+    // Store token and user
+    localStorage.setItem('authToken', 'debug-token-' + Date.now());
+    setUserWithStorage(adminData);
+    console.warn('[DEBUG] Admin bypass login activated - REMOVE THIS FUNCTION BEFORE PRODUCTION');
+    
+    return { success: true };
+  };
+
+  /**
    * LOGOUT - Clears user session and removes from localStorage
    * 
    * WHAT IT DOES:
@@ -471,6 +494,7 @@ export function AuthProvider({ children }) {
     completeLogin,
     logout,
     loading,
+    debugLoginAsAdmin, // TEMPORARY - REMOVE BEFORE PRODUCTION
   };
 
   return (

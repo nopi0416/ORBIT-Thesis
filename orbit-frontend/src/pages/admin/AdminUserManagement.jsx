@@ -1,7 +1,14 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { createUser, getAvailableRoles, getAvailableOrganizations, getAllUsers } from "../../services/userService"
+import { useState, useEffect, useRef } from "react"
+import * as XLSX from "xlsx"
+import {
+  createUser,
+  getAvailableRoles,
+  getAvailableOrganizations,
+  getAvailableGeos,
+  getAllUsers,
+} from "../../services/userService"
 
 export default function UserManagement() {
   const [activeTab, setActiveTab] = useState("users")
@@ -31,15 +38,26 @@ export default function UserManagement() {
     name: "",
     email: "",
     role: "",
+    geoId: "",
     ou: "",
   })
   const [formErrors, setFormErrors] = useState({})
   const [availableRoles, setAvailableRoles] = useState([])
   const [availableOrganizations, setAvailableOrganizations] = useState([])
+  const [availableGeos, setAvailableGeos] = useState([])
   const [isLoadingDropdowns, setIsLoadingDropdowns] = useState(false)
   const [isSubmittingUser, setIsSubmittingUser] = useState(false)
   const [fetchedUsers, setFetchedUsers] = useState([])
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
+  const [bulkFileName, setBulkFileName] = useState("")
+  const [bulkFileError, setBulkFileError] = useState("")
+  const [bulkValidRows, setBulkValidRows] = useState([])
+  const [bulkInvalidRows, setBulkInvalidRows] = useState([])
+  const [bulkActiveTab, setBulkActiveTab] = useState("valid")
+  const [isProcessingBulk, setIsProcessingBulk] = useState(false)
+  const bulkFileInputRef = useRef(null)
+  const hasBulkReview =
+    addUserTab === "bulk" && (bulkValidRows.length > 0 || bulkInvalidRows.length > 0)
 
   // Load roles and organizations on mount
   useEffect(() => {
@@ -49,16 +67,19 @@ export default function UserManagement() {
         const token = localStorage.getItem('authToken')
         
         // Fetch roles and organizations from backend
-        const [roles, orgs] = await Promise.all([
+        const [roles, orgs, geos] = await Promise.all([
           getAvailableRoles(token),
           getAvailableOrganizations(token),
+          getAvailableGeos(token),
         ])
         setAvailableRoles(roles)
         setAvailableOrganizations(orgs)
+        setAvailableGeos(geos)
       } catch (error) {
         console.error('Error loading dropdown data:', error)
         setAvailableRoles([])
         setAvailableOrganizations([])
+        setAvailableGeos([])
       } finally {
         setIsLoadingDropdowns(false)
       }
@@ -67,22 +88,22 @@ export default function UserManagement() {
     loadDropdownData()
   }, [])
 
+  const loadUsers = async () => {
+    setIsLoadingUsers(true)
+    try {
+      const token = localStorage.getItem('authToken')
+      const users = await getAllUsers(token)
+      setFetchedUsers(users)
+    } catch (error) {
+      console.error('Error fetching users:', error)
+      setFetchedUsers([])
+    } finally {
+      setIsLoadingUsers(false)
+    }
+  }
+
   // Fetch users on mount
   useEffect(() => {
-    const loadUsers = async () => {
-      setIsLoadingUsers(true)
-      try {
-        const token = localStorage.getItem('authToken')
-        const users = await getAllUsers(token)
-        setFetchedUsers(users)
-      } catch (error) {
-        console.error('Error fetching users:', error)
-        setFetchedUsers([])
-      } finally {
-        setIsLoadingUsers(false)
-      }
-    }
-
     loadUsers()
   }, [])
 
@@ -94,6 +115,7 @@ export default function UserManagement() {
       name: "David Lee",
       email: "david@orbit.com",
       ou: "Marketing",
+      geo: "Asia Pacific",
       role: "Requestor",
       status: "Pending",
       requestDate: "2024-01-15",
@@ -104,6 +126,7 @@ export default function UserManagement() {
       name: "Emma Davis",
       email: "emma@orbit.com",
       ou: "Sales",
+      geo: "Europe",
       role: "Approver",
       status: "Pending",
       requestDate: "2024-01-14",
@@ -114,6 +137,7 @@ export default function UserManagement() {
       name: "Frank Miller",
       email: "frank@orbit.com",
       ou: "IT Department",
+      geo: "Asia Pacific",
       role: "Admin",
       status: "Pending",
       requestDate: "2024-01-13",
@@ -127,6 +151,7 @@ export default function UserManagement() {
       name: "Grace Taylor",
       email: "grace@orbit.com",
       ou: "Finance",
+      geo: "Europe",
       role: "Budget Officer",
       status: "Locked",
       lockedDate: "2024-01-10",
@@ -137,6 +162,7 @@ export default function UserManagement() {
       name: "Henry Wilson",
       email: "henry@orbit.com",
       ou: "Operations",
+      geo: "Asia Pacific",
       role: "Requestor",
       status: "Locked",
       lockedDate: "2024-01-09",
@@ -150,6 +176,7 @@ export default function UserManagement() {
       name: "Ivy Martinez",
       email: "ivy@orbit.com",
       ou: "HR Department",
+      geo: "Europe",
       role: "Approver",
       status: "Deactivated",
       deactivatedDate: "2024-01-05",
@@ -160,6 +187,7 @@ export default function UserManagement() {
       name: "Jack Anderson",
       email: "jack@orbit.com",
       ou: "Marketing",
+      geo: "Asia Pacific",
       role: "Requestor",
       status: "Deactivated",
       deactivatedDate: "2024-01-03",
@@ -236,6 +264,249 @@ export default function UserManagement() {
     }
   }
 
+  const normalizeHeader = (value) => (value || "").toString().trim().toLowerCase()
+
+  const resolveByIdOrName = (value, list, idKey, nameKey, codeKey) => {
+    const trimmed = (value || "").toString().trim()
+    if (!trimmed) return null
+
+    const lower = trimmed.toLowerCase()
+    const byId = list.find((item) => (item[idKey] || "").toString().toLowerCase() === lower)
+    if (byId) return byId[idKey]
+
+    const byName = list.find((item) => (item[nameKey] || "").toString().toLowerCase() === lower)
+    if (byName) return byName[idKey]
+
+    if (codeKey) {
+      const byCode = list.find((item) => (item[codeKey] || "").toString().toLowerCase() === lower)
+      if (byCode) return byCode[idKey]
+    }
+
+    return null
+  }
+
+  const parseBulkRows = (rows) => {
+    const headerRow = rows[0] || []
+    const headerMap = headerRow.reduce((acc, header, index) => {
+      const key = normalizeHeader(header)
+      if (key) acc[key] = index
+      return acc
+    }, {})
+
+    const headerAliases = {
+      "employee id": "employee id",
+      "employeeid": "employee id",
+      "name": "name",
+      "email": "email",
+      "role": "role",
+      "geo": "geo",
+      "organizational unit": "organizational unit",
+      "ou": "organizational unit",
+    }
+
+    const getIndex = (label) => {
+      const direct = headerMap[label]
+      if (direct !== undefined) return direct
+      const alias = headerAliases[label]
+      return alias ? headerMap[alias] : undefined
+    }
+
+    const requiredHeaders = ["employee id", "name", "email", "role", "geo", "organizational unit"]
+    const missingHeaders = requiredHeaders.filter((header) => getIndex(header) === undefined)
+    if (missingHeaders.length > 0) {
+      return { error: `Missing required columns: ${missingHeaders.join(", ")}` }
+    }
+
+    const dataRows = rows.slice(1).filter((row) => row.some((cell) => `${cell}`.trim() !== ""))
+    if (dataRows.length > 100) {
+      return { error: "Maximum 100 users per upload" }
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    const seenEmails = new Set()
+    const seenEmployeeIds = new Set()
+    const existingEmails = new Set(fetchedUsers.map((u) => (u.email || "").toLowerCase()))
+    const existingEmployeeIds = new Set(fetchedUsers.map((u) => (u.employeeId || "").toLowerCase()))
+
+    const valid = []
+    const invalid = []
+
+    dataRows.forEach((row, idx) => {
+      const rowNumber = idx + 2
+      const employeeId = (row[getIndex("employee id")] || "").toString().trim()
+      const name = (row[getIndex("name")] || "").toString().trim()
+      const email = (row[getIndex("email")] || "").toString().trim()
+      const role = (row[getIndex("role")] || "").toString().trim()
+      const geo = (row[getIndex("geo")] || "").toString().trim()
+      const ou = (row[getIndex("organizational unit")] || "").toString().trim()
+
+      const errors = []
+
+      if (!employeeId) errors.push("Missing Employee ID")
+      if (!name) errors.push("Missing Name")
+      if (!email) errors.push("Missing Email")
+      if (!role) errors.push("Missing Role")
+      if (!geo) errors.push("Missing Geo")
+      if (!ou) errors.push("Missing Organizational Unit")
+
+      if (email && !emailRegex.test(email)) errors.push("Invalid Email")
+
+      const emailKey = email.toLowerCase()
+      const employeeKey = employeeId.toLowerCase()
+      if (emailKey && seenEmails.has(emailKey)) errors.push("Duplicate Email in file")
+      if (employeeKey && seenEmployeeIds.has(employeeKey)) errors.push("Duplicate Employee ID in file")
+      if (emailKey && existingEmails.has(emailKey)) errors.push("Email already exists")
+      if (employeeKey && existingEmployeeIds.has(employeeKey)) errors.push("Employee ID already exists")
+
+      if (emailKey) seenEmails.add(emailKey)
+      if (employeeKey) seenEmployeeIds.add(employeeKey)
+
+      const roleId = resolveByIdOrName(role, availableRoles, "role_id", "role_name")
+      if (role && !roleId) errors.push("Role not found")
+
+      const geoId = resolveByIdOrName(geo, availableGeos, "geo_id", "geo_name", "geo_code")
+      if (geo && !geoId) errors.push("Geo not found")
+
+      const orgId = resolveByIdOrName(ou, availableOrganizations, "organization_id", "org_name")
+      if (ou && !orgId) errors.push("Organization not found")
+
+      const entry = {
+        rowNumber,
+        employeeId,
+        name,
+        email,
+        role,
+        geo,
+        ou,
+      }
+
+      if (errors.length > 0) {
+        invalid.push({ ...entry, errors })
+      } else {
+        valid.push({ ...entry, roleId, geoId, orgId })
+      }
+    })
+
+    return { valid, invalid }
+  }
+
+  const handleBulkFileSelect = async (file) => {
+    setBulkFileError("")
+    setBulkValidRows([])
+    setBulkInvalidRows([])
+    setBulkActiveTab("valid")
+
+    if (!file) return
+
+    const fileName = file.name
+    const fileExtension = fileName.split(".").pop()?.toLowerCase()
+    const nameWithoutExt = fileName.replace(/\.[^/.]+$/, "")
+    const namePattern = /^user_template_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/
+
+    if (fileExtension !== "csv" && fileExtension !== "xlsx") {
+      setBulkFileError("Invalid file type. Only .csv and .xlsx are allowed.")
+      return
+    }
+
+    if (!namePattern.test(nameWithoutExt)) {
+      setBulkFileError("Invalid file name. Use user_template_YYYY-MM-DDTHH-MM-SS.")
+      return
+    }
+
+    setBulkFileName(fileName)
+    setIsProcessingBulk(true)
+
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const workbook = XLSX.read(arrayBuffer, { type: "array" })
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: "" })
+
+      const result = parseBulkRows(rows)
+      if (result.error) {
+        setBulkFileError(result.error)
+      } else {
+        setBulkValidRows(result.valid)
+        setBulkInvalidRows(result.invalid)
+      }
+    } catch (error) {
+      console.error("Error reading bulk file:", error)
+      setBulkFileError("Failed to read file. Please check the file format.")
+    } finally {
+      setIsProcessingBulk(false)
+    }
+  }
+
+  const handleBulkDrop = (event) => {
+    event.preventDefault()
+    const file = event.dataTransfer.files?.[0]
+    handleBulkFileSelect(file)
+  }
+
+  const handleBulkImport = async () => {
+    if (bulkValidRows.length === 0) {
+      setNotificationMessage("✗ Error: No valid rows to import")
+      setShowNotification(true)
+      setTimeout(() => setShowNotification(false), 6000)
+      return
+    }
+
+    setIsProcessingBulk(true)
+    const token = localStorage.getItem('authToken')
+    let successCount = 0
+    const failed = []
+
+    for (const row of bulkValidRows) {
+      try {
+        await createUser(
+          {
+            employeeId: row.employeeId,
+            name: row.name,
+            email: row.email,
+            role: row.roleId,
+            geoId: row.geoId,
+            ou: row.orgId,
+          },
+          token
+        )
+        successCount += 1
+      } catch (error) {
+        failed.push({ ...row, errors: ["Failed to create user"] })
+      }
+    }
+
+    const remainingInvalid = [...bulkInvalidRows, ...failed]
+    setBulkInvalidRows(remainingInvalid)
+    setBulkValidRows([])
+
+    if (successCount > 0) {
+      setNotificationMessage(`✓ ${successCount} user${successCount > 1 ? "s" : ""} added successfully`)
+      setShowNotification(true)
+      setTimeout(() => setShowNotification(false), 5000)
+      await loadUsers()
+    }
+
+    if (failed.length > 0) {
+      setBulkActiveTab("invalid")
+      setNotificationMessage(`✗ ${failed.length} user${failed.length > 1 ? "s" : ""} failed to import`)
+      setShowNotification(true)
+      setTimeout(() => setShowNotification(false), 6000)
+    }
+
+    setIsProcessingBulk(false)
+  }
+
+  const clearBulkUpload = () => {
+    setBulkFileName("")
+    setBulkFileError("")
+    setBulkValidRows([])
+    setBulkInvalidRows([])
+    setBulkActiveTab("valid")
+    if (bulkFileInputRef.current) {
+      bulkFileInputRef.current.value = ""
+    }
+  }
+
   const handleAddIndividualUser = async () => {
     setFormErrors({})
     
@@ -245,6 +516,7 @@ export default function UserManagement() {
     if (!individualForm.name) newErrors.name = "Name is required"
     if (!individualForm.email) newErrors.email = "Email is required"
     if (!individualForm.role) newErrors.role = "Role is required"
+    if (!individualForm.geoId) newErrors.geoId = "Geo is required"
     if (!individualForm.ou) newErrors.ou = "Organization Unit is required"
 
     if (Object.keys(newErrors).length > 0) {
@@ -257,7 +529,8 @@ export default function UserManagement() {
       const token = localStorage.getItem('authToken')
       await createUser(individualForm, token)
       
-      setNotificationMessage(`User ${individualForm.name} added successfully!`)
+      // Show success notification
+      setNotificationMessage(`✓ User ${individualForm.name} added successfully!`)
       setShowNotification(true)
       
       // Close modal and reset form on success
@@ -267,6 +540,7 @@ export default function UserManagement() {
         name: "",
         email: "",
         role: "",
+        geoId: "",
         ou: "",
       })
       setFormErrors({})
@@ -276,7 +550,7 @@ export default function UserManagement() {
       console.error('Error creating user:', error)
       
       // Extract error message safely
-      let errorMessage = "An error occurred"
+      let errorMessage = "Failed to create user"
       if (error instanceof Error) {
         errorMessage = error.message
       } else if (typeof error === 'string') {
@@ -285,20 +559,18 @@ export default function UserManagement() {
         errorMessage = error.message || error.error || JSON.stringify(error)
       }
       
-      // Parse backend error messages and map to fields
-      if (errorMessage.includes("Employee ID") && errorMessage.includes("already exists")) {
-        setFormErrors({ employeeId: "This Employee ID already exists" })
-      } else if (errorMessage.includes("email") && errorMessage.includes("already exists")) {
-        setFormErrors({ email: "This email already exists" })
-      } else if (errorMessage.includes("Role")) {
-        setFormErrors({ role: "Invalid role selected" })
-      } else if (errorMessage.includes("Organization")) {
-        setFormErrors({ ou: "Invalid organization selected" })
-      } else {
-        setFormErrors({ general: errorMessage })
+      // Clean up the error message (remove JSON wrapper if present)
+      if (errorMessage.includes('"error"')) {
+        try {
+          const parsed = JSON.parse(errorMessage)
+          errorMessage = parsed.error
+        } catch (e) {
+          // Keep original message if not JSON
+        }
       }
       
-      setNotificationMessage(`Error: ${errorMessage}`)
+      // Show error notification
+      setNotificationMessage(`✗ Error: ${errorMessage}`)
       setShowNotification(true)
       setTimeout(() => setShowNotification(false), 6000)
     } finally {
@@ -311,10 +583,10 @@ export default function UserManagement() {
     const dateTime = now.toISOString().replace(/[:.]/g, "-").slice(0, -5)
     const fileName = `user_template_${dateTime}.csv`
 
-    const headers = ["Employee ID", "Name", "Email", "Role", "Organizational Unit"]
+    const headers = ["Employee ID", "Name", "Email", "Role", "Geo", "Organizational Unit"]
     const sampleRows = [
-      ["EMP001", "John Doe", "john@orbit.com", "Admin", "IT Department"],
-      ["EMP002", "Jane Smith", "jane@orbit.com", "Budget Officer", "HR Department"],
+      ["EMP001", "John Doe", "john@orbit.com", "Admin", "Asia Pacific", "IT Department"],
+      ["EMP002", "Jane Smith", "jane@orbit.com", "Budget Officer", "Europe", "HR Department"],
     ]
 
     const csvContent = [headers, ...sampleRows].map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\n")
@@ -365,22 +637,38 @@ export default function UserManagement() {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-      {/* Success Notification - Floating at top */}
+      {/* Notification - Fixed at top of viewport */}
       {showNotification && (
-        <div className="absolute top-0 left-0 right-0 z-50 p-4">
-          <div className="bg-emerald-500/20 border border-emerald-500/50 rounded-lg p-4 backdrop-blur-sm">
-            <div className="flex items-center gap-3">
-              <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              <p className="text-sm text-emerald-400">{notificationMessage}</p>
+        <div className="fixed top-4 left-4 right-4 z-50 max-w-md">
+          {notificationMessage.startsWith('✗') ? (
+            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="bg-emerald-500/20 border border-emerald-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -497,6 +785,7 @@ export default function UserManagement() {
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Name</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Email</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">OU</th>
+                <th className="text-left p-3 text-xs font-medium text-slate-300">Geo</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Role</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Status</th>
                 <th className="text-right p-3 text-xs font-medium text-slate-300">Actions</th>
@@ -519,6 +808,7 @@ export default function UserManagement() {
                     <td className="p-3 text-sm text-white font-medium">{item.name}</td>
                     <td className="p-3 text-sm text-slate-300">{item.email}</td>
                     <td className="p-3 text-sm text-slate-300">{item.ou}</td>
+                    <td className="p-3 text-sm text-slate-300">{item.geo}</td>
                     <td className="p-3 text-sm text-slate-300">{item.role}</td>
                     <td className="p-3">
                       <span
@@ -869,7 +1159,8 @@ export default function UserManagement() {
       {/* Add User Modal */}
       {showAddUserModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-800 rounded-lg border border-slate-700 w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+          <div className={`flex w-full ${hasBulkReview ? "max-w-[1400px] gap-6 items-stretch" : "max-w-2xl justify-center"}`}>
+            <div className="bg-slate-800 rounded-lg border border-slate-700 w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between p-6 border-b border-slate-700">
               <h3 className="text-lg font-semibold text-white">Add User</h3>
@@ -881,8 +1172,11 @@ export default function UserManagement() {
                     name: "",
                     email: "",
                     role: "",
+                    geoId: "",
                     ou: "",
                   })
+                  setFormErrors({})
+                  clearBulkUpload()
                 }}
                 className="text-slate-400 hover:text-white transition-colors"
               >
@@ -895,7 +1189,10 @@ export default function UserManagement() {
             {/* Tabs */}
             <div className="flex border-b border-slate-700 px-6">
               <button
-                onClick={() => setAddUserTab("individual")}
+                onClick={() => {
+                  clearBulkUpload()
+                  setAddUserTab("individual")
+                }}
                 className={`px-4 py-3 text-sm font-medium transition-colors relative ${
                   addUserTab === "individual" ? "text-fuchsia-400" : "text-slate-400 hover:text-white"
                 }`}
@@ -915,7 +1212,7 @@ export default function UserManagement() {
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-auto p-6">
+            <div className="flex-1 overflow-hidden p-6">
               {addUserTab === "individual" ? (
                 // Individual Add Form
                 <div className="space-y-4">
@@ -1008,6 +1305,31 @@ export default function UserManagement() {
                   </div>
 
                   <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">Geo</label>
+                    <select
+                      value={individualForm.geoId}
+                      onChange={(e) => {
+                        setIndividualForm({ ...individualForm, geoId: e.target.value })
+                        if (formErrors.geoId) setFormErrors({ ...formErrors, geoId: "" })
+                      }}
+                      disabled={isLoadingDropdowns || availableGeos.length === 0}
+                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                        formErrors.geoId
+                          ? "border-red-500 focus:ring-red-500"
+                          : "border-slate-600 focus:ring-fuchsia-500"
+                      }`}
+                    >
+                      <option value="">{isLoadingDropdowns ? "Loading..." : "Select geo"}</option>
+                      {availableGeos.map((geo) => (
+                        <option key={geo.geo_id} value={geo.geo_id}>
+                          {geo.geo_name || geo.geo_code}
+                        </option>
+                      ))}
+                    </select>
+                    {formErrors.geoId && <p className="text-xs text-red-400 mt-1">{formErrors.geoId}</p>}
+                  </div>
+
+                  <div>
                     <label className="block text-sm font-medium text-slate-300 mb-2">Organizational Unit</label>
                     <select
                       value={individualForm.ou}
@@ -1049,15 +1371,28 @@ export default function UserManagement() {
                     <h4 className="text-sm font-medium text-slate-300 mb-2">File Format Requirements</h4>
                     <ul className="text-xs text-slate-400 space-y-1">
                       <li>• File must be in CSV or Excel format (.csv, .xlsx)</li>
-                      <li>• Required columns: Employee ID, Name, Email, Role, Organizational Unit</li>
-                      <li>• Maximum 100 users per upload</li>
+                      <li>• File name must match: user_template_YYYY-MM-DDTHH-MM-SS</li>
+                      <li>• Required columns: Employee ID, Name, Email, Role, Geo, Organizational Unit</li>
                       <li>• Ensure all email addresses are valid and unique</li>
                     </ul>
                   </div>
 
-                  <div className="border-2 border-dashed border-slate-600 rounded-lg p-8 text-center hover:border-fuchsia-500 transition-colors cursor-pointer">
+                  <input
+                    ref={bulkFileInputRef}
+                    type="file"
+                    accept=".csv,.xlsx"
+                    className="hidden"
+                    onChange={(event) => handleBulkFileSelect(event.target.files?.[0])}
+                  />
+
+                  <div
+                    className="border-2 border-dashed border-slate-600 rounded-lg p-5 text-center hover:border-fuchsia-500 transition-colors cursor-pointer"
+                    onClick={() => bulkFileInputRef.current?.click()}
+                    onDrop={handleBulkDrop}
+                    onDragOver={(event) => event.preventDefault()}
+                  >
                     <svg
-                      className="w-12 h-12 text-slate-400 mx-auto mb-3"
+                      className="w-10 h-10 text-slate-400 mx-auto mb-2"
                       fill="none"
                       stroke="currentColor"
                       viewBox="0 0 24 24"
@@ -1072,6 +1407,23 @@ export default function UserManagement() {
                     <p className="text-slate-300 text-sm font-medium">Drop your file here or click to browse</p>
                     <p className="text-slate-400 text-xs mt-1">Supported formats: CSV, XLSX</p>
                   </div>
+
+                  {(bulkFileName || bulkFileError) && (
+                    <div className="rounded-lg border border-slate-600 bg-slate-800/60 p-3 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        {bulkFileName && <p className="text-slate-200">Selected file: {bulkFileName}</p>}
+                        <button
+                          type="button"
+                          onClick={clearBulkUpload}
+                          className="text-xs text-slate-400 hover:text-white"
+                        >
+                          Remove upload
+                        </button>
+                      </div>
+                      {bulkFileError && <p className="text-red-400 mt-1">{bulkFileError}</p>}
+                    </div>
+                  )}
+
                 </div>
               )}
             </div>
@@ -1086,9 +1438,11 @@ export default function UserManagement() {
                     name: "",
                     email: "",
                     role: "",
+                    geoId: "",
                     ou: "",
                   })
                   setFormErrors({})
+                  clearBulkUpload()
                 }}
                 disabled={isSubmittingUser}
                 className="px-6 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1096,19 +1450,97 @@ export default function UserManagement() {
                 Cancel
               </button>
               <button
-                onClick={addUserTab === "individual" ? handleAddIndividualUser : () => {}}
-                disabled={isSubmittingUser || (addUserTab === "individual" && isLoadingDropdowns)}
+                onClick={addUserTab === "individual" ? handleAddIndividualUser : handleBulkImport}
+                disabled={
+                  isSubmittingUser ||
+                  (addUserTab === "individual" && isLoadingDropdowns) ||
+                  (addUserTab === "bulk" && (isProcessingBulk || bulkValidRows.length === 0 || !!bulkFileError))
+                }
                 className="px-6 py-2 bg-fuchsia-600 text-white rounded-lg hover:bg-fuchsia-700 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                {isSubmittingUser && (
+                {(isSubmittingUser || (addUserTab === "bulk" && isProcessingBulk)) && (
                   <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
                 )}
-                {addUserTab === "individual" ? (isSubmittingUser ? "Adding..." : "Add User") : "Upload Users"}
+                {addUserTab === "individual"
+                  ? isSubmittingUser
+                    ? "Adding..."
+                    : "Add User"
+                  : isProcessingBulk
+                    ? "Uploading..."
+                    : "Upload Users"}
               </button>
             </div>
+            </div>
+
+            {hasBulkReview && (
+              <div className="bg-slate-800 rounded-lg border border-slate-700 shadow-xl flex flex-col w-full max-w-2xl max-h-[90vh] overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+                  <h4 className="text-sm font-semibold text-white">Bulk Upload Review</h4>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setBulkActiveTab("valid")}
+                      className={`px-3 py-1.5 text-xs font-medium rounded ${
+                        bulkActiveTab === "valid"
+                          ? "text-emerald-400 bg-emerald-500/10"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Valid ({bulkValidRows.length})
+                    </button>
+                    <button
+                      onClick={() => setBulkActiveTab("invalid")}
+                      className={`px-3 py-1.5 text-xs font-medium rounded ${
+                        bulkActiveTab === "invalid"
+                          ? "text-red-400 bg-red-500/10"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Invalid ({bulkInvalidRows.length})
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-slate-800/80 sticky top-0">
+                      <tr className="border-b border-slate-700">
+                        <th className="text-left px-3 py-2 text-slate-300">Row</th>
+                        <th className="text-left px-3 py-2 text-slate-300">Employee ID</th>
+                        <th className="text-left px-3 py-2 text-slate-300">Name</th>
+                        <th className="text-left px-3 py-2 text-slate-300">Email</th>
+                        <th className="text-left px-3 py-2 text-slate-300">Role</th>
+                        <th className="text-left px-3 py-2 text-slate-300">Geo</th>
+                        <th className="text-left px-3 py-2 text-slate-300">OU</th>
+                        {bulkActiveTab === "invalid" && (
+                          <th className="text-left px-3 py-2 text-slate-300">Issues</th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(bulkActiveTab === "valid" ? bulkValidRows : bulkInvalidRows).map((row) => (
+                        <tr key={`${bulkActiveTab}-${row.rowNumber}-${row.email}`} className="border-b border-slate-700/50">
+                          <td className="px-3 py-2 text-slate-300">{row.rowNumber}</td>
+                          <td className="px-3 py-2 text-slate-300">{row.employeeId}</td>
+                          <td className="px-3 py-2 text-slate-200">{row.name}</td>
+                          <td className="px-3 py-2 text-slate-300">{row.email}</td>
+                          <td className="px-3 py-2 text-slate-300">{row.role}</td>
+                          <td className="px-3 py-2 text-slate-300">{row.geo}</td>
+                          <td className="px-3 py-2 text-slate-300">{row.ou}</td>
+                          {bulkActiveTab === "invalid" && (
+                            <td className="px-3 py-2 text-red-400">
+                              {row.errors?.join(", ")}
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -132,6 +132,10 @@ export const validateAdminUserCreation = (data) => {
     errors.roleId = 'Role ID is required';
   }
 
+  if (!data.geoId || data.geoId.trim() === '') {
+    errors.geoId = 'Geo ID is required';
+  }
+
   return {
     isValid: Object.keys(errors).length === 0,
     errors,

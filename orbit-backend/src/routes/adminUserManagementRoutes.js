@@ -66,4 +66,10 @@ router.get('/roles', mockAuth, AdminUserManagementController.getAllRoles);
  */
 router.get('/organizations', mockAuth, AdminUserManagementController.getAllOrganizations);
 
+/**
+ * GET /api/admin/geos
+ * Get all available geos
+ */
+router.get('/geos', mockAuth, AdminUserManagementController.getAllGeos);
+
 export default router;

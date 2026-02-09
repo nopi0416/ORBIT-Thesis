@@ -11,7 +11,7 @@ import { getDashboardRoute } from '../utils/roleRouting';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { login, completeLogin } = useAuth();
+  const { login, completeLogin, debugLoginAsAdmin } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
@@ -537,8 +537,29 @@ export default function Login() {
                 )}
               </form>
 
+              {/* DEBUG BUTTON - REMOVE BEFORE PRODUCTION */}
+              <div className="pt-4 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => {
+                    debugLoginAsAdmin();
+                    navigate('/admin');
+                  }}
+                  className="w-full h-10 text-sm font-semibold rounded-md transition-colors"
+                  style={{
+                    backgroundColor: 'oklch(0.42 0.16 20)',
+                    color: 'white',
+                  }}
+                >
+                  [DEV MODE] Login as Admin
+                </button>
+                <p className="text-xs mt-2 text-center" style={{ color: 'oklch(0.55 0.15 25)' }}>
+                  ⚠️ DEBUG ONLY - Remove before production
+                </p>
+              </div>
+
               {/* Footer */}
-              <div className="text-center text-sm" style={{ color: 'oklch(0.65 0.03 280)' }}>© 2025 ORBIT. All rights reserved.</div>
+              <div className="text-center text-sm pt-4" style={{ color: 'oklch(0.65 0.03 280)' }}>© 2025 ORBIT. All rights reserved.</div>
             </div>
           </div>
         </div>

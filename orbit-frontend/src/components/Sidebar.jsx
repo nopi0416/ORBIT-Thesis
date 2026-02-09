@@ -87,7 +87,7 @@ export function Sidebar({ userRole }) {
       {/* Header */}
       <div className="flex h-16 items-center justify-between border-b border-white/10 px-4">
         {isHovered && (
-          <Link to="/dashboard" className="flex items-center gap-2">
+          <Link to={userRole === "admin" ? "/admin" : "/dashboard"} className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-coral">
               <span className="text-lg font-bold text-white">O</span>
             </div>
@@ -106,57 +106,23 @@ export function Sidebar({ userRole }) {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 p-3">
-        {/* Regular Navigation - Only visible to non-admin users */}
-        {userRole !== "admin" && (
-          <>
-            {navigation.map((item) => {
-              const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                    isActive ? "bg-primary/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white",
-                  )}
-                  title={!isHovered ? item.name : undefined}
-                >
-                  <item.icon className="h-5 w-5 shrink-0" />
-                  {isHovered && <span>{item.name}</span>}
-                </Link>
-              );
-            })}
-          </>
-        )}
-
-        {/* Admin Navigation Section - Only visible to admin users */}
-        {userRole === "admin" && (
-          <>
-            {isHovered && (
-              <>
-                <div className="my-2 border-t border-white/10"></div>
-                <p className="px-3 py-2 text-xs font-semibold uppercase text-white/50">Admin</p>
-              </>
-            )}
-            {adminNavigation.map((item) => {
-              const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                    isActive ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-white/70 hover:bg-white/10 hover:text-white",
-                  )}
-                  title={!isHovered ? item.name : undefined}
-                >
-                  <item.icon className="h-5 w-5 shrink-0" />
-                  {isHovered && <span>{item.name}</span>}
-                </Link>
-              );
-            })}
-          </>
-        )}
+        {(userRole === "admin" ? adminNavigation : navigation).map((item) => {
+          const isActive = location.pathname === item.href || location.pathname.startsWith(item.href + "/");
+          return (
+            <Link
+              key={item.name}
+              to={item.href}
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                isActive ? "bg-primary/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white",
+              )}
+              title={!isHovered ? item.name : undefined}
+            >
+              <item.icon className="h-5 w-5 shrink-0" />
+              {isHovered && <span>{item.name}</span>}
+            </Link>
+          );
+        })}
       </nav>
 
       {/* Footer */}
@@ -167,15 +133,17 @@ export function Sidebar({ userRole }) {
             <p className="text-xs font-medium text-white/50">Signed in as</p>
             <p className="truncate text-sm font-semibold text-white">{user.name}</p>
             <p className="text-xs capitalize text-primary">
-              {userRole === "l1"
-                ? "L1 Approver"
-                : userRole === "l2"
-                  ? "L2 Approver"
-                  : userRole === "l3"
-                    ? "L3 Approver"
-                    : userRole === "payroll"
-                      ? "Payroll Staff"
-                      : "Requestor"}
+              {userRole === "admin"
+                ? "Administrator"
+                : userRole === "l1"
+                  ? "L1 Approver"
+                  : userRole === "l2"
+                    ? "L2 Approver"
+                    : userRole === "l3"
+                      ? "L3 Approver"
+                      : userRole === "payroll"
+                        ? "Payroll Staff"
+                        : "Requestor"}
             </p>
           </div>
         )}

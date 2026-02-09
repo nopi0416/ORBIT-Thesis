@@ -27,7 +27,7 @@ export class AuthService {
       // Check if user already exists
       const { data: existingUser } = await supabase
         .from('tblusers')
-        .select('id')
+        .select('user_id')
         .eq('email', email)
         .single();
 
@@ -45,12 +45,11 @@ export class AuthService {
         .insert([
           {
             email,
-            password, // TODO: Hash before storing
+            password_hash: password, // TODO: Hash before storing using bcrypt
             first_name: firstName,
             last_name: lastName,
-            role,
-            is_active: true,
-            password_expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(), // 90 days
+            status: 'active',
+            is_first_login: true,
             created_at: new Date().toISOString(),
           },
         ])
@@ -61,11 +60,10 @@ export class AuthService {
       return {
         success: true,
         data: {
-          id: data[0].id,
+          id: data[0].user_id,
           email: data[0].email,
           firstName: data[0].first_name,
           lastName: data[0].last_name,
-          role: data[0].role,
         },
         message: 'User registered successfully',
       };

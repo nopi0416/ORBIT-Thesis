@@ -20,7 +20,7 @@ export const createUser = async (userData, token) => {
         employeeId: userData.employeeId,
         roleId: userData.role,
         organizationId: userData.ou,
-        department: userData.ou,
+        geoId: userData.geoId,
       }),
     });
 
@@ -80,7 +80,8 @@ export const getAllUsers = async (token, filters = {}) => {
         employeeId: user.employee_id,
         name: `${user.first_name} ${user.last_name}`,
         email: user.email,
-        ou: user.department,
+        ou: user.tblorganization?.org_name || 'Unassigned',
+        geo: user.tblgeo?.geo_name || user.tblgeo?.geo_code || 'Unassigned',
         role: user.tbluserroles?.[0]?.tblroles?.role_name || 'N/A',
         status: user.status,
       }));
@@ -143,6 +144,36 @@ export const getAvailableOrganizations = async (token) => {
   } catch (error) {
     console.error('Error fetching organizations:', error);
     // Return empty array as fallback
+    return [];
+  }
+};
+
+/**
+ * Get available geos
+ */
+export const getAvailableGeos = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/geos`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to fetch geos');
+    }
+
+    if (data.data && Array.isArray(data.data)) {
+      return data.data.map((geo) => ({
+        geo_id: geo.geo_id,
+        geo_name: geo.geo_name,
+        geo_code: geo.geo_code,
+      }));
+    }
+    return [];
+  } catch (error) {
+    console.error('Error fetching geos:', error);
     return [];
   }
 };

@@ -120,4 +120,25 @@ export class AdminUserManagementController {
       sendError(res, { error: error.message }, 500);
     }
   }
+
+  /**
+   * GET /api/admin/geos
+   * Get all available geos
+   */
+  static async getAllGeos(req, res) {
+    try {
+      console.log('=== Fetching All Geos ===');
+
+      const result = await AdminUserManagementService.getAllGeos();
+
+      if (!result.success) {
+        return sendError(res, { error: result.error }, 400);
+      }
+
+      sendSuccess(res, result.data, 'Geos fetched successfully', 200);
+    } catch (error) {
+      console.error('Error in getAllGeos:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
 }
