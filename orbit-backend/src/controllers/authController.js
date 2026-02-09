@@ -55,7 +55,8 @@ export class AuthController {
 
   /**
    * POST /api/auth/login
-   * Login user with employee_id and password - generates OTP
+   * Login user with credential (email or employee_id) and password
+   * Supports both admin (via tbladminusers) and regular users (via tblusers)
    */
   static async login(req, res) {
     try {

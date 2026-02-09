@@ -511,7 +511,7 @@ export default function Login() {
                             maxLength={1}
                             value={digit}
                             onInput={(e) => handleOtpChange(index, sanitizeOTP(e.target.value))}
-                            onPaste={(e) => handlePaste(e, sanitizeOTP)}
+                            onPaste={handleOtpPaste}
                             onKeyDown={(e) => handleOtpKeyDown(index, e)}
                             autoFocus={index === 0}
                             style={{

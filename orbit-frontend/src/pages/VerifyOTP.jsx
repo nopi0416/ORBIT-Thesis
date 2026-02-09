@@ -237,9 +237,8 @@ export default function VerifyOTP() {
                       maxLength={1}
                       value={digit}
                       onInput={(e) => handleChange(index, sanitizeOTP(e.target.value))}
-                      onPaste={(e) => handlePaste(e, sanitizeOTP)}
-                      onKeyDown={(e) => handleKeyDown(index, e)}
                       onPaste={handlePaste}
+                      onKeyDown={(e) => handleKeyDown(index, e)}
                       autoFocus={index === 0}
                       style={{
                         width: '3rem',
