@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { useAuth } from '../context/AuthContext';
 import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 import aiInsightsService from '../services/aiInsightsService';
+import { fetchWithCache } from '../utils/dataCache';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -18,6 +19,7 @@ export default function DashboardPage() {
   const [metricsError, setMetricsError] = useState(null);
   const cacheKey = `aiInsightsCache:${user?.id || 'anon'}`;
   const cacheTtlMs = 5 * 60 * 1000;
+  const metricsCacheKey = `dashboardMetrics:${user?.id || 'anon'}`;
 
   const handleGenerateInsights = async () => {
     setAiLoading(true);
@@ -36,7 +38,12 @@ export default function DashboardPage() {
   const handleLoadMetrics = async () => {
     setMetricsError(null);
     try {
-      const data = await aiInsightsService.getRealtimeMetrics({}, getToken());
+      const data = await fetchWithCache(
+        'dashboardMetrics',
+        metricsCacheKey,
+        () => aiInsightsService.getRealtimeMetrics({}, getToken()),
+        2 * 60 * 1000
+      );
       setMetricsData(data);
     } catch (error) {
       setMetricsError(error.message || 'Failed to load realtime metrics.');
@@ -63,7 +70,12 @@ export default function DashboardPage() {
     const loadLatest = async () => {
       setAiError(null);
       try {
-        const latest = await aiInsightsService.getLatestAiInsights(getToken());
+        const latest = await fetchWithCache(
+          'aiInsightsLatest',
+          cacheKey,
+          () => aiInsightsService.getLatestAiInsights(getToken()),
+          cacheTtlMs
+        );
         if (latest) {
           setAiData(latest);
           localStorage.setItem(cacheKey, JSON.stringify({ data: latest, cachedAt: Date.now() }));
@@ -84,17 +96,109 @@ export default function DashboardPage() {
       />
 
       <div className="p-6 space-y-6">
-        <PayrollInsightsLayout
-          loading={aiLoading}
-          error={aiError}
-          data={aiData}
-          metrics={metricsData}
-          metricsError={metricsError}
-          onGenerate={handleGenerateInsights}
-        />
-        <LatestUpdatesTable updates={metricsData?.latest_updates} error={metricsError} />
+        {userRole === 'payroll' ? (
+          <>
+            <PayrollInsightsLayout
+              loading={aiLoading}
+              error={aiError}
+              data={aiData}
+              metrics={metricsData}
+              metricsError={metricsError}
+              onGenerate={handleGenerateInsights}
+            />
+            <LatestUpdatesTable updates={metricsData?.latest_updates} error={metricsError} />
+          </>
+        ) : (
+          <RoleInsightsLayout
+            loading={aiLoading}
+            error={aiError}
+            data={aiData}
+            role={userRole}
+            metrics={metricsData}
+            metricsError={metricsError}
+            onGenerate={handleGenerateInsights}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+function RoleInsightsLayout({ loading, error, data, role, metrics, metricsError, onGenerate }) {
+  const charts = metrics?.charts || {};
+  const statusBreakdown = Array.isArray(charts.status_breakdown)
+    ? charts.status_breakdown
+    : [];
+
+  const roleTitle = role === 'requestor'
+    ? 'Requestor Dashboard'
+    : role?.includes('l')
+      ? 'Approver Dashboard'
+      : 'Operations Dashboard';
+
+  return (
+    <Card className="bg-slate-800">
+      <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="space-y-1">
+          <CardTitle className="text-white">{roleTitle}</CardTitle>
+          <p className="text-xs text-gray-400">
+            AI insights tailored to your role scope.
+          </p>
+        </div>
+        <Button
+          onClick={onGenerate}
+          className="bg-blue-600 hover:bg-blue-700 text-white"
+          disabled={loading}
+        >
+          {loading ? 'Generating…' : 'Run AI Insights'}
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error && (
+          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {error}
+          </div>
+        )}
+
+        {metricsError && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            {metricsError}
+          </div>
+        )}
+
+        {!data && !loading && !error && (
+          <div className="text-sm text-gray-400">
+            Click “Run AI Insights” to generate the latest summary.
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <InsightCard title="Executive Summary" content={data?.summary} />
+            <InsightList title="Key Insights" items={data?.insights} emptyLabel="No insights available." />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <InsightList title="Risk Signals" items={data?.risks} emptyLabel="No risks flagged." />
+            <InsightList title="Recommended Actions" items={data?.actions} emptyLabel="No actions available." />
+          </div>
+
+          {statusBreakdown.length > 0 && (
+            <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+              <div className="text-sm text-white font-semibold mb-2">Status Snapshot</div>
+              <div className="grid gap-2 md:grid-cols-2">
+                {statusBreakdown.map((item) => (
+                  <div key={item.label} className="flex items-center justify-between text-sm text-slate-300">
+                    <span className="capitalize">{String(item.label || '').replace(/_/g, ' ')}</span>
+                    <span className="text-white font-semibold">{Number(item.value || 0)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

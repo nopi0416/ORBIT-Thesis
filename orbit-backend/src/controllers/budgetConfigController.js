@@ -115,6 +115,10 @@ export class BudgetConfigController {
 
         // Related data for approvers table
         approvers: configData.approvers || BudgetConfigService.buildApproversFromConfig(configData),
+        log_meta: {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        },
       };
 
       // Create budget configuration
@@ -231,7 +235,13 @@ export class BudgetConfigController {
         return sendError(res, 'Only the configuration creator can modify this configuration', 403);
       }
 
-      const result = await BudgetConfigService.updateBudgetConfig(id, safeUpdate);
+      const result = await BudgetConfigService.updateBudgetConfig(id, {
+        ...safeUpdate,
+        log_meta: {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        },
+      });
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -261,7 +271,10 @@ export class BudgetConfigController {
         return sendError(res, 'Budget ID is required', 400);
       }
 
-      const result = await BudgetConfigService.deleteBudgetConfig(id);
+      const result = await BudgetConfigService.deleteBudgetConfig(id, req.user?.id, {
+        ip_address: req.ip,
+        user_agent: req.get('user-agent'),
+      });
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -348,7 +361,15 @@ export class BudgetConfigController {
         return sendError(res, 'Tenure groups array is required', 400);
       }
 
-      const result = await BudgetConfigService.addTenureGroups(budgetId, tenure_groups);
+      const result = await BudgetConfigService.addTenureGroups(
+        budgetId,
+        tenure_groups,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -373,7 +394,14 @@ export class BudgetConfigController {
         return sendError(res, 'Tenure group ID is required', 400);
       }
 
-      const result = await BudgetConfigService.removeTenureGroup(tenureGroupId);
+      const result = await BudgetConfigService.removeTenureGroup(
+        tenureGroupId,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -440,7 +468,11 @@ export class BudgetConfigController {
         approval_level,
         primary_approver,
         backup_approver,
-        userId
+        userId,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
       );
 
       if (!result.success) {
@@ -466,7 +498,14 @@ export class BudgetConfigController {
         return sendError(res, 'Approver ID is required', 400);
       }
 
-      const result = await BudgetConfigService.removeApprover(approverId);
+      const result = await BudgetConfigService.removeApprover(
+        approverId,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -524,7 +563,16 @@ export class BudgetConfigController {
         return sendError(res, 'Scope type and scope value are required', 400);
       }
 
-      const result = await BudgetConfigService.addAccessScope(budgetId, scope_type, scope_value, userId);
+      const result = await BudgetConfigService.addAccessScope(
+        budgetId,
+        scope_type,
+        scope_value,
+        userId,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -549,7 +597,14 @@ export class BudgetConfigController {
         return sendError(res, 'Scope ID is required', 400);
       }
 
-      const result = await BudgetConfigService.removeAccessScope(scopeId);
+      const result = await BudgetConfigService.removeAccessScope(
+        scopeId,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);

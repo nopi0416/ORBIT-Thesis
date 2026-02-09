@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useAuth } from "../context/AuthContext";
 import { resolveUserRole } from "../utils/roleUtils";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
-import budgetConfigService from "../services/budgetConfigService";
+import * as budgetConfigService from "../services/budgetConfigService";
 import { connectWebSocket, addWebSocketListener } from "../services/realtimeService";
 import { fetchWithCache, invalidateNamespace } from "../utils/dataCache";
 const parseStoredList = (value) => {

@@ -27,6 +27,35 @@ const containsOrgId = (value, orgId) => {
   });
 };
 
+const logBudgetConfigAction = async ({
+  budgetId,
+  actionType,
+  description,
+  performedBy,
+  oldValue,
+  newValue,
+  logMeta = {},
+}) => {
+  if (!budgetId || !performedBy) return;
+
+  try {
+    await supabase.from('tblbudgetconfigurationlogs').insert([
+      {
+        budget_id: budgetId,
+        action_type: actionType || null,
+        description: description || null,
+        performed_by: performedBy,
+        old_value: oldValue ? JSON.stringify(oldValue) : null,
+        new_value: newValue ? JSON.stringify(newValue) : null,
+        ip_address: logMeta?.ip_address || null,
+        user_agent: logMeta?.user_agent || null,
+      },
+    ]);
+  } catch (error) {
+    console.warn('[budgetConfigLogs] Failed to insert log:', error?.message || error);
+  }
+};
+
 /**
  * Budget Configuration Service
  * Handles all database operations for budget configurations
@@ -91,6 +120,7 @@ export class BudgetConfigService {
         tenure_group,
         budget_description,
         status,
+        log_meta,
       } = configData;
 
       // Step 1: Create main budget configuration (without geo/location/department scopes)
@@ -124,6 +154,15 @@ export class BudgetConfigService {
       if (budgetError) throw budgetError;
 
       const budget_id = budgetData[0].budget_id;
+      await logBudgetConfigAction({
+        budgetId: budget_id,
+        actionType: 'created',
+        description: 'Budget configuration created',
+        performedBy: created_by,
+        oldValue: null,
+        newValue: budgetData[0],
+        logMeta: log_meta,
+      });
       
       console.log('=== Budget Created ===');
       console.log('Budget ID:', budget_id);
@@ -150,6 +189,16 @@ export class BudgetConfigService {
           throw approverError;
         }
         console.log('Approvers inserted successfully');
+
+        await logBudgetConfigAction({
+          budgetId: budget_id,
+          actionType: 'approver_configured',
+          description: 'Approvers configured during budget creation',
+          performedBy: created_by,
+          oldValue: null,
+          newValue: approverRecords,
+          logMeta: log_meta,
+        });
       } else {
         console.log('No approvers to insert');
       }
@@ -327,7 +376,14 @@ export class BudgetConfigService {
         budget_description,
         status,
         updated_by,
+        log_meta,
       } = updateData;
+
+      const { data: existingConfig } = await supabase
+        .from('tblbudgetconfiguration')
+        .select('*')
+        .eq('budget_id', budgetId)
+        .single();
 
       // Update main budget configuration
       const { data, error } = await supabase
@@ -358,6 +414,21 @@ export class BudgetConfigService {
 
       if (error) throw error;
 
+      const actionType = status === 'deactivated' ? 'deactivated' : 'updated';
+      const actionDescription = status === 'deactivated'
+        ? 'Budget configuration deactivated'
+        : 'Budget configuration updated';
+
+      await logBudgetConfigAction({
+        budgetId,
+        actionType,
+        description: actionDescription,
+        performedBy: updated_by,
+        oldValue: existingConfig || null,
+        newValue: data?.[0] || null,
+        logMeta: log_meta,
+      });
+
       // Note: To update tenure_groups, approvers, or access_scopes,
       // use the specific methods (addTenureGroups, setApprover, addAccessScope, etc.)
       // This keeps the update logic clean and prevents accidental data loss
@@ -382,8 +453,27 @@ export class BudgetConfigService {
   /**
    * Delete a budget configuration (cascade deletes related records)
    */
-  static async deleteBudgetConfig(budgetId) {
+  static async deleteBudgetConfig(budgetId, performedBy = null, logMeta = null) {
     try {
+      const { data: existingConfig } = await supabase
+        .from('tblbudgetconfiguration')
+        .select('*')
+        .eq('budget_id', budgetId)
+        .single();
+
+      const performer = performedBy || existingConfig?.created_by;
+      if (existingConfig?.budget_id && performer) {
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'deleted',
+          description: 'Budget configuration deleted',
+          performedBy: performer,
+          oldValue: existingConfig,
+          newValue: null,
+          logMeta,
+        });
+      }
+
       const { error } = await supabase
         .from('tblbudgetconfiguration')
         .delete()
@@ -487,7 +577,7 @@ export class BudgetConfigService {
   /**
    * Add tenure groups to a budget configuration
    */
-  static async addTenureGroups(budgetId, tenureGroups) {
+  static async addTenureGroups(budgetId, tenureGroups, createdBy = null, logMeta = null) {
     try {
       const records = tenureGroups.map((group) => ({
         budget_id: budgetId,
@@ -501,6 +591,18 @@ export class BudgetConfigService {
         .select();
 
       if (error) throw error;
+
+      if (records?.length && createdBy) {
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'tenure_group_added',
+          description: 'Tenure group(s) added',
+          performedBy: createdBy,
+          oldValue: null,
+          newValue: records,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -519,14 +621,32 @@ export class BudgetConfigService {
   /**
    * Remove tenure group from a budget configuration
    */
-  static async removeTenureGroup(configTenureId) {
+  static async removeTenureGroup(configTenureId, performedBy = null, logMeta = null) {
     try {
+      const { data: existing } = await supabase
+        .from('tblbudgetconfig_tenure_groups')
+        .select('*')
+        .eq('config_tenure_id', configTenureId)
+        .single();
+
       const { error } = await supabase
         .from('tblbudgetconfig_tenure_groups')
         .delete()
         .eq('config_tenure_id', configTenureId);
 
       if (error) throw error;
+
+      if (existing?.budget_id && performedBy) {
+        await logBudgetConfigAction({
+          budgetId: existing.budget_id,
+          actionType: 'tenure_group_removed',
+          description: 'Tenure group removed',
+          performedBy,
+          oldValue: existing,
+          newValue: null,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -614,7 +734,7 @@ export class BudgetConfigService {
   /**
    * Add or update approver for a budget configuration
    */
-  static async setApprover(budgetId, approvalLevel, primaryApprover, backupApprover, createdBy) {
+  static async setApprover(budgetId, approvalLevel, primaryApprover, backupApprover, createdBy, logMeta = null) {
     try {
       // Check if approver already exists for this level
       const { data: existing, error: checkError } = await supabase
@@ -645,6 +765,16 @@ export class BudgetConfigService {
 
         if (error) throw error;
         result = data[0];
+
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'approver_updated',
+          description: `Approver updated for level ${approvalLevel}`,
+          performedBy: createdBy,
+          oldValue: existing,
+          newValue: result,
+          logMeta,
+        });
       } else {
         // Insert new approver
         const { data, error } = await supabase
@@ -663,6 +793,16 @@ export class BudgetConfigService {
 
         if (error) throw error;
         result = data[0];
+
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'approver_created',
+          description: `Approver set for level ${approvalLevel}`,
+          performedBy: createdBy,
+          oldValue: null,
+          newValue: result,
+          logMeta,
+        });
       }
 
       return {
@@ -682,14 +822,32 @@ export class BudgetConfigService {
   /**
    * Remove approver for a budget configuration
    */
-  static async removeApprover(approverId) {
+  static async removeApprover(approverId, performedBy = null, logMeta = null) {
     try {
+      const { data: existing } = await supabase
+        .from('tblbudgetconfig_approvers')
+        .select('*')
+        .eq('approver_id', approverId)
+        .single();
+
       const { error } = await supabase
         .from('tblbudgetconfig_approvers')
         .delete()
         .eq('approver_id', approverId);
 
       if (error) throw error;
+
+      if (existing?.budget_id && performedBy) {
+        await logBudgetConfigAction({
+          budgetId: existing.budget_id,
+          actionType: 'approver_removed',
+          description: `Approver removed for level ${existing.approval_level || ''}`.trim(),
+          performedBy,
+          oldValue: existing,
+          newValue: null,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -735,7 +893,7 @@ export class BudgetConfigService {
   /**
    * Add access scope to a budget configuration
    */
-  static async addAccessScope(budgetId, scopeType, scopeValue, createdBy) {
+  static async addAccessScope(budgetId, scopeType, scopeValue, createdBy, logMeta = null) {
     try {
       const { data, error } = await supabase
         .from('tblbudgetconfig_scopes')
@@ -751,6 +909,16 @@ export class BudgetConfigService {
         .select();
 
       if (error) throw error;
+
+      await logBudgetConfigAction({
+        budgetId,
+        actionType: 'access_scope_added',
+        description: `Access scope added (${scopeType})`,
+        performedBy: createdBy,
+        oldValue: null,
+        newValue: data?.[0] || null,
+        logMeta,
+      });
 
       return {
         success: true,
@@ -769,14 +937,32 @@ export class BudgetConfigService {
   /**
    * Remove access scope from a budget configuration
    */
-  static async removeAccessScope(scopeId) {
+  static async removeAccessScope(scopeId, performedBy = null, logMeta = null) {
     try {
+      const { data: existing } = await supabase
+        .from('tblbudgetconfig_scopes')
+        .select('*')
+        .eq('scope_id', scopeId)
+        .single();
+
       const { error } = await supabase
         .from('tblbudgetconfig_scopes')
         .delete()
         .eq('scope_id', scopeId);
 
       if (error) throw error;
+
+      if (existing?.budget_id && performedBy) {
+        await logBudgetConfigAction({
+          budgetId: existing.budget_id,
+          actionType: 'access_scope_removed',
+          description: `Access scope removed (${existing.scope_type || ''})`.trim(),
+          performedBy,
+          oldValue: existing,
+          newValue: null,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -1557,7 +1743,6 @@ export class BudgetConfigService {
           email,
           geo_id,
           org_id,
-          department,
           status,
           tbluserroles (
             is_active,
@@ -1594,7 +1779,6 @@ export class BudgetConfigService {
           email: user.email,
           geo_id: user.geo_id,
           org_id: user.org_id,
-          department: user.department,
           status: user.status,
           roles,
           full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
