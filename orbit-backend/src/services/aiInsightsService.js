@@ -10,12 +10,62 @@ const openrouter = new OpenRouter({
 const sanitizeText = (value, maxLength = 240) => {
   if (!value) return '';
   const text = String(value)
+    .replace(/<[^>]*>/g, ' ')
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]')
     .replace(/\b\d{6,}\b/g, '[redacted-number]')
     .replace(/\s+/g, ' ')
     .trim();
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 3)}...`;
+};
+
+const STATIC_INSTRUCTIONS = [
+  'Return JSON only.',
+  'Summary <= 60 words.',
+  'Insights: 3 short bullets.',
+  'Risks: 2 short bullets w/ severity (low/med/high).',
+  'Include at least one operational risk (queue/approvals/bottlenecks).',
+  'Actions: 2 short bullets.',
+  'No HTML/markdown. No personal data. Use UUIDs only.',
+].join(' ');
+
+const buildDeltaMetrics = (currentMetrics, latestInsight) => {
+  if (!latestInsight) return null;
+  const current = currentMetrics || {};
+  const previous = latestInsight || {};
+
+  const coerceChartArray = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'object') {
+      return Object.entries(value).map(([label, rawValue]) => ({
+        label,
+        value: Number(rawValue || 0),
+      }));
+    }
+    return [];
+  };
+
+  const prevStatusBreakdown = coerceChartArray(previous?.charts?.status_breakdown);
+  const prevStageBreakdown = coerceChartArray(previous?.charts?.stage_breakdown);
+
+  const delta = {
+    total_amount_delta: Number(current.totalAmount || 0) - Number(previous?.totals?.total_amount || 0),
+    status_counts_delta: {},
+    stage_counts_delta: {},
+  };
+
+  Object.entries(current.statusCounts || {}).forEach(([key, value]) => {
+    const prev = Number(prevStatusBreakdown.find((row) => row.label === key)?.value || 0);
+    delta.status_counts_delta[key] = Number(value || 0) - prev;
+  });
+
+  Object.entries(current.stageCounts || {}).forEach(([key, value]) => {
+    const prev = Number(prevStageBreakdown.find((row) => row.label === key)?.value || 0);
+    delta.stage_counts_delta[key] = Number(value || 0) - prev;
+  });
+
+  return delta;
 };
 
 const normalizeRole = (value) => String(value || '').toLowerCase();
@@ -159,11 +209,20 @@ export class AiInsightsService {
       if (budgetIdSet.size > 0) {
         const { data: budgets, error: budgetError } = await supabase
           .from('tblbudgetconfiguration')
-          .select('budget_id, budget_name')
+          .select('budget_id, budget_name, budget_limit, budget_control')
           .in('budget_id', Array.from(budgetIdSet));
 
         if (!budgetError && budgets) {
-          budgetMap = new Map(budgets.map((b) => [b.budget_id, b.budget_name]));
+          budgetMap = new Map(
+            budgets.map((b) => [
+              b.budget_id,
+              {
+                budget_name: b.budget_name,
+                budget_limit: b.budget_limit,
+                budget_control: b.budget_control,
+              },
+            ])
+          );
         }
       }
 
@@ -192,7 +251,7 @@ export class AiInsightsService {
       const monthlyTotals = new Map();
       let totalAmount = 0;
 
-      const safeRequests = requestRows.slice(0, 120).map((row) => {
+      const safeRequests = requestRows.slice(0, 20).map((row) => {
         const amount = Number(row.total_request_amount || 0);
         totalAmount += amount;
 
@@ -219,6 +278,8 @@ export class AiInsightsService {
         const latestActionBy = latestApproval?.approver_name || latestApproval?.approved_by || null;
 
         const budgetId = row.budget_id || 'unknown';
+        const budgetInfo = budgetMap.get(row.budget_id) || {};
+        const budgetName = budgetInfo.budget_name || 'Unknown Budget';
         const current = budgetTotals.get(budgetId) || { amount: 0, count: 0 };
         budgetTotals.set(budgetId, { amount: current.amount + amount, count: current.count + 1 });
 
@@ -247,13 +308,11 @@ export class AiInsightsService {
         return {
           request_id: row.request_id,
           request_number: row.request_number,
-          title: sanitizeText(row.description) || budgetMap.get(row.budget_id) || 'Budget request',
           budget_id: row.budget_id,
-          budget_name: budgetMap.get(row.budget_id) || 'Unknown Budget',
+          budget_name: budgetName,
           overall_status: row.overall_status || row.submission_status || 'unknown',
           stage_status: stageStatus,
           total_request_amount: amount,
-          description: sanitizeText(row.description),
           created_at: row.created_at,
           latest_action_at: latestActionAt,
           latest_action_by: latestActionBy,
@@ -269,13 +328,16 @@ export class AiInsightsService {
             completed_amount: 0,
             ongoing_amount: 0,
           };
+          const budgetInfo = budgetMap.get(budgetId) || {};
           return {
             budget_id: budgetId,
-            budget_name: budgetMap.get(budgetId) || 'Unknown Budget',
+            budget_name: budgetInfo.budget_name || 'Unknown Budget',
             total_amount: breakdown.total_amount,
             completed_amount: breakdown.completed_amount,
             ongoing_amount: breakdown.ongoing_amount,
             request_count: stats.count,
+            budget_limit: budgetInfo.budget_limit || null,
+            budget_control: Boolean(budgetInfo.budget_control),
           };
         })
         .sort((a, b) => b.total_amount - a.total_amount)
@@ -319,19 +381,57 @@ export class AiInsightsService {
       metrics.totals = totals;
       metrics.requests_sample = safeRequests;
 
+      const latestStored = await this.getLatestInsights({ userId });
+      const deltaMetrics = buildDeltaMetrics(metrics, latestStored?.data);
+
+      const now = new Date();
+      const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastMonthKey = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, '0')}`;
+      const currentMonthTotal = Number(monthlyTotals.get(currentMonthKey) || 0);
+      const lastMonthTotal = Number(monthlyTotals.get(lastMonthKey) || 0);
+      const hasMonthBaseline = lastMonthTotal > 0;
+
+      const budgetLimitSummary = {
+        limited_count: topBudgets.filter((b) => b.budget_control && Number(b.budget_limit || 0) > 0).length,
+        unlimited_count: topBudgets.filter((b) => !b.budget_control || Number(b.budget_limit || 0) <= 0).length,
+        limited_budgets: topBudgets
+          .filter((b) => b.budget_control && Number(b.budget_limit || 0) > 0)
+          .map((b) => ({ budget_id: b.budget_id, budget_name: b.budget_name, budget_limit: b.budget_limit })),
+      };
+
       const prompt = {
         scope,
+        deltas_only: Boolean(deltaMetrics),
+        delta_metrics: deltaMetrics,
         metrics: {
           total_requests: metrics.totalRequests,
           total_amount: metrics.totalAmount,
-          average_amount: metrics.averageAmount,
+          average_amount: Math.round(metrics.averageAmount || 0),
           status_counts: metrics.statusCounts,
           stage_counts: metrics.stageCounts,
         },
-        top_budgets: topBudgets,
-        requests_sample: safeRequests,
-        latest_updates: buildLatestUpdates(safeRequests),
-        data_policy: 'Do NOT include personal data. Use UUIDs only. Do NOT infer employee identities.',
+        top_budgets: topBudgets.map((b) => ({
+          budget_id: b.budget_id,
+          budget_name: b.budget_name,
+          total_amount: b.total_amount,
+          budget_limit: b.budget_limit,
+          budget_control: b.budget_control,
+        })),
+        budget_limit_summary: budgetLimitSummary,
+        month_over_month: {
+          current_month_total: currentMonthTotal,
+          last_month_total: lastMonthTotal,
+          has_baseline: hasMonthBaseline,
+        },
+        requests_sample: safeRequests.map((row) => ({
+          request_number: row.request_number,
+          budget_name: row.budget_name,
+          status: row.stage_status || row.overall_status,
+          amount: row.total_request_amount,
+          created_at: row.created_at,
+        })),
+        data_policy: 'No personal data. UUIDs only.',
       };
 
       let parsed = null;
@@ -342,14 +442,15 @@ export class AiInsightsService {
             messages: [
               {
                 role: 'system',
-                content: 'You are an analytics assistant for budget approval workflows. Return JSON only. Required keys: summary (string), insights (array of 3 short strings), risks (array of 2 short strings), actions (array of 2 short strings), latest_updates (array of objects: {id,title,status,amount,created_at,message}), charts (object with status_breakdown, status_amounts, top_budgets, monthly_series), totals (object), scope (object), generated_at (ISO string). Never include personal data or employee identifiers; use UUIDs only. Keep responses concise.'
+                content: `You are an analytics assistant for budget approval workflows. ${STATIC_INSTRUCTIONS} Budget rule: only flag budget overruns if budget_control is true and budget_limit is set. For unlimited budgets (no limit), only warn if has_baseline is true and current_month_total is significantly higher than last_month_total; if has_baseline is false, do not mention month-over-month at all. Do NOT mention tables or columns; refer to data/metrics instead. Required keys: summary (string), insights (array of 3 short strings), risks (array of 2 short strings), actions (array of 2 short strings), latest_updates (array of objects: {id,request_number,budget_name,status,amount,requested_by,action,action_by,created_at,message}), charts (object with status_breakdown, status_amounts, top_budgets, monthly_series), totals (object), scope (object), generated_at (ISO string). If deltas_only is true, focus on changes since last insight.`
               },
               {
                 role: 'user',
                 content: JSON.stringify(prompt),
               },
             ],
-            temperature: 0.2,
+            temperature: 0.15,
+            max_tokens: 650,
           },
         });
 

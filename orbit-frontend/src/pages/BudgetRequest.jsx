@@ -126,6 +126,7 @@ function ConfigurationList() {
   const [approvalsL2, setApprovalsL2] = useState([]);
   const [approvalsL3, setApprovalsL3] = useState([]);
   const [approvalsLoading, setApprovalsLoading] = useState(true);
+  const [userNameMap, setUserNameMap] = useState(new Map());
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
@@ -177,13 +178,21 @@ function ConfigurationList() {
       approversArray: approversArray.length
     });
 
+    const resolvedCreatedById = config.created_by || config.createdBy || null;
+    const resolvedCreatedByName =
+      config.created_by_name ||
+      config.createdByName ||
+      (resolvedCreatedById ? userNameMap.get(resolvedCreatedById) : null) ||
+      resolvedCreatedById ||
+      "—";
+
     return {
       id: config.budget_id || config.id,
       name: config.budget_name || config.name || "Unnamed Configuration",
       description: config.description || config.budget_description || "No description provided",
       status: config.status || config.configuration_status || "active",
-      createdById: config.created_by || config.createdBy || null,
-      createdByName: config.created_by_name || config.createdByName || config.created_by || "—",
+      createdById: resolvedCreatedById,
+      createdByName: resolvedCreatedByName,
       startDate,
       endDate,
       dateRangeLabel,
@@ -211,7 +220,7 @@ function ConfigurationList() {
       backupApproverL3Name,
       approvalStatus: config.approvalStatus || "no_submission",
     };
-  }, []);
+  }, [userNameMap]);
 
   const resolveApproverId = (value, approvers = []) => {
     if (!value) return "";
@@ -274,6 +283,31 @@ function ConfigurationList() {
     fetchApprovers();
   }, [token]);
 
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const data = await fetchWithCache(
+          'budgetUsers',
+          'all',
+          () => budgetConfigService.getUsersList(token),
+          10 * 60 * 1000
+        );
+        const map = new Map(
+          (data || []).map((userRow) => [
+            userRow.user_id,
+            `${userRow.first_name || ''} ${userRow.last_name || ''}`.trim(),
+          ])
+        );
+        setUserNameMap(map);
+      } catch (err) {
+        console.error('Error fetching users list:', err);
+        setUserNameMap(new Map());
+      }
+    };
+
+    fetchUsers();
+  }, [token]);
+
   // Re-transform configurations when approver data loads to populate names
   useEffect(() => {
     console.log('Approver data effect:', {
@@ -294,6 +328,8 @@ function ConfigurationList() {
         budget_id: config.id,
         budget_name: config.name,
         description: config.description,
+        created_by: config.createdById,
+        created_by_name: config.createdByName,
         start_date: config.startDate,
         end_date: config.endDate,
         min_limit: config.limitMin,
