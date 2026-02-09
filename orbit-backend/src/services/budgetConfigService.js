@@ -908,13 +908,126 @@ export class BudgetConfigService {
   }
 
   /**
+   * Create organization (company or department)
+   */
+  static async createOrganization(payload) {
+    try {
+      const {
+        org_name,
+        company_code,
+        parent_org_id,
+        org_description,
+        created_by,
+      } = payload;
+
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('tblorganization')
+        .insert([
+          {
+            org_name,
+            company_code: company_code || null,
+            parent_org_id: parent_org_id || null,
+            org_description: org_description || null,
+            created_by: created_by || null,
+            created_at: now,
+            updated_by: created_by || null,
+            updated_at: now,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error creating organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Update organization
+   */
+  static async updateOrganization(orgId, payload) {
+    try {
+      const {
+        org_name,
+        company_code,
+        parent_org_id,
+        org_description,
+        updated_by,
+      } = payload;
+
+      const { data, error } = await supabase
+        .from('tblorganization')
+        .update({
+          ...(org_name !== undefined && { org_name }),
+          ...(company_code !== undefined && { company_code: company_code || null }),
+          ...(parent_org_id !== undefined && { parent_org_id: parent_org_id || null }),
+          ...(org_description !== undefined && { org_description: org_description || null }),
+          ...(updated_by !== undefined && { updated_by }),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('org_id', orgId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error updating organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Delete organization
+   */
+  static async deleteOrganization(orgId) {
+    try {
+      const { error } = await supabase
+        .from('tblorganization')
+        .delete()
+        .eq('org_id', orgId);
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: { org_id: orgId },
+      };
+    } catch (error) {
+      console.error('Error deleting organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
    * Get all geos
    */
   static async getAllGeo() {
     try {
       const { data, error } = await supabase
         .from('tblgeo')
-        .select('geo_id, geo_code, geo_name')
+        .select('geo_id, geo_code, geo_name, created_at, updated_at')
         .order('geo_name', { ascending: true });
 
       if (error) throw error;
@@ -934,13 +1047,108 @@ export class BudgetConfigService {
   }
 
   /**
+   * Create geo
+   */
+  static async createGeo(payload) {
+    try {
+      const { geo_code, geo_name, created_by } = payload;
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('tblgeo')
+        .insert([
+          {
+            geo_code,
+            geo_name,
+            created_by: created_by || null,
+            created_at: now,
+            updated_by: created_by || null,
+            updated_at: now,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error creating geo:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Update geo
+   */
+  static async updateGeo(geoId, payload) {
+    try {
+      const { geo_code, geo_name, updated_by } = payload;
+      const { data, error } = await supabase
+        .from('tblgeo')
+        .update({
+          ...(geo_code !== undefined && { geo_code }),
+          ...(geo_name !== undefined && { geo_name }),
+          ...(updated_by !== undefined && { updated_by }),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('geo_id', geoId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error updating geo:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Delete geo
+   */
+  static async deleteGeo(geoId) {
+    try {
+      const { error } = await supabase
+        .from('tblgeo')
+        .delete()
+        .eq('geo_id', geoId);
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: { geo_id: geoId },
+      };
+    } catch (error) {
+      console.error('Error deleting geo:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
    * Get locations (optionally by geo)
    */
   static async getLocations(geoId = null) {
     try {
       let query = supabase
         .from('tbllocation')
-        .select('location_id, geo_id, location_code, location_name')
+        .select('location_id, geo_id, location_code, location_name, created_at, updated_at')
         .order('location_name', { ascending: true });
 
       if (geoId) {
@@ -961,6 +1169,103 @@ export class BudgetConfigService {
         success: false,
         error: error.message,
         data: [],
+      };
+    }
+  }
+
+  /**
+   * Create location
+   */
+  static async createLocation(payload) {
+    try {
+      const { geo_id, location_code, location_name, created_by } = payload;
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('tbllocation')
+        .insert([
+          {
+            geo_id,
+            location_code,
+            location_name,
+            created_by: created_by || null,
+            created_at: now,
+            updated_by: created_by || null,
+            updated_at: now,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error creating location:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Update location
+   */
+  static async updateLocation(locationId, payload) {
+    try {
+      const { geo_id, location_code, location_name, updated_by } = payload;
+      const { data, error } = await supabase
+        .from('tbllocation')
+        .update({
+          ...(geo_id !== undefined && { geo_id }),
+          ...(location_code !== undefined && { location_code }),
+          ...(location_name !== undefined && { location_name }),
+          ...(updated_by !== undefined && { updated_by }),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('location_id', locationId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error updating location:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Delete location
+   */
+  static async deleteLocation(locationId) {
+    try {
+      const { error } = await supabase
+        .from('tbllocation')
+        .delete()
+        .eq('location_id', locationId);
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: { location_id: locationId },
+      };
+    } catch (error) {
+      console.error('Error deleting location:', error);
+      return {
+        success: false,
+        error: error.message,
       };
     }
   }
@@ -1071,7 +1376,7 @@ export class BudgetConfigService {
 
       const { data, error } = await supabase
         .from('tblclient_organization')
-        .select('client_org_id, parent_org_id, client_code, client_name, client_status')
+        .select('client_org_id, parent_org_id, client_code, client_name, client_description, client_status, contract_start_date, contract_end_date, created_at, updated_at')
         .in('parent_org_id', parentOrgIds)
         .order('client_name', { ascending: true });
 
@@ -1087,6 +1392,131 @@ export class BudgetConfigService {
         success: false,
         error: error.message,
         data: [],
+      };
+    }
+  }
+
+  /**
+   * Create client organization
+   */
+  static async createClient(payload) {
+    try {
+      const {
+        parent_org_id,
+        client_code,
+        client_name,
+        client_description,
+        client_status,
+        contract_start_date,
+        contract_end_date,
+        created_by,
+      } = payload;
+
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('tblclient_organization')
+        .insert([
+          {
+            parent_org_id,
+            client_code,
+            client_name,
+            client_description: client_description || null,
+            client_status: client_status || 'active',
+            contract_start_date: contract_start_date || now,
+            contract_end_date: contract_end_date || null,
+            created_by: created_by || null,
+            created_at: now,
+            updated_by: created_by || null,
+            updated_at: now,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error creating client:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Update client organization
+   */
+  static async updateClient(clientOrgId, payload) {
+    try {
+      const {
+        parent_org_id,
+        client_code,
+        client_name,
+        client_description,
+        client_status,
+        contract_start_date,
+        contract_end_date,
+        updated_by,
+      } = payload;
+
+      const { data, error } = await supabase
+        .from('tblclient_organization')
+        .update({
+          ...(parent_org_id !== undefined && { parent_org_id }),
+          ...(client_code !== undefined && { client_code }),
+          ...(client_name !== undefined && { client_name }),
+          ...(client_description !== undefined && { client_description: client_description || null }),
+          ...(client_status !== undefined && { client_status }),
+          ...(contract_start_date !== undefined && { contract_start_date: contract_start_date || null }),
+          ...(contract_end_date !== undefined && { contract_end_date: contract_end_date || null }),
+          ...(updated_by !== undefined && { updated_by }),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('client_org_id', clientOrgId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error updating client:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Delete client organization
+   */
+  static async deleteClient(clientOrgId) {
+    try {
+      const { error } = await supabase
+        .from('tblclient_organization')
+        .delete()
+        .eq('client_org_id', clientOrgId);
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: { client_org_id: clientOrgId },
+      };
+    } catch (error) {
+      console.error('Error deleting client:', error);
+      return {
+        success: false,
+        error: error.message,
       };
     }
   }
@@ -1306,7 +1736,6 @@ export class BudgetConfigService {
           first_name,
           last_name,
           email,
-          department,
           status,
           tbluserroles (
             is_active,
@@ -1335,7 +1764,6 @@ export class BudgetConfigService {
           first_name: user.first_name,
           last_name: user.last_name,
           email: user.email,
-          department: user.department,
           status: user.status,
           roles,
           full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),

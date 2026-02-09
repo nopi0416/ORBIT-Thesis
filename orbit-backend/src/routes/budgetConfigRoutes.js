@@ -13,6 +13,15 @@ const router = Router();
 // GET - Get all organizations
 router.get('/organizations/list/all', BudgetConfigController.getOrganizations);
 
+// POST - Create organization
+router.post('/organizations', BudgetConfigController.createOrganization);
+
+// PUT - Update organization
+router.put('/organizations/:orgId', BudgetConfigController.updateOrganization);
+
+// DELETE - Delete organization
+router.delete('/organizations/:orgId', BudgetConfigController.deleteOrganization);
+
 // GET - Get organizations by hierarchy level
 router.get('/organizations/by-level/list', BudgetConfigController.getOrganizationsByLevel);
 
@@ -21,8 +30,26 @@ router.get('/organizations/by-level/list', BudgetConfigController.getOrganizatio
 // GET - Get all geo entries
 router.get('/geo/list/all', BudgetConfigController.getAllGeo);
 
+// POST - Create geo
+router.post('/geo', BudgetConfigController.createGeo);
+
+// PUT - Update geo
+router.put('/geo/:geoId', BudgetConfigController.updateGeo);
+
+// DELETE - Delete geo
+router.delete('/geo/:geoId', BudgetConfigController.deleteGeo);
+
 // GET - Get locations (optional geo_id)
 router.get('/locations/list/all', BudgetConfigController.getLocations);
+
+// POST - Create location
+router.post('/locations', BudgetConfigController.createLocation);
+
+// PUT - Update location
+router.put('/locations/:locationId', BudgetConfigController.updateLocation);
+
+// DELETE - Delete location
+router.delete('/locations/:locationId', BudgetConfigController.deleteLocation);
 
 // GET - Get organization geo/location mappings
 router.get('/organization-geo-location/list/all', BudgetConfigController.getOrganizationGeoLocations);
@@ -32,6 +59,15 @@ router.get('/organization-geo-location/by-org', BudgetConfigController.getOrgani
 
 // GET - Get clients by parent org IDs
 router.get('/clients/by-org', BudgetConfigController.getClientsByParentOrg);
+
+// POST - Create client
+router.post('/clients', BudgetConfigController.createClient);
+
+// PUT - Update client
+router.put('/clients/:clientOrgId', BudgetConfigController.updateClient);
+
+// DELETE - Delete client
+router.delete('/clients/:clientOrgId', BudgetConfigController.deleteClient);
 
 // ==================== Approvers Lookup Endpoints (MUST BE BEFORE :id) ====================
 

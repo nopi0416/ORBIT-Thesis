@@ -565,6 +565,91 @@ export class BudgetConfigController {
   }
 
   /**
+   * POST /api/organizations
+   * Create organization
+   */
+  static async createOrganization(req, res) {
+    try {
+      const {
+        org_name,
+        company_code,
+        parent_org_id,
+        org_description,
+        created_by,
+      } = req.body || {};
+
+      if (!org_name) {
+        return sendError(res, 'org_name is required', 400);
+      }
+
+      const result = await BudgetConfigService.createOrganization({
+        org_name,
+        company_code,
+        parent_org_id,
+        org_description,
+        created_by,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Organization created successfully', 201);
+    } catch (error) {
+      console.error('Error in createOrganization:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * PUT /api/organizations/:orgId
+   * Update organization
+   */
+  static async updateOrganization(req, res) {
+    try {
+      const { orgId } = req.params;
+      if (!orgId) {
+        return sendError(res, 'orgId is required', 400);
+      }
+
+      const result = await BudgetConfigService.updateOrganization(orgId, req.body || {});
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Organization updated successfully');
+    } catch (error) {
+      console.error('Error in updateOrganization:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * DELETE /api/organizations/:orgId
+   * Delete organization
+   */
+  static async deleteOrganization(req, res) {
+    try {
+      const { orgId } = req.params;
+      if (!orgId) {
+        return sendError(res, 'orgId is required', 400);
+      }
+
+      const result = await BudgetConfigService.deleteOrganization(orgId);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Organization deleted successfully');
+    } catch (error) {
+      console.error('Error in deleteOrganization:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
    * GET /api/organizations/by-level
    * Get organizations grouped by hierarchy level
    */
@@ -603,6 +688,78 @@ export class BudgetConfigController {
   }
 
   /**
+   * POST /api/geo
+   * Create geo
+   */
+  static async createGeo(req, res) {
+    try {
+      const { geo_code, geo_name, created_by } = req.body || {};
+      if (!geo_code || !geo_name) {
+        return sendError(res, 'geo_code and geo_name are required', 400);
+      }
+
+      const result = await BudgetConfigService.createGeo({ geo_code, geo_name, created_by });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Geo created successfully', 201);
+    } catch (error) {
+      console.error('Error in createGeo:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * PUT /api/geo/:geoId
+   * Update geo
+   */
+  static async updateGeo(req, res) {
+    try {
+      const { geoId } = req.params;
+      if (!geoId) {
+        return sendError(res, 'geoId is required', 400);
+      }
+
+      const result = await BudgetConfigService.updateGeo(geoId, req.body || {});
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Geo updated successfully');
+    } catch (error) {
+      console.error('Error in updateGeo:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * DELETE /api/geo/:geoId
+   * Delete geo
+   */
+  static async deleteGeo(req, res) {
+    try {
+      const { geoId } = req.params;
+      if (!geoId) {
+        return sendError(res, 'geoId is required', 400);
+      }
+
+      const result = await BudgetConfigService.deleteGeo(geoId);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Geo deleted successfully');
+    } catch (error) {
+      console.error('Error in deleteGeo:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
    * GET /api/locations
    * Get locations (optional geo_id filter)
    */
@@ -618,6 +775,83 @@ export class BudgetConfigController {
       sendSuccess(res, result.data, 'Locations retrieved successfully');
     } catch (error) {
       console.error('Error in getLocations:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * POST /api/locations
+   * Create location
+   */
+  static async createLocation(req, res) {
+    try {
+      const { geo_id, location_code, location_name, created_by } = req.body || {};
+      if (!geo_id || !location_code || !location_name) {
+        return sendError(res, 'geo_id, location_code, and location_name are required', 400);
+      }
+
+      const result = await BudgetConfigService.createLocation({
+        geo_id,
+        location_code,
+        location_name,
+        created_by,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Location created successfully', 201);
+    } catch (error) {
+      console.error('Error in createLocation:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * PUT /api/locations/:locationId
+   * Update location
+   */
+  static async updateLocation(req, res) {
+    try {
+      const { locationId } = req.params;
+      if (!locationId) {
+        return sendError(res, 'locationId is required', 400);
+      }
+
+      const result = await BudgetConfigService.updateLocation(locationId, req.body || {});
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Location updated successfully');
+    } catch (error) {
+      console.error('Error in updateLocation:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * DELETE /api/locations/:locationId
+   * Delete location
+   */
+  static async deleteLocation(req, res) {
+    try {
+      const { locationId } = req.params;
+      if (!locationId) {
+        return sendError(res, 'locationId is required', 400);
+      }
+
+      const result = await BudgetConfigService.deleteLocation(locationId);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Location deleted successfully');
+    } catch (error) {
+      console.error('Error in deleteLocation:', error);
       sendError(res, error.message, 500);
     }
   }
@@ -685,6 +919,97 @@ export class BudgetConfigController {
       sendSuccess(res, result.data, 'Clients retrieved successfully');
     } catch (error) {
       console.error('Error in getClientsByParentOrg:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * POST /api/clients
+   * Create client organization
+   */
+  static async createClient(req, res) {
+    try {
+      const {
+        parent_org_id,
+        client_code,
+        client_name,
+        client_description,
+        client_status,
+        contract_start_date,
+        contract_end_date,
+        created_by,
+      } = req.body || {};
+
+      if (!parent_org_id || !client_code || !client_name) {
+        return sendError(res, 'parent_org_id, client_code, and client_name are required', 400);
+      }
+
+      const result = await BudgetConfigService.createClient({
+        parent_org_id,
+        client_code,
+        client_name,
+        client_description,
+        client_status,
+        contract_start_date,
+        contract_end_date,
+        created_by,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Client created successfully', 201);
+    } catch (error) {
+      console.error('Error in createClient:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * PUT /api/clients/:clientOrgId
+   * Update client organization
+   */
+  static async updateClient(req, res) {
+    try {
+      const { clientOrgId } = req.params;
+      if (!clientOrgId) {
+        return sendError(res, 'clientOrgId is required', 400);
+      }
+
+      const result = await BudgetConfigService.updateClient(clientOrgId, req.body || {});
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Client updated successfully');
+    } catch (error) {
+      console.error('Error in updateClient:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * DELETE /api/clients/:clientOrgId
+   * Delete client organization
+   */
+  static async deleteClient(req, res) {
+    try {
+      const { clientOrgId } = req.params;
+      if (!clientOrgId) {
+        return sendError(res, 'clientOrgId is required', 400);
+      }
+
+      const result = await BudgetConfigService.deleteClient(clientOrgId);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Client deleted successfully');
+    } catch (error) {
+      console.error('Error in deleteClient:', error);
       sendError(res, error.message, 500);
     }
   }

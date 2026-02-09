@@ -17,7 +17,6 @@ export default function DashboardLayout({ children }) {
 
         {/* Main content area */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
-          {/* Demo User Switcher - Fixed top right */}
           <div className="fixed top-4 right-4 z-30">
             <DemoUserSwitcher />
           </div>
