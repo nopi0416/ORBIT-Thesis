@@ -53,6 +53,23 @@ export class AiInsightsController {
       return sendError(res, error.message || 'Failed to generate realtime metrics', 500);
     }
   }
+
+  static async getLatestInsights(req, res) {
+    try {
+      const userId = req.user?.id || null;
+
+      const result = await AiInsightsService.getLatestInsights({ userId });
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      return sendSuccess(res, result.data, 'Latest AI insights fetched', 200);
+    } catch (error) {
+      console.error('Error fetching latest AI insights:', error);
+      return sendError(res, error.message || 'Failed to fetch latest AI insights', 500);
+    }
+  }
 }
 
 export default AiInsightsController;

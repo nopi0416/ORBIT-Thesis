@@ -10,6 +10,7 @@ const router = express.Router();
  * Body: { fromDate?, toDate? }
  */
 router.post('/insights', authenticateToken, AiInsightsController.generateInsights);
+router.get('/insights/latest', authenticateToken, AiInsightsController.getLatestInsights);
 router.get('/metrics', authenticateToken, AiInsightsController.getRealtimeMetrics);
 
 export default router;

@@ -34,7 +34,17 @@ const getRealtimeMetrics = async (params = {}, token) => {
   return parseResponse(response);
 };
 
+const getLatestAiInsights = async (token) => {
+  const response = await fetch(`${API_BASE_URL}/ai/insights/latest`, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
 export default {
   getAiInsights,
+  getLatestAiInsights,
   getRealtimeMetrics,
 };

@@ -16,6 +16,8 @@ export default function DashboardPage() {
   const [aiData, setAiData] = useState(null);
   const [metricsData, setMetricsData] = useState(null);
   const [metricsError, setMetricsError] = useState(null);
+  const cacheKey = `aiInsightsCache:${user?.id || 'anon'}`;
+  const cacheTtlMs = 5 * 60 * 1000;
 
   const handleGenerateInsights = async () => {
     setAiLoading(true);
@@ -23,6 +25,7 @@ export default function DashboardPage() {
     try {
       const data = await aiInsightsService.getAiInsights({}, getToken());
       setAiData(data);
+      localStorage.setItem(cacheKey, JSON.stringify({ data, cachedAt: Date.now() }));
     } catch (error) {
       setAiError(error.message || 'Failed to generate AI insights.');
     } finally {
@@ -43,6 +46,35 @@ export default function DashboardPage() {
   React.useEffect(() => {
     handleLoadMetrics();
   }, []);
+
+  React.useEffect(() => {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed?.data && Date.now() - (parsed.cachedAt || 0) < cacheTtlMs) {
+          setAiData(parsed.data);
+        }
+      } catch {
+        localStorage.removeItem(cacheKey);
+      }
+    }
+
+    const loadLatest = async () => {
+      setAiError(null);
+      try {
+        const latest = await aiInsightsService.getLatestAiInsights(getToken());
+        if (latest) {
+          setAiData(latest);
+          localStorage.setItem(cacheKey, JSON.stringify({ data: latest, cachedAt: Date.now() }));
+        }
+      } catch (error) {
+        setAiError(error.message || 'Failed to load latest AI insights.');
+      }
+    };
+
+    loadLatest();
+  }, [cacheKey]);
 
   return (
     <div>

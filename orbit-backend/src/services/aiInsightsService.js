@@ -108,6 +108,7 @@ export class AiInsightsService {
     toDate,
   }) {
     const hasApiKey = Boolean(process.env.OPENROUTER_API_KEY);
+    let rawResponse = '';
 
     try {
       const roleNormalized = normalizeRole(role);
@@ -353,6 +354,7 @@ export class AiInsightsService {
         });
 
         const raw = response?.choices?.[0]?.message?.content || '';
+        rawResponse = raw;
         console.log('[AI Insights] Raw response:', raw);
         parsed = extractJson(raw);
       }
@@ -384,6 +386,26 @@ export class AiInsightsService {
       merged.actions = Array.isArray(merged.actions) && merged.actions.length
         ? merged.actions
         : fallback.actions;
+
+      const persistPayload = {
+        created_by: userId,
+        role_scope: scope.role,
+        org_id: scope.org_id,
+        summary: merged.summary,
+        insights: merged.insights,
+        risks: merged.risks,
+        actions: merged.actions,
+        charts: merged.charts,
+        totals: merged.totals,
+        latest_updates: merged.latest_updates,
+        raw_response: rawResponse || null,
+      };
+
+      try {
+        await supabase.from('tblai_insights').insert(persistPayload);
+      } catch (persistError) {
+        console.warn('[aiInsights] Failed to store insights:', persistError?.message || persistError);
+      }
 
       return {
         success: true,
@@ -643,6 +665,40 @@ export class AiInsightsService {
           },
           generated_at: new Date().toISOString(),
         },
+      };
+    }
+  }
+
+  static async getLatestInsights({ userId }) {
+    if (!userId) {
+      return { success: false, error: 'Missing user id.' };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('tblai_insights')
+        .select('summary, insights, risks, actions, charts, totals, latest_updates, created_at, role_scope, org_id')
+        .eq('created_by', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: data
+          ? {
+              ...data,
+              generated_at: data.created_at,
+            }
+          : null,
+      };
+    } catch (error) {
+      console.error('Error fetching latest AI insights:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to fetch latest AI insights',
       };
     }
   }
