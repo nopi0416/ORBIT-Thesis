@@ -86,125 +86,57 @@ export class AuthService {
   /**
    * Login user - validates credentials and generates OTP
    * Requires OTP verification to complete login
+   * Now uses employee_id instead of email
    */
-  static async loginUser(email, password) {
+  static async loginUser(employeeId, password) {
     try {
-      console.log(`[LOGIN] Attempting login for: ${email}`);
+      console.log(`[LOGIN] Attempting login for employee_id: ${employeeId}`);
       
-      // First, try to find admin user
-      const { data: adminUser } = await supabase
-        .from('tbladminusers')
-        .select('*')
-        .eq('email', email)
-        .eq('is_active', true)
-        .single();
-
-      if (adminUser) {
-        console.log(`[LOGIN] Found admin user: ${email}`);
-        
-        // Check if account is locked
-        if (adminUser.account_locked_until && new Date() < new Date(adminUser.account_locked_until)) {
-          console.log(`[LOGIN] Admin account locked for: ${email}`);
-          return {
-            success: false,
-            error: 'Account is temporarily locked. Please try again later.',
-          };
-        }
-        
-        // Check if password has expired
-        if (adminUser.password_expires_at && new Date() > new Date(adminUser.password_expires_at)) {
-          console.log(`[LOGIN] Admin password expired for: ${email}`);
-          return {
-            success: false,
-            error: 'Your password has expired. Please reset it.',
-          };
-        }
-        
-        // Verify admin password using bcrypt (support both hashed and legacy plaintext)
-        let passwordMatch = false;
-        if (adminUser.password_hash) {
-          // Check if it's a bcrypt hash (starts with $2a$, $2b$, or $2y$)
-          if (adminUser.password_hash.startsWith('$2')) {
-            // It's a bcrypt hash
-            passwordMatch = await bcrypt.compare(password, adminUser.password_hash);
-          } else {
-            // Legacy plaintext password stored as password_hash
-            passwordMatch = password === adminUser.password_hash;
-          }
-        }
-        if (!passwordMatch) {
-          console.log(`[LOGIN] Admin password mismatch for: ${email}`);
-          
-          // Increment failed attempts and lock account if needed
-          const newFailedAttempts = (adminUser.failed_login_attempts || 0) + 1;
-          const shouldLock = newFailedAttempts >= 3; // Lock after 3 failed attempts
-          
-          await supabase
-            .from('tbladminusers')
-            .update({
-              failed_login_attempts: newFailedAttempts,
-              account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
-            })
-            .eq('id', adminUser.id);
-          
-          console.log(`[LOGIN] Admin failed attempts: ${newFailedAttempts}`);
-          
-          return {
-            success: false,
-            error: 'Invalid email or password',
-          };
-        }
-        
-        // Reset failed attempts on successful login
-        await supabase
-          .from('tbladminusers')
-          .update({
-            failed_login_attempts: 0,
-            account_locked_until: null
-          })
-          .eq('id', adminUser.id);
-
-        // Generate OTP for admin login
-        const otpResult = await this.generateOTP(email, 'login');
-        if (!otpResult.success) {
-          return {
-            success: false,
-            error: 'Failed to generate OTP',
-          };
-        }
-
-        return {
-          success: true,
-          requiresOTP: true,
-          data: {
-            email: adminUser.email,
-            userType: 'admin',
-          },
-          message: 'OTP has been sent to your email. Please verify to complete login.',
-        };
-      }
-
-      // If not admin, try regular user
-      console.log(`[LOGIN] No admin found, checking regular users for: ${email}`);
-      const { data: user, error } = await supabase
+      // Try to find user by employee_id
+      let user = null;
+      let error = null;
+      
+      // First attempt: Try employee_id column
+      const result1 = await supabase
         .from('tblusers')
         .select('*')
-        .eq('email', email)
+        .eq('employee_id', employeeId)
         .single();
+      
+      if (!result1.error) {
+        user = result1.data;
+      } else {
+        error = result1.error;
+        console.log(`[LOGIN] No user found by employee_id, attempting fallback to email: ${employeeId}`, error);
+        
+        // Fallback: Try treating employeeId as email (for backwards compatibility)
+        const result2 = await supabase
+          .from('tblusers')
+          .select('*')
+          .eq('email', employeeId)
+          .single();
+        
+        if (!result2.error) {
+          user = result2.data;
+          console.log(`[LOGIN] Found user by email fallback: ${employeeId}`);
+        } else {
+          error = result2.error;
+        }
+      }
 
       if (error || !user) {
-        console.log(`[LOGIN] User not found or error: ${email}`, error);
+        console.log(`[LOGIN] User not found for: ${employeeId}`, error);
         return {
           success: false,
-          error: 'Invalid email or password',
+          error: 'Invalid Username or Password',
         };
       }
 
-      console.log(`[LOGIN] Found user: ${email}`);
+      console.log(`[LOGIN] Found user: ${employeeId}`);
       
       // Check if account is locked
       if (user.account_locked_until && new Date() < new Date(user.account_locked_until)) {
-        console.log(`[LOGIN] User account locked for: ${email}`);
+        console.log(`[LOGIN] User account locked for: ${employeeId}`);
         return {
           success: false,
           error: 'Account is temporarily locked. Please try again later.',
@@ -213,7 +145,7 @@ export class AuthService {
       
       // Check if password has expired
       if (user.password_expires_at && new Date() > new Date(user.password_expires_at)) {
-        console.log(`[LOGIN] User password expired for: ${email}`);
+        console.log(`[LOGIN] User password expired for: ${employeeId}`);
         return {
           success: false,
           error: 'Your password has expired. Please reset it.',
@@ -233,7 +165,7 @@ export class AuthService {
         }
       }
       if (!passwordMatch) {
-        console.log(`[LOGIN] Password mismatch for: ${email}`);
+        console.log(`[LOGIN] Password mismatch for: ${employeeId}`);
         
         // Increment failed attempts and lock account if needed
         const newFailedAttempts = (user.failed_login_attempts || 0) + 1;
@@ -245,12 +177,12 @@ export class AuthService {
             failed_login_attempts: newFailedAttempts,
             account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
           })
-          .eq('id', user.id);
+          .eq('user_id', user.user_id);
         
         console.log(`[LOGIN] User failed attempts: ${newFailedAttempts}`);
         return {
           success: false,
-          error: 'Invalid email or password',
+          error: 'Invalid Username or Password',
         };
       }
 
@@ -261,12 +193,12 @@ export class AuthService {
           failed_login_attempts: 0,
           account_locked_until: null
         })
-        .eq('id', user.id);
+        .eq('user_id', user.user_id);
 
-      console.log(`[LOGIN] Password verified for: ${email}, generating OTP`);
+      console.log(`[LOGIN] Password verified for: ${employeeId}, generating OTP`);
 
-      // Generate OTP for user login
-      const otpResult = await this.generateOTP(email, 'login');
+      // Generate OTP for user login - use email for OTP delivery
+      const otpResult = await this.generateOTP(user.email, 'login');
       if (!otpResult.success) {
         return {
           success: false,
@@ -278,6 +210,7 @@ export class AuthService {
         success: true,
         requiresOTP: true,
         data: {
+          employeeId: user.employee_id,
           email: user.email,
           userType: 'user',
         },
@@ -294,6 +227,7 @@ export class AuthService {
 
   /**
    * Complete login - verify OTP and return authentication token
+   * OTP is sent to email, so we look up user by email here
    */
   static async completeLogin(email, otp) {
     try {
@@ -303,43 +237,6 @@ export class AuthService {
         return {
           success: false,
           error: otpVerification.error || 'Invalid or expired OTP',
-        };
-      }
-
-      // First, try to find admin user
-      const { data: adminUser } = await supabase
-        .from('tbladminusers')
-        .select('*')
-        .eq('email', email)
-        .eq('is_active', true)
-        .single();
-
-      if (adminUser) {
-        // Generate JWT token
-        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role);
-
-        // Update last login if table supports it
-        try {
-          await supabase
-            .from('tbladminusers')
-            .update({ updated_at: new Date().toISOString() })
-            .eq('admin_id', adminUser.admin_id);
-        } catch (e) {
-          // Silently fail if update not supported
-        }
-
-        return {
-          success: true,
-          data: {
-            token,
-            userId: adminUser.admin_id,
-            email: adminUser.email,
-            firstName: adminUser.full_name,
-            lastName: '',
-            role: adminUser.admin_role,
-            userType: 'admin',
-          },
-          message: 'Login successful',
         };
       }
 
@@ -385,7 +282,7 @@ export class AuthService {
 
       const userRole = userRoleData.tblroles.role_name;
 
-      // Check if user agreement is accepted OR if first-time login flag is set
+      // Check if user agreement is accepted (first-time login)
       const { data: userAgreements, error: agreementError } = await supabase
         .from('tbluser_agreements')
         .select('*')
@@ -393,23 +290,18 @@ export class AuthService {
 
       console.log(`[COMPLETE LOGIN] User agreement check for user ${userId}:`, {
         hasAgreement: userAgreements && userAgreements.length > 0,
-        isFirstLogin: user.is_first_login,
         error: agreementError?.message,
         recordCount: userAgreements?.length,
       });
 
-      // Check if user is in first-time login (no agreement OR is_first_login flag is true)
-      if (!userAgreements || userAgreements.length === 0 || user.is_first_login === true) {
-        // Generate token for first-time user so they can make authenticated requests
-        const token = this.generateToken(userId, user.email, userRole);
-        
-        // User hasn't completed first-time login setup
+      if (!userAgreements || userAgreements.length === 0) {
+        // User hasn't accepted user agreement yet - first time login
         return {
           success: true,
           data: {
             requiresUserAgreement: true,
-            token,
             userId,
+            employeeId: user.employee_id,
             email: user.email,
             role: userRole,
             firstName: user.first_name,
@@ -437,6 +329,7 @@ export class AuthService {
         data: {
           token,
           userId,
+          employeeId: user.employee_id,
           email: user.email,
           firstName: user.first_name,
           lastName: user.last_name,
@@ -717,12 +610,14 @@ export class AuthService {
         }
       }
 
-      // Update password_hash with bcrypt-hashed password
+      // Update password_hash and mark as no longer first-time login
       // Note: Only updating password_hash since other security columns may not exist yet
       const { data, error } = await supabase
         .from('tblusers')
         .update({
           password_hash: hashedPassword,
+          is_first_login: false, // Mark as no longer first-time user
+          updated_at: new Date().toISOString(),
         })
         .eq('email', email)
         .select();
@@ -736,7 +631,7 @@ export class AuthService {
         };
       }
 
-      console.log(`[PASSWORD CHANGE] User ${email} has changed password`);
+      console.log(`[PASSWORD CHANGE] User ${email} has changed password and is_first_login set to false`);
 
       return {
         success: true,

@@ -8,6 +8,7 @@ import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check, X } from '../components/icons';
 import { getDashboardRoute } from '../utils/roleRouting';
+import { sanitizePassword, handlePaste } from '../utils/inputSanitizer';
 
 export default function FirstTimePassword() {
   const navigate = useNavigate();
@@ -129,7 +130,8 @@ export default function FirstTimePassword() {
                     type={showCurrentPassword ? 'text' : 'password'}
                     placeholder="Enter current password (demo123)"
                     value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    onInput={(e) => setCurrentPassword(sanitizePassword(e.target.value))}
+                    onPaste={(e) => handlePaste(e, sanitizePassword)}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
@@ -160,7 +162,8 @@ export default function FirstTimePassword() {
                     type={showNewPassword ? 'text' : 'password'}
                     placeholder="Enter new password"
                     value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
+                    onInput={(e) => setNewPassword(sanitizePassword(e.target.value))}
+                    onPaste={(e) => handlePaste(e, sanitizePassword)}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
@@ -190,7 +193,8 @@ export default function FirstTimePassword() {
                     type={showConfirmPassword ? 'text' : 'password'}
                     placeholder="Confirm new password"
                     value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    onInput={(e) => setConfirmPassword(sanitizePassword(e.target.value))}
+                    onPaste={(e) => handlePaste(e, sanitizePassword)}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
