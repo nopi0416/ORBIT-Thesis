@@ -1037,7 +1037,7 @@ export function SystemAdminDashboard() {
                             <Label className="text-white text-sm">Department Name</Label>
                             <Input
                               placeholder="Enter department name"
-                              className="bg-slate-700 border-slate-600 text-white text-sm min-h-[128px]"
+                              className="bg-slate-700 border-slate-600 text-white text-sm"
                               value={newDeptName}
                               onChange={handleOuInputChange(setNewDeptName)}
                               onPaste={handleOuPaste()}
