@@ -27,7 +27,7 @@ const STATIC_INSTRUCTIONS = [
   'Include at least one operational risk (queue/approvals/bottlenecks).',
   'Actions: 2 short bullets.',
   'No HTML/markdown. No personal data. Use UUIDs only.',
-  'Never mention tables, columns, rows, or schemas.',
+  'Never mention tables, columns, rows, schemas, or field names.',
 ].join(' ');
 
 const roleInstructions = (role) => {
@@ -36,7 +36,7 @@ const roleInstructions = (role) => {
     return 'Focus on payroll completion, pending payment items, and budget-control compliance.';
   }
   if (normalized.includes('requestor')) {
-    return 'Focus on the user’s submissions, current approval stages, and next steps.';
+    return 'Focus on the user’s submissions, current approval stages, and next steps. Avoid field/column labels and use PHP or ₱ for currency.';
   }
   if (normalized.includes('l1')) {
     return 'Focus on what the L1 approver can do: submit requests and approve/reject requests, with light financial context (amounts/approvals).';
@@ -617,7 +617,7 @@ export class AiInsightsService {
             messages: [
               {
                 role: 'system',
-                content: `You are an analytics assistant for budget approval workflows. ${STATIC_INSTRUCTIONS} ${roleInstructions(scope.role)} Budget rule: only flag budget overruns if budget_control is true and budget_limit is set. For unlimited budgets (no limit), only warn if has_baseline is true and current_month_total is significantly higher than last_month_total; if has_baseline is false, do not mention month-over-month at all. Do NOT mention tables or columns; refer to data/metrics instead. Required keys: summary (string), insights (array of 3 short strings), risks (array of 2 short strings), actions (array of 2 short strings), latest_updates (array of objects: {id,request_number,budget_name,status,amount,requested_by,action,action_by,created_at,message}), charts (object with status_breakdown, status_amounts, top_budgets, monthly_series), totals (object), scope (object), generated_at (ISO string). If deltas_only is true, focus on changes since last insight.`
+                content: `You are an analytics assistant for budget approval workflows. ${STATIC_INSTRUCTIONS} ${roleInstructions(scope.role)} Budget rule: only flag budget overruns if budget_control is true and budget_limit is set. For unlimited budgets (no limit), only warn if has_baseline is true and current_month_total is significantly higher than last_month_total; if has_baseline is false, do not mention month-over-month at all. Do NOT mention tables, columns, or field names; refer to data/metrics instead. Use PHP or ₱ for currency values. Required keys: summary (string), insights (array of 3 short strings), risks (array of 2 short strings), actions (array of 2 short strings), latest_updates (array of objects: {id,request_number,budget_name,status,amount,requested_by,action,action_by,created_at,message}), charts (object with status_breakdown, status_amounts, top_budgets, monthly_series), totals (object), scope (object), generated_at (ISO string). If deltas_only is true, focus on changes since last insight.`
               },
               {
                 role: 'user',

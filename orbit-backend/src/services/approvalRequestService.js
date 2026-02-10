@@ -519,11 +519,18 @@ export class ApprovalRequestService {
       if (error) throw error;
 
       // Fetch related data in parallel
-      const [lineItems, approvals, attachments, activityLog] = await Promise.all([
+      const [lineItems, approvals, attachments, activityLog, budgetConfig] = await Promise.all([
         this.getLineItemsByRequestId(requestId),
         this.getApprovalsByRequestId(requestId),
         this.getAttachmentsByRequestId(requestId),
         this.getActivityLogByRequestId(requestId),
+        data?.budget_id
+          ? supabase
+              .from('tblbudgetconfiguration')
+              .select('budget_id, budget_name, budget_description')
+              .eq('budget_id', data.budget_id)
+              .single()
+          : Promise.resolve({ data: null }),
       ]);
 
       const lineItemsData = lineItems.data || [];
@@ -546,6 +553,8 @@ export class ApprovalRequestService {
         success: true,
         data: {
           ...data,
+          budget_name: budgetConfig?.data?.budget_name || data?.budget_name || null,
+          budget_description: budgetConfig?.data?.budget_description || data?.budget_description || null,
           line_items: lineItemsData,
           approvals: approvalsData,
           attachments: attachments.data || [],
@@ -644,7 +653,7 @@ export class ApprovalRequestService {
 
         const { data: approvalRows, error: approvalError } = await supabase
           .from('tblbudgetapprovalrequests_approvals')
-          .select('request_id, approval_level, status, is_self_request')
+          .select('request_id, approval_level, status, is_self_request, assigned_to_primary, assigned_to_backup, approved_by, approver_name')
           .in('request_id', requestIds);
 
         if (approvalError) throw approvalError;
@@ -935,8 +944,12 @@ export class ApprovalRequestService {
         remaining_budget,
         will_exceed_budget,
         excess_amount,
+        payroll_cycle,
+        payroll_cycle_date,
+        payroll_cycle_Date,
         updated_by,
       } = updateData;
+      const resolvedPayrollCycleDate = payroll_cycle_Date || payroll_cycle_date;
 
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
@@ -958,6 +971,10 @@ export class ApprovalRequestService {
           ...(will_exceed_budget !== undefined && { will_exceed_budget }),
           ...(excess_amount !== undefined && {
             excess_amount: excess_amount ? parseFloat(excess_amount) : null,
+          }),
+          ...(payroll_cycle !== undefined && { payroll_cycle }),
+          ...(resolvedPayrollCycleDate !== undefined && {
+            payroll_cycle_Date: resolvedPayrollCycleDate || null,
           }),
           updated_by,
           updated_at: new Date().toISOString(),

@@ -6,8 +6,10 @@ import { broadcast } from '../realtime/websocketServer.js';
 const normalizeRole = (role) => String(role || '').toLowerCase();
 const isAdminUser = (req) => {
   const role = normalizeRole(req.user?.role);
+  // Admin check
   return req.user?.userType === 'admin' || ['admin', 'administrator', 'system admin', 'system administrator'].includes(role);
 };
+
 
 /**
  * Budget Configuration Controller

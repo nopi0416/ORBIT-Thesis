@@ -8,6 +8,7 @@ import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 import aiInsightsService from '../services/aiInsightsService';
 import approvalRequestService from '../services/approvalRequestService';
 import { fetchWithCache } from '../utils/dataCache';
+import { getConfigurationsByUser } from '../services/budgetConfigService';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -19,16 +20,151 @@ export default function DashboardPage() {
   const [aiData, setAiData] = useState(null);
   const [metricsData, setMetricsData] = useState(null);
   const [notifications, setNotifications] = useState([]);
-  const cacheKey = `aiInsightsCache:${user?.id || 'anon'}`;
+  const [requestorRequests, setRequestorRequests] = useState([]);
+  const [requestorConfigs, setRequestorConfigs] = useState([]);
+  const [requestorConfigRequests, setRequestorConfigRequests] = useState([]);
+  const cacheKey = `aiInsightsCache:${user?.id || 'anon'}:${userRole || 'role'}`;
   const cacheTtlMs = 5 * 60 * 1000;
-  const metricsCacheKey = `dashboardMetrics:${user?.id || 'anon'}`;
-  const notificationsCacheKey = `dashboardNotifications:${user?.id || 'anon'}`;
+  const metricsCacheKey = `dashboardMetrics:${user?.id || 'anon'}:${userRole || 'role'}`;
+  const notificationsCacheKey = `dashboardNotifications:${user?.id || 'anon'}:${userRole || 'role'}`;
+  const requestorRequestsCacheKey = `requestorRequests:${user?.id || 'anon'}`;
+  const requestorConfigsCacheKey = `requestorConfigs:${user?.id || 'anon'}`;
   const showNotifications = ['requestor', 'l1', 'l2', 'l3'].includes(userRole);
+  const token = getToken();
+  const isRequestor = userRole === 'requestor';
+  const isL1 = userRole === 'l1';
+  const isRequestorLike = isRequestor || isL1;
+
+  const requestorHistoryRows = React.useMemo(() => {
+    if (!isRequestorLike) return [];
+
+    const submittedRows = Array.isArray(requestorRequests) ? requestorRequests : [];
+    const configRows = Array.isArray(requestorConfigRequests) ? requestorConfigRequests : [];
+    const merged = new Map();
+
+    const addRow = (row, tag) => {
+      const requestId = row?.request_id || row?.id;
+      if (!requestId) return;
+      const existing = merged.get(requestId) || { ...row, context_tags: [] };
+      const existingTags = Array.isArray(existing.context_tags) ? existing.context_tags : [];
+      const nextTags = tag ? Array.from(new Set([...existingTags, tag])) : existingTags;
+      merged.set(requestId, { ...existing, ...row, context_tags: nextTags });
+    };
+
+    submittedRows.forEach((row) => addRow(row, 'Your submission'));
+    configRows.forEach((row) => addRow(row, 'Your configuration'));
+
+    return Array.from(merged.values());
+  }, [isRequestorLike, requestorRequests, requestorConfigRequests]);
+
+  const requestorNotifications = React.useMemo(() => {
+    if (!isRequestorLike) return notifications;
+
+    const merged = new Map();
+    const addRow = (row) => {
+      const requestId = row?.request_id || row?.requestId || row?.id;
+      if (!requestId) return;
+      const existing = merged.get(requestId) || { ...row, context_tags: [] };
+      const existingTags = Array.isArray(existing.context_tags) ? existing.context_tags : [];
+      const nextTags = Array.from(new Set([...existingTags, ...(row.context_tags || row.contextTags || [])]));
+      merged.set(requestId, { ...existing, ...row, context_tags: nextTags });
+    };
+
+    if (isL1) {
+      (Array.isArray(notifications) ? notifications : []).forEach((row) => addRow(row));
+    }
+
+    requestorHistoryRows.forEach((row) => addRow(row));
+
+    const baseRows = Array.from(merged.values());
+    const requestMap = new Map(
+      baseRows.map((request) => [request.request_id || request.id, request])
+    );
+
+    return baseRows.map((item) => {
+      const requestId = item.request_id || item.requestId || item.id;
+      const requestData = requestMap.get(requestId) || {};
+
+      return {
+        ...item,
+        request_id: requestId,
+        request_number: item.request_number || item.requestNumber || requestData.request_number || requestData.requestNumber,
+        budget_id: item.budget_id || item.budgetId || requestData.budget_id || requestData.budgetId,
+        budget_name: item.budget_name || item.budgetName || requestData.budget_name || requestData.budgetName,
+        submitted_by: item.submitted_by || item.submittedBy || requestData.submitted_by || requestData.submittedBy,
+        submitted_by_name: item.submitted_by_name || item.submittedByName || requestData.submitted_by_name || requestData.submittedByName,
+        created_by: item.created_by || item.createdBy || requestData.created_by || requestData.createdBy,
+        overall_status: item.overall_status || item.status || requestData.overall_status || requestData.status,
+        total_request_amount: item.total_request_amount || item.amount || requestData.total_request_amount || requestData.amount,
+        context_tags: item.context_tags || item.contextTags || requestData.context_tags || [],
+        updated_at: item.updated_at || item.updatedAt || requestData.updated_at || requestData.updatedAt,
+        created_at: item.created_at || item.createdAt || requestData.created_at || requestData.createdAt,
+      };
+    });
+  }, [isRequestorLike, isL1, notifications, requestorHistoryRows]);
+  const requestorTables = React.useMemo(() => {
+    const tables = metricsData?.requestor_tables;
+    const hasServerData =
+      (tables?.approval_counts && tables.approval_counts.length > 0) ||
+      (tables?.approved_amounts && tables.approved_amounts.length > 0);
+
+    if (userRole !== 'requestor' || hasServerData) {
+      return tables;
+    }
+
+    const rows = Array.isArray(requestorNotifications) ? requestorNotifications : [];
+    if (!rows.length) {
+      return tables;
+    }
+
+    const map = new Map();
+    rows.forEach((item) => {
+      const budgetKey = item.budget_id || item.budget_name || 'unknown-budget';
+      const existing = map.get(budgetKey) || {
+        budget_id: item.budget_id || budgetKey,
+        budget_name: item.budget_name || '—',
+        approved_count: 0,
+        rejected_count: 0,
+        total_requests: 0,
+        approved_amount: 0,
+      };
+
+      existing.total_requests += 1;
+      const status = String(item.overall_status || '').toLowerCase();
+      if (status === 'approved') {
+        existing.approved_count += 1;
+        existing.approved_amount += Number(item.total_request_amount || 0);
+      } else if (status === 'rejected') {
+        existing.rejected_count += 1;
+      }
+
+      map.set(budgetKey, existing);
+    });
+
+    const approval_counts = Array.from(map.values()).map((entry) => ({
+      budget_id: entry.budget_id,
+      budget_name: entry.budget_name,
+      approved_count: entry.approved_count,
+      rejected_count: entry.rejected_count,
+      total_requests: entry.total_requests,
+    }));
+
+    const approved_amounts = Array.from(map.values()).map((entry) => ({
+      budget_id: entry.budget_id,
+      budget_name: entry.budget_name,
+      approved_amount: entry.approved_amount,
+    }));
+
+    return { approval_counts, approved_amounts };
+  }, [metricsData, requestorNotifications, userRole]);
 
   const handleGenerateInsights = async () => {
     setAiLoading(true);
     try {
-      const data = await aiInsightsService.getAiInsights({}, getToken());
+      const data = await aiInsightsService.getAiInsights({
+        role: userRole,
+        user_id: user?.id || null,
+      }, token);
       setAiData(data);
       localStorage.setItem(cacheKey, JSON.stringify({ data, cachedAt: Date.now() }));
     } catch (error) {
@@ -43,7 +179,7 @@ export default function DashboardPage() {
       const data = await fetchWithCache(
         'dashboardMetrics',
         metricsCacheKey,
-        () => aiInsightsService.getRealtimeMetrics({ role: userRole }, getToken()),
+        () => aiInsightsService.getRealtimeMetrics({ role: userRole, user_id: user?.id || '' }, token),
         2 * 60 * 1000
       );
       setMetricsData(data);
@@ -54,7 +190,7 @@ export default function DashboardPage() {
 
   React.useEffect(() => {
     handleLoadMetrics();
-  }, []);
+  }, [userRole, user?.id]);
 
   React.useEffect(() => {
     if (!showNotifications) return;
@@ -64,7 +200,7 @@ export default function DashboardPage() {
         const data = await fetchWithCache(
           'dashboardNotifications',
           notificationsCacheKey,
-          () => approvalRequestService.getUserNotifications({ role: userRole }, getToken()),
+          () => approvalRequestService.getUserNotifications({ role: userRole }, token),
           2 * 60 * 1000
         );
         setNotifications(Array.isArray(data) ? data : []);
@@ -76,6 +212,81 @@ export default function DashboardPage() {
 
     loadNotifications();
   }, [showNotifications, notificationsCacheKey, userRole]);
+
+  React.useEffect(() => {
+    if (!isRequestorLike || !user?.id) return;
+
+    const loadRequestorData = async () => {
+      try {
+        const [requests, configs] = await Promise.all([
+          fetchWithCache(
+            'requestorRequests',
+            requestorRequestsCacheKey,
+            () => approvalRequestService.getMySubmittedRequests(user.id, token),
+            2 * 60 * 1000
+          ),
+          fetchWithCache(
+            'requestorConfigs',
+            requestorConfigsCacheKey,
+            () => getConfigurationsByUser(user.id, token),
+            5 * 60 * 1000
+          ),
+        ]);
+
+        setRequestorRequests(Array.isArray(requests) ? requests : []);
+        setRequestorConfigs(Array.isArray(configs) ? configs : []);
+      } catch (error) {
+        toast.error(error.message || 'Failed to load requestor data.');
+        setRequestorRequests([]);
+        setRequestorConfigs([]);
+      }
+    };
+
+    loadRequestorData();
+  }, [isRequestorLike, requestorRequestsCacheKey, requestorConfigsCacheKey, user?.id]);
+
+  React.useEffect(() => {
+    if (!isRequestorLike) return;
+
+    const loadConfigRequests = async () => {
+      const budgetIds = (requestorConfigs || [])
+        .map((config) => config.budget_id || config.id)
+        .filter(Boolean);
+
+      if (budgetIds.length === 0) {
+        setRequestorConfigRequests([]);
+        return;
+      }
+
+      try {
+        const results = await Promise.all(
+          budgetIds.map((budgetId) =>
+            fetchWithCache(
+              'requestorConfigRequests',
+              `budget_${budgetId}`,
+              () => approvalRequestService.getApprovalRequests({ budget_id: budgetId }, token),
+              2 * 60 * 1000,
+              true
+            )
+          )
+        );
+
+        const merged = new Map();
+        results.flat().forEach((row) => {
+          const requestId = row?.request_id || row?.id;
+          if (!requestId) return;
+          merged.set(requestId, row);
+        });
+
+        setRequestorConfigRequests(Array.from(merged.values()));
+      } catch (error) {
+        toast.error(error.message || 'Failed to load configuration requests.');
+        setRequestorConfigRequests([]);
+      }
+    };
+
+    loadConfigRequests();
+  }, [isRequestorLike, requestorConfigs, token]);
 
   React.useEffect(() => {
     const cached = localStorage.getItem(cacheKey);
@@ -95,7 +306,7 @@ export default function DashboardPage() {
         const latest = await fetchWithCache(
           'aiInsightsLatest',
           cacheKey,
-          () => aiInsightsService.getLatestAiInsights(getToken()),
+          () => aiInsightsService.getLatestAiInsights(token),
           cacheTtlMs
         );
         if (latest) {
@@ -139,7 +350,7 @@ export default function DashboardPage() {
             />
             {userRole === 'requestor' && (
               <RequestorSubmissionTables
-                tables={metricsData?.requestor_tables}
+                tables={requestorTables}
               />
             )}
             {userRole === 'l1' && (
@@ -147,9 +358,21 @@ export default function DashboardPage() {
                 tables={metricsData?.approver_tables}
               />
             )}
+            {userRole === 'l2' && (
+              <L2ApproverCharts
+                tables={metricsData?.approver_tables}
+                totals={metricsData?.totals}
+              />
+            )}
+            {userRole === 'l3' && (
+              <L2ApproverCharts
+                tables={metricsData?.approver_tables}
+                totals={metricsData?.totals}
+              />
+            )}
             {showNotifications && (
               <ApprovalNotificationsTable
-                items={notifications}
+                items={isRequestorLike ? requestorNotifications : notifications}
                 role={userRole}
               />
             )}
@@ -227,33 +450,40 @@ function ApprovalNotificationsTable({ items = [], role }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700">
-                {rows.map((item) => (
-                  <tr key={item.request_id} className="hover:bg-slate-700/50">
+                {rows.map((item, index) => (
+                  <tr
+                    key={`${item.request_id || item.request_number || 'row'}-${item.updated_at || item.created_at || 'time'}-${index}`}
+                    className="hover:bg-slate-700/50"
+                  >
                     <td className="px-4 py-3 text-xs text-slate-300">
-                      {item.request_number || '—'}
+                      {item.request_number || item.requestNumber || '—'}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="text-sm font-medium text-white">{item.budget_name || '—'}</div>
+                      <div className="text-sm font-medium text-white">
+                        {item.budget_name || item.budgetName || item.budget || '—'}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-300">
-                      {item.submitted_by_name || '—'}
+                      {item.submitted_by_name || item.submittedByName || item.submitted_by || item.submittedBy || '—'}
                     </td>
                     <td className="px-4 py-3">
                       <span className="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200">
-                        {formatLabel(item.overall_status)}
+                        {formatLabel(item.overall_status || item.status)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-300">
-                      {formatLabel(item.approval_stage_status)}
+                      {formatLabel(item.approval_stage_status || item.stage_status || item.stage)}
                     </td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-white">
-                      ₱{Number(item.total_request_amount || 0).toLocaleString()}
+                      ₱{Number(item.total_request_amount || item.amount || 0).toLocaleString()}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-300">
-                      {formatDate(item.updated_at || item.created_at)}
+                      {formatDate(item.updated_at || item.updatedAt || item.created_at || item.createdAt)}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-300">
-                      {(item.context_tags || []).length ? item.context_tags.join(' • ') : '—'}
+                      {(item.context_tags || item.contextTags || []).length
+                        ? (item.context_tags || item.contextTags).join(' • ')
+                        : '—'}
                     </td>
                   </tr>
                 ))}
@@ -650,8 +880,8 @@ function RequestorSubmissionTables({ tables }) {
 
 function RequestorCountsBarChart({ data }) {
   const safeData = Array.isArray(data) ? data : [];
-  const maxValue = Math.max(
-    ...safeData.map((row) => Math.max(Number(row.approved_count || 0), Number(row.rejected_count || 0))),
+  const maxTotal = Math.max(
+    ...safeData.map((row) => Number(row.approved_count || 0) + Number(row.rejected_count || 0)),
     1
   );
 
@@ -660,8 +890,10 @@ function RequestorCountsBarChart({ data }) {
       {safeData.map((row) => {
         const approved = Number(row.approved_count || 0);
         const rejected = Number(row.rejected_count || 0);
-        const approvedPercent = (approved / maxValue) * 100;
-        const rejectedPercent = (rejected / maxValue) * 100;
+        const total = approved + rejected;
+        const totalWidth = (total / maxTotal) * 100;
+        const approvedWidth = total ? (approved / total) * totalWidth : 0;
+        const rejectedWidth = total ? (rejected / total) * totalWidth : 0;
 
         return (
           <div key={row.budget_id} className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">
@@ -670,22 +902,17 @@ function RequestorCountsBarChart({ data }) {
               <span className="text-xs text-slate-400">Total: {Number(row.total_requests || 0)}</span>
             </div>
             <div className="space-y-2">
-              <div>
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>Approved</span>
-                  <span className="text-emerald-400 font-semibold">{approved}</span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-slate-700">
-                  <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${approvedPercent}%` }} />
-                </div>
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>Approved</span>
+                <span className="text-emerald-400 font-semibold">{approved}</span>
+                <span className="text-slate-500">|</span>
+                <span>Rejected</span>
+                <span className="text-rose-400 font-semibold">{rejected}</span>
               </div>
-              <div>
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>Rejected</span>
-                  <span className="text-rose-400 font-semibold">{rejected}</span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-slate-700">
-                  <div className="h-2 rounded-full bg-rose-500" style={{ width: `${rejectedPercent}%` }} />
+              <div className="h-3 w-full rounded-full bg-slate-800 border border-slate-700 overflow-hidden">
+                <div className="flex h-full">
+                  <div className="bg-emerald-500" style={{ width: `${approvedWidth}%` }} />
+                  <div className="bg-rose-500" style={{ width: `${rejectedWidth}%` }} />
                 </div>
               </div>
             </div>
@@ -883,5 +1110,54 @@ function ApproverAmountsPieChart({ data }) {
       totalLabel="Total Approved"
       valueFormatter={(value) => `₱${Number(value || 0).toLocaleString()}`}
     />
+  );
+}
+
+function L2ApproverCharts({ tables, totals }) {
+  const approvedCounts = Array.isArray(tables?.approved_counts) ? tables.approved_counts : [];
+  const approvedAmount = Number(totals?.completed_amount || 0);
+  const ongoingAmount = Number(totals?.ongoing_amount || 0);
+
+  const amountSections = [
+    { label: 'approved', value: approvedAmount },
+    { label: 'ongoing_approval', value: ongoingAmount },
+  ].filter((row) => Number(row.value || 0) > 0);
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card className="bg-slate-800">
+        <CardHeader>
+          <CardTitle className="text-white">Approved vs Rejected by Configuration</CardTitle>
+          <p className="text-xs text-slate-400">Your approval decisions by configuration.</p>
+        </CardHeader>
+        <CardContent>
+          {approvedCounts.length === 0 && (
+            <div className="text-sm text-slate-400">No approval actions recorded.</div>
+          )}
+          {approvedCounts.length > 0 && (
+            <ApproverStackedBarChart data={approvedCounts} />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="bg-slate-800">
+        <CardHeader>
+          <CardTitle className="text-white">Approved vs Ongoing Amounts</CardTitle>
+          <p className="text-xs text-slate-400">Total amounts by status with percentage share.</p>
+        </CardHeader>
+        <CardContent>
+          {amountSections.length === 0 ? (
+            <div className="text-sm text-slate-400">No approval amounts available.</div>
+          ) : (
+            <PieChartCard
+              title="Approved vs Ongoing Amounts"
+              data={amountSections}
+              totalLabel="Total"
+              valueFormatter={(value) => `₱${Number(value || 0).toLocaleString()}`}
+            />
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

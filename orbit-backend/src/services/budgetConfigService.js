@@ -97,6 +97,36 @@ export class BudgetConfigService {
     );
   }
 
+  static async getUserRoleMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tbluserroles')
+      .select(`
+        user_id,
+        is_active,
+        tblroles:role_id (
+          role_name
+        )
+      `)
+      .in('user_id', uniqueIds)
+      .eq('is_active', true);
+
+    if (error) {
+      console.warn('[getUserRoleMap] Role lookup failed:', error);
+      // Return empty map instead of throwing to avoid breaking the entire list
+      return new Map();
+    }
+
+    return new Map(
+      (data || []).map((ur) => [
+        ur.user_id,
+        String(ur.tblroles?.role_name || '').toLowerCase(),
+      ])
+    );
+  }
+
   static async getBudgetApprovalAmounts(budgetIds = []) {
     const uniqueIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
     if (!uniqueIds.length) return new Map();
@@ -346,8 +376,13 @@ export class BudgetConfigService {
 
       // Fetch related data for each config
       let userNameMap = new Map();
+      let userRoleMap = new Map();
+      const creatorIds = (filteredByOrg || []).map((row) => row.created_by);
       try {
-        userNameMap = await this.getUserNameMap((filteredByOrg || []).map((row) => row.created_by));
+        [userNameMap, userRoleMap] = await Promise.all([
+          this.getUserNameMap(creatorIds),
+          this.getUserRoleMap(creatorIds)
+        ]);
       } catch (lookupError) {
         console.warn('[getAllBudgetConfigs] User lookup failed:', lookupError?.message || lookupError);
       }
@@ -358,6 +393,7 @@ export class BudgetConfigService {
             this.getApproversByBudgetId(config.budget_id),
           ]);
           const creatorName = userNameMap.get(config.created_by);
+          const creatorRole = userRoleMap.get(config.created_by);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
           const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0 };
           const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
@@ -370,6 +406,7 @@ export class BudgetConfigService {
             budget_tracking: [],
             status: computedStatus,
             created_by_name: creatorDetails?.name || config.created_by,
+            created_by_role: creatorRole || null,
             approved_amount: totals.approvedAmount,
             ongoing_amount: totals.ongoingAmount,
             has_approval_activity: hasApprovalActivity,

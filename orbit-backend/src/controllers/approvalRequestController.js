@@ -112,7 +112,7 @@ export class ApprovalRequestController {
    */
   static async createApprovalRequest(req, res) {
     try {
-      const { budget_id, description, total_request_amount } = req.body;
+      const { budget_id, description, total_request_amount, client_sponsored } = req.body;
       const userId = req.user?.id || req.body.submitted_by || req.body.created_by;
       const orgId = req.user?.org_id || null;
 
@@ -134,6 +134,7 @@ export class ApprovalRequestController {
         total_request_amount,
         submitted_by: userId,
         created_by: userId,
+        client_sponsored,
       });
 
       if (!result.success) {
@@ -358,9 +359,11 @@ export class ApprovalRequestController {
         conditions_applied,
         payroll_cycle,
         payroll_cycle_date,
+        payroll_cycle_Date,
         user_id,
       } = req.body;
       const userId = req.user?.id || user_id;
+      const normalizedPayrollCycleDate = payroll_cycle_date || payroll_cycle_Date;
 
       if (!approval_level) {
         return sendError(res, 'approval_level is required', 400);
@@ -372,7 +375,7 @@ export class ApprovalRequestController {
 
       const normalizedLevel = Number(approval_level);
       if (normalizedLevel === 4) {
-        if (!payroll_cycle || !payroll_cycle_date) {
+        if (!payroll_cycle || !normalizedPayrollCycleDate) {
           return sendError(res, 'payroll_cycle and payroll_cycle_date are required for payroll approval', 400);
         }
       }
@@ -384,7 +387,7 @@ export class ApprovalRequestController {
         approval_notes,
         conditions_applied,
         payroll_cycle,
-        payroll_cycle_date,
+        payroll_cycle_date: normalizedPayrollCycleDate,
       });
 
       if (!result.success) {

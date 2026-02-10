@@ -72,7 +72,7 @@ const parseStoredPaths = (value) => {
 };
 
 const sanitizeTextInput = (value = '') =>
-  String(value).replace(/[^A-Za-z0-9 _\-";:'\n\r]/g, '');
+  String(value).replace(/[^A-Za-z0-9 _\-";:'\n\r.,;]/g, '');
 
 const sanitizeSingleLine = (value = '') =>
   sanitizeTextInput(value).replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trimStart();
@@ -96,6 +96,7 @@ const blockShortcuts = (event) => {
 
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
+  createdBy: config.created_by || config.createdBy || null,
   name: config.budget_name || config.name || config.budgetName || 'Untitled Budget',
   department: config.department || config.budget_department || 'All',
   description: config.budget_description || config.description || '',
@@ -189,14 +190,43 @@ const normalizeRequest = (request) => {
     request.to_be_paid_count ?? request.toBePaidCount ?? Math.max(0, lineItemsCount - deductionCount);
   const approvalStageStatus = request.approval_stage_status || request.display_status || null;
 
+  // Calculate totals from line items if available
+  const totalAmount = Number(request.total_request_amount || request.amount || 0);
+  const deductionTotal = lineItems
+    .filter(item => item.is_deduction)
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  // Net Pay = Total Amount (Assuming Total includes everything or is it Gross?) 
+  // If Total Request Amount = Sum of all items (inc deductions), then Net = Total - Deduction? 
+  // User wants "Net to Pay". 
+  // If line items are mixed (Bonus 1000, Deduction 100), Total Request Amount usually is 1100 (if sum absolute) or 900 (if sum signed).
+  // Let's assume Total Request Amount is the sum of magnitudes for now, or just calculate from line items which is safer if we have them.
+  // If we don't have line items, we rely on top level fields.
+  
+  // Refined Logic:
+  // Gross = Sum of non-deduction items
+  // Total Deduction = Sum of deduction items
+  // Net Pay = Gross - Total Deduction
+  // For the request object, 'amount' is usually stored as the total value of the request.
+  
+  const calculatedGross = lineItems.reduce((sum, item) => !item.is_deduction ? sum + Number(item.amount || 0) : sum, 0);
+  const calculatedDeduction = lineItems.reduce((sum, item) => item.is_deduction ? sum + Number(item.amount || 0) : sum, 0);
+  
+  // If line items are present, use them. Else fallback to 0 or totalAmount (ambiguous without items)
+  const isLineItemsLoaded = lineItems.length > 0;
+  
+  const finalDeductionAmount = isLineItemsLoaded ? calculatedDeduction : 0;
+  const finalNetPay = isLineItemsLoaded ? (calculatedGross - calculatedDeduction) : totalAmount; // Fallback: Assume total amount is net if no items (risky but needed)
+
   return {
     id: request.approval_request_id || request.id || request.request_id,
     budgetId: request.budget_id || request.budgetId || null,
     description: request.description || request.request_description || '',
-    amount: request.total_request_amount || request.amount || 0,
+    amount: totalAmount,
+    deductionAmount: finalDeductionAmount,
+    netPay: finalNetPay,
     status,
     submittedAt,
-    budgetName: request.budget_name || request.configName || 'Budget Configuration',
+    budgetName: request.budget_name || request.configName || null,
     requestNumber: request.request_number || request.requestNumber || null,
     approvals: request.approvals || [],
     is_self_request: request.is_self_request || false,
@@ -209,6 +239,16 @@ const normalizeRequest = (request) => {
     deductionCount,
     toBePaidCount,
     approvalStageStatus,
+    lineItems, // Pass line items through
+    
+    // Legacy/Raw Aliases for UI compatibility
+    total_request_amount: totalAmount,
+    overall_status: status,
+    submitted_at: submittedAt,
+    request_number: request.request_number || request.requestNumber || null,
+    budget_name: request.budget_name || request.configName || null,
+    is_client_sponsored: request.is_client_sponsored ?? request.client_sponsored ?? request.clientSponsored ?? false,
+    line_items: lineItems,
   };
 };
 
@@ -388,6 +428,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [successMessage, setSuccessMessage] = useState('');
   const [countdown, setCountdown] = useState(5);
   const [isError, setIsError] = useState(false);
+  const successModalWasOpen = useRef(false);
 
   const token = useMemo(() => getToken(), [refreshKey]);
   const companyId = 'caaa0000-0000-0000-0000-000000000001';
@@ -434,7 +475,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           () => getBudgetConfigurations({ org_id: user?.org_id }, token),
           5 * 60 * 1000 // 5 minutes TTL
         );
-        setConfigurations((data || []).map(normalizeConfig).filter(config => String(config.status || '').toLowerCase() === 'active'));
+        setConfigurations((data || []).map(normalizeConfig).filter(config => {
+          const isActive = String(config.status || '').toLowerCase() === 'active';
+          if (userRole === 'payroll') {
+            return isActive && config.createdBy === user.id;
+          }
+          return isActive;
+        }));
       } catch (error) {
         setConfigError(error.message || 'Failed to load configurations');
         setConfigurations([]);
@@ -490,6 +537,17 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setSubmitError(null);
     }
   }, [canProceed, submitError]);
+
+  useEffect(() => {
+    if (showSuccessModal) {
+      successModalWasOpen.current = true;
+      return;
+    }
+    if (successModalWasOpen.current && successMessage) {
+      successModalWasOpen.current = false;
+      window.location.reload();
+    }
+  }, [showSuccessModal, successMessage]);
 
   useEffect(() => {
     const hydrateApprovers = async () => {
@@ -553,7 +611,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           'myRequests',
           `submitted_${userId}`,
           () => approvalRequestService.getApprovalRequests({ submitted_by: userId }, token),
-          60 * 1000
+          60 * 1000,
+          true
         );
 
         setMyRequests((data || []).map(normalizeRequest));
@@ -589,7 +648,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         'approvalRequestDetails',
         requestId,
         () => approvalRequestService.getApprovalRequest(requestId, token),
-        60 * 1000
+        60 * 1000,
+        true
       );
       if (!data || data.submitted_by !== userId) return;
       const normalized = normalizeRequest(data);
@@ -601,7 +661,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       });
 
       if (selectedRequest?.id === requestId) {
-        setRequestDetailsData(data || null);
+        setRequestDetailsData(data ? normalizeRequest(data) : null);
         if (normalized.budgetId) {
           const config = await getBudgetConfigurationById(normalized.budgetId, token);
           setRequestConfigDetails(config || null);
@@ -627,7 +687,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   }, [userId, token, selectedRequest?.id]);
 
   const getOrgName = (orgId) => {
-    const org = organizations.find((item) => item.org_id === orgId);
+    const org = organizations.find((item) => item.org_id === orgId || item.id === orgId);
     return org ? org.org_name : orgId;
   };
 
@@ -689,21 +749,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       // 1. hasParentOnly flag is true (path length = 1), OR
       // 2. Number of selected departments equals total children count
       if ((hasParentOnly && departments.size === 0) || (totalChildren > 0 && departments.size === totalChildren)) {
-        formatted.push(`${parentName} → All`);
+        formatted.push('All');
       } else if (departments.size > 0) {
         const deptArray = Array.from(departments);
-        if (deptArray.length === 1) {
-          formatted.push(`${parentName} → ${deptArray[0]}`);
-        } else if (deptArray.length <= 4) {
-          formatted.push(`${parentName} → ${deptArray.join(', ')}`);
+        if (deptArray.length <= 4) {
+          formatted.push(deptArray.join(', '));
         } else {
           const visible = deptArray.slice(0, 4).join(', ');
           const remaining = deptArray.length - 4;
-          formatted.push(`${parentName} → ${visible}...(${remaining} Total)`);
+          formatted.push(`${visible}...(${remaining} more)`);
         }
       } else {
         // Fallback if somehow we have neither
-        formatted.push(`${parentName} → All`);
+        formatted.push('All');
       }
     });
     
@@ -765,6 +823,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           // Strict Matching: Cross-reference selected OU IDs with loaded Organization data
           // to get allowed Company Codes and Department Names.
           // We use the `organizations` state which contains the full loaded list of OUs.
+          const parentOnlyIds = configOuPaths
+            .filter((path) => Array.isArray(path) && path.length === 1)
+            .map((path) => normalizeText(path[0]))
+            .filter(Boolean);
+          const hasParentAll = parentOnlyIds.length > 0;
+
           const allowedOrgs = organizations.filter((org) =>
             configOuIds.has(normalizeText(org.id || org.org_id))
           );
@@ -779,7 +843,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           // Strict Check 1: Company Code must match
           const companyMatch = allowedCompanyCodes.has(empCompanyCode);
           // Strict Check 2: Department Name must match (Name-based, not ID-based)
-          const deptMatch = allowedDeptNames.has(empDepartment);
+          const deptMatch = hasParentAll || allowedDeptNames.has(empDepartment);
 
           isScopeAllowed = companyMatch && deptMatch;
 
@@ -1009,7 +1073,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         () => approvalRequestService.getApprovalRequest(request.id, token),
         60 * 1000
       );
-      setRequestDetailsData(data || null);
+      setRequestDetailsData(data ? normalizeRequest(data) : null);
 
       if (request.budgetId) {
         const config = await getBudgetConfigurationById(request.budgetId, token);
@@ -1031,7 +1095,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         () => approvalRequestService.getApprovalRequest(selectedRequest.id, token),
         60 * 1000
       );
-      setRequestDetailsData(data || null);
+      setRequestDetailsData(data ? normalizeRequest(data) : null);
 
       if (selectedRequest.budgetId) {
         const config = await getBudgetConfigurationById(selectedRequest.budgetId, token);
@@ -1325,21 +1389,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       const validateEmployeeScope = (data) => {
         const normalizeText = (value) => String(value || '').trim().toLowerCase();
 
+        const empCompanyCode = normalizeText(data?.company_code);
         const employeeDepartment =
-          data?.department || data?.dept || data?.department_name || data?.dept_name || data?.org_name || data?.ou_name || '';
+          data?.department ||
+          data?.dept ||
+          data?.department_name ||
+          data?.dept_name ||
+          data?.org_name ||
+          data?.ou_name ||
+          '';
         const employeeOrgId = normalizeText(
           data?.org_id || data?.ou_id || data?.org_unit_id || data?.department_id || ''
         );
         const employeeOrgName = employeeOrgId ? getOrgName(employeeOrgId) : '';
-
-        const employeeDeptCandidates = [
-          employeeDepartment,
-          data?.org_name || '',
-          data?.ou_name || '',
-          employeeOrgName || '',
-        ]
-          .map((value) => normalizeText(value))
-          .filter(Boolean);
 
         const rawConfigDepartments =
           selectedConfig?.departments ||
@@ -1355,53 +1417,53 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         const configOuPaths = parseStoredPaths(
           selectedConfig?.affectedOUPaths || selectedConfig?.affected_ou || []
         );
+        const parentOnlyIds = configOuPaths
+          .filter((path) => Array.isArray(path) && path.length === 1)
+          .map((path) => normalizeText(path[0]))
+          .filter(Boolean);
+        const hasParentAll = parentOnlyIds.length > 0;
         const configOuIds = new Set(
-          configOuPaths.flat().map((value) => normalizeText(value)).filter(Boolean)
-        );
-        const configOuNames = new Set(
           configOuPaths
             .map((path) => (Array.isArray(path) ? path[path.length - 1] : path))
-            .map((value) => normalizeText(getOrgName(value) || value))
+            .map((value) => normalizeText(value))
             .filter(Boolean)
         );
 
-        // When OU filter exists, ignore "All" departments and use OU names as allowed departments
-        const hasOuFilter = configOuIds.size > 0 || configOuPaths.length > 0;
-        const allowedDepartments = hasOuFilter 
-          ? Array.from(configOuNames)  // Use only OU-specific departments when OU filter exists
-          : Array.from(new Set([...configDepartmentNames, ...Array.from(configOuNames)]));
-        
-        const hasAllDepartments = !hasOuFilter && allowedDepartments.includes('all');
-        const hasDepartmentFilter = allowedDepartments.length > 0 && !hasAllDepartments;
-        const departmentAllowed =
-          !hasDepartmentFilter || employeeDeptCandidates.some((value) => allowedDepartments.includes(value));
+        const hasOuFilter = configOuIds.size > 0;
 
-        const employeePathRaw =
-          data?.ou_path || data?.org_path || data?.ou_hierarchy || data?.org_hierarchy || '';
-        const employeePath = parseStoredList(employeePathRaw).map((value) => normalizeText(value));
-        
-        // Get company name from employee data
-        const employeeCompanyName = normalizeText(
-          data?.company_name || data?.companyName || data?.company || ''
-        );
-        
-        // More lenient OU matching: check if employee's company/org/OU is in the allowed list
-        const ouAllowed =
-          !hasOuFilter ||
-          (employeeOrgId && configOuIds.has(employeeOrgId)) ||
-          (employeeCompanyName && configOuNames.has(employeeCompanyName)) ||
-          (employeePath.length > 0 &&
-            configOuPaths.some((path) => {
-              const normalizedPath = path.map((value) => normalizeText(value)).filter(Boolean);
-              if (!normalizedPath.length) return false;
-              // Check if any part of the employee path matches any part of the config path
-              return normalizedPath.some((configId) => employeePath.includes(configId));
-            }));
+        if (hasOuFilter) {
+          const allowedOrgs = organizations.filter((org) =>
+            configOuIds.has(normalizeText(org.id || org.org_id))
+          );
+
+          const allowedCompanyCodes = new Set(
+            allowedOrgs.map((org) => normalizeText(org.company_code)).filter(Boolean)
+          );
+          const allowedDeptNames = new Set(
+            allowedOrgs
+              .map((org) => normalizeText(org.name || org.department || org.org_name))
+              .filter(Boolean)
+          );
+
+          const companyMatch = allowedCompanyCodes.has(empCompanyCode);
+          const deptMatch = hasParentAll || allowedDeptNames.has(normalizeText(employeeDepartment));
+
+          return {
+            departmentAllowed: deptMatch,
+            ouAllowed: companyMatch,
+            isValid: companyMatch && deptMatch,
+            employeeDepartment,
+            employeeOrgName,
+          };
+        }
+
+        const hasAll = configDepartmentNames.includes('all');
+        const departmentAllowed = hasAll || configDepartmentNames.includes(normalizeText(employeeDepartment));
 
         return {
           departmentAllowed,
-          ouAllowed,
-          isValid: departmentAllowed && ouAllowed,
+          ouAllowed: true,
+          isValid: departmentAllowed,
           employeeDepartment,
           employeeOrgName,
         };
@@ -2009,8 +2071,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   };
 
   const filteredConfigs = configurations.filter(config => 
-    !searchTerm || String(config.name || '').toLowerCase().includes(searchTerm.toLowerCase())
+    (!searchTerm || String(config.name || '').toLowerCase().includes(searchTerm.toLowerCase())) &&
+    !(userRole === 'requestor' && ['payroll', 'l1'].includes(String(config.created_by_role || '').toLowerCase()))
   );
+  const visibleMyRequests = myRequests.filter((request) => {
+    const rawStatus = String(request.overall_status || request.status || '').toLowerCase();
+    return rawStatus !== 'completed';
+  });
 
   return (
     <>
@@ -2127,7 +2194,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       <div className="text-sm text-gray-400">Loading requests...</div>
     ) : requestsError ? (
       <div className="text-sm text-red-400">{requestsError}</div>
-    ) : myRequests.length === 0 ? (
+    ) : visibleMyRequests.length === 0 ? (
       <div className="text-sm text-gray-400">No approval requests submitted yet.</div>
     ) : (
       /* The wrapper below is the key: 
@@ -2166,7 +2233,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 Description
               </th>
               <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                Amount
+                Total Amount
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Deductions (Amt)
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Net Pay
               </th>
               <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
                 Submitted
@@ -2181,7 +2254,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             </tr>
           </thead>
           <tbody className="bg-slate-800/50">
-            {myRequests.map((request) => {
+            {visibleMyRequests.map((request) => {
               const approvals = request.approvals || [];
               const stageStatus = request.approvalStageStatus || computeStageStatus(approvals, request.overall_status || request.status);
               const displayStatus = formatStageStatusLabel(stageStatus);
@@ -2224,6 +2297,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   <td className="px-4 py-3 text-xs text-right font-semibold text-emerald-400">
                     ₱{Number(request.amount || 0).toLocaleString()}
                   </td>
+                  <td className="px-4 py-3 text-xs text-right text-red-400">
+                    ₱{Number(request.deductionAmount || 0).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-right font-bold text-emerald-400">
+                    ₱{Number(request.netPay || 0).toLocaleString()}
+                  </td>
                   <td className="px-4 py-3 text-xs text-slate-400">
                     {formatDatePHT(request.submittedAt)}
                   </td>
@@ -2257,7 +2336,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className={`bg-slate-800 border-slate-700 text-white flex flex-col ${
           requestMode === 'bulk' && bulkItems.length > 0
-            ? 'w-[95vw] max-w-[1300px] max-h-[85vh] p-0 overflow-y-auto'
+            ? 'w-[95vw] max-w-[1299px] max-h-[85vh] p-0 overflow-y-auto'
             : 'w-[95vw] md:w-[80vw] xl:w-[60vw] max-w-none max-h-[90vh] overflow-y-auto p-4'
         }`}>
 <DialogHeader className={`flex-shrink-0 space-y-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-5 pt-4 pb-1' : 'pb-2'}`}>
@@ -2684,7 +2763,17 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
-                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString()}</div>
+                  <div className="flex gap-4">
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-gray-400">Deduction Total</div>
+                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-gray-400">Net to Pay</div>
+                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString()}</div>
+                    </div>
+                  </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
@@ -2727,7 +2816,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   className="mt-3 max-h-[360px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700"
                 >
                   <table className="w-full text-sm">
-                    <thead className="bg-slate-800">
+                    <thead className="bg-slate-800 sticky top-0 z-10">
                       <tr>
                         <th className="px-3 py-2 text-left text-slate-300">Employee ID</th>
                         <th className="px-3 py-2 text-left text-slate-300">Name</th>
@@ -2739,7 +2828,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                         <th className="px-3 py-2 text-left text-slate-300">Department</th>
                         <th className="px-3 py-2 text-left text-slate-300">Hire Date</th>
                         <th className="px-3 py-2 text-left text-slate-300">Term. Date</th>
-                        <th className="px-3 py-2 text-right text-slate-300">Amount</th>
+                        {(userRole === 'payroll' || detailRecord?.is_self_request) && (
+                          <th className="px-3 py-2 text-right text-slate-300">Amount</th>
+                        )}
                         <th className="px-3 py-2 text-center text-slate-300">Deduction</th>
                         <th className="px-3 py-2 text-left text-slate-300">Notes</th>
                       </tr>
@@ -2767,9 +2858,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                               <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.hire_date || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.termination_date || '—'}</td>
-                              <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                ₱{Math.abs(amountValue).toLocaleString()}
-                              </td>
+                              {(userRole === 'payroll' || detailRecord?.is_self_request) && (
+                                <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                  ₱{Math.abs(amountValue).toLocaleString()}
+                                </td>
+                              )}
                               <td className="px-3 py-2 text-center">
                                 {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
                               </td>
@@ -2944,7 +3037,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       </Dialog>
 
       {/* Success/Error Modal */}
-      <Dialog open={showSuccessModal} onOpenChange={(open) => !open && setShowSuccessModal(false)} modal={true}>
+      <Dialog
+        open={showSuccessModal}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowSuccessModal(false);
+            window.location.reload();
+          }
+        }}
+        modal={true}
+      >
         <DialogContent className="bg-slate-900/95 backdrop-blur-md border-slate-700 text-white w-[400px]">
           <DialogHeader>
             <DialogTitle className={isError ? "text-red-400" : "text-emerald-400"}>
@@ -2955,25 +3057,20 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           <div className="text-sm text-slate-400 text-center py-2 font-semibold">
             Closing in {countdown} second{countdown !== 1 ? 's' : ''}...
           </div>
-          <DialogFooter>
-            <Button 
-              onClick={() => {
-                setShowSuccessModal(false);
-                if (!isError) {
-                  setShowModal(false);
-                  onRefresh();
-                }
-              }}
-              className={isError ? "bg-red-600 hover:bg-red-700 text-white" : "bg-blue-600 hover:bg-blue-700 text-white"}
-            >
-              Close Now
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
   );
 }
+const LoadingOverlay = () => (
+  <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+    <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl animate-in fade-in zoom-in duration-200">
+      <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
+      <p className="text-emerald-400 font-medium animate-pulse text-lg">Processing Approval...</p>
+    </div>
+  </div>
+);
+
 function ApprovalRequests({ refreshKey }) {
   const { user } = useAuth();
   const toast = useToast();
@@ -3050,6 +3147,8 @@ function ApprovalRequests({ refreshKey }) {
   const [confirmAction, setConfirmAction] = useState(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
+  const [successCountdown, setSuccessCountdown] = useState(5);
+  const successModalWasOpen = useRef(false);
   const [payrollCycleModalOpen, setPayrollCycleModalOpen] = useState(false);
   const [payrollCycle, setPayrollCycle] = useState('');
   const [payrollCycleDate, setPayrollCycleDate] = useState('');
@@ -3073,6 +3172,38 @@ function ApprovalRequests({ refreshKey }) {
     }
   }, [userRole]);
 
+  useEffect(() => {
+    if (!showSuccessModal) return;
+    let timeLeft = 5;
+    setSuccessCountdown(timeLeft);
+    const countdownInterval = setInterval(() => {
+      timeLeft -= 1;
+      setSuccessCountdown(timeLeft);
+      if (timeLeft <= 0) {
+        clearInterval(countdownInterval);
+        setShowSuccessModal(false);
+        setDetailsOpen(false);
+        setDecisionNotes('');
+        setPayrollCycle('');
+        setPayrollCycleDate('');
+        fetchApprovals();
+      }
+    }, 1000);
+
+    return () => clearInterval(countdownInterval);
+  }, [showSuccessModal]);
+
+  useEffect(() => {
+    if (showSuccessModal) {
+      successModalWasOpen.current = true;
+      return;
+    }
+    if (successModalWasOpen.current && successMessage) {
+      successModalWasOpen.current = false;
+      window.location.reload();
+    }
+  }, [showSuccessModal, successMessage]);
+
   const fetchApprovals = async () => {
     if (!user?.id) return;
     setLoading(true);
@@ -3087,9 +3218,21 @@ function ApprovalRequests({ refreshKey }) {
 
       const cacheTTL = 60 * 1000;
       const getApprovalRequestsCached = (filters, key) =>
-        fetchWithCache('approvalRequests', key, () => approvalRequestService.getApprovalRequests(filters, getToken()), cacheTTL);
+        fetchWithCache(
+          'approvalRequests',
+          key,
+          () => approvalRequestService.getApprovalRequests(filters, getToken()),
+          cacheTTL,
+          true
+        );
       const getApprovalRequestCached = (requestId) =>
-        fetchWithCache('approvalRequestDetails', requestId, () => approvalRequestService.getApprovalRequest(requestId, getToken()), cacheTTL);
+        fetchWithCache(
+          'approvalRequestDetails',
+          requestId,
+          () => approvalRequestService.getApprovalRequest(requestId, getToken()),
+          cacheTTL,
+          true
+        );
 
       if (userRole === 'requestor') {
         const filters = {
@@ -3131,7 +3274,8 @@ function ApprovalRequests({ refreshKey }) {
           'pendingApprovals',
           user.id,
           () => approvalRequestService.getPendingApprovals(user.id, getToken()),
-          cacheTTL
+          cacheTTL,
+          true
         );
         const requestIds = Array.from(new Set((pendingApprovals || []).map((entry) => entry.request_id).filter(Boolean)));
         const submittedRequests = await getApprovalRequestsCached(
@@ -3236,7 +3380,7 @@ function ApprovalRequests({ refreshKey }) {
       }
 
       if (selectedRequest?.id === requestId) {
-        setRequestDetailsData(data);
+        setRequestDetailsData(data ? normalizeRequest(data) : null);
         if (normalized.budgetId) {
           const config = await getBudgetConfigurationById(normalized.budgetId, getToken());
           setRequestConfigDetails(config || null);
@@ -3285,7 +3429,7 @@ function ApprovalRequests({ refreshKey }) {
         () => approvalRequestService.getApprovalRequest(approval.id, getToken()),
         60 * 1000
       );
-      setRequestDetailsData(data || null);
+      setRequestDetailsData(data ? normalizeRequest(data) : null);
 
       if (approval.budgetId) {
         const config = await getBudgetConfigurationById(approval.budgetId, getToken());
@@ -3307,7 +3451,7 @@ function ApprovalRequests({ refreshKey }) {
         () => approvalRequestService.getApprovalRequest(selectedRequest.id, getToken()),
         60 * 1000
       );
-      setRequestDetailsData(data || null);
+      setRequestDetailsData(data ? normalizeRequest(data) : null);
 
       if (selectedRequest.budgetId) {
         const config = await getBudgetConfigurationById(selectedRequest.budgetId, getToken());
@@ -3507,6 +3651,7 @@ function ApprovalRequests({ refreshKey }) {
             ? {
                 payroll_cycle: payrollCycle,
                 payroll_cycle_date: payrollCycleDate,
+                payroll_cycle_Date: payrollCycleDate,
               }
             : {}),
           user_id: user?.id,
@@ -3517,16 +3662,6 @@ function ApprovalRequests({ refreshKey }) {
       toast.success('Approval request approved successfully.');
       setSuccessMessage('Approval request approved successfully.');
       setShowSuccessModal(true);
-      
-      // Auto-close success modal and refresh after 5 seconds
-      setTimeout(() => {
-        setShowSuccessModal(false);
-        setDetailsOpen(false);
-        setDecisionNotes('');
-        setPayrollCycle('');
-        setPayrollCycleDate('');
-        fetchApprovals();
-      }, 5000);
     } catch (error) {
       console.error('[ApprovalRequests.handleApprove] Error:', error);
       const errMsg = extractErrorMessage(error);
@@ -3571,14 +3706,6 @@ function ApprovalRequests({ refreshKey }) {
       toast.success('Approval request rejected.');
       setSuccessMessage('Approval request rejected.');
       setShowSuccessModal(true);
-      
-      // Auto-close success modal and refresh after 5 seconds
-      setTimeout(() => {
-        setShowSuccessModal(false);
-        setDetailsOpen(false);
-        setDecisionNotes('');
-        fetchApprovals();
-      }, 5000);
     } catch (error) {
       console.error('[ApprovalRequests.handleReject] Error:', error);
       const errMsg = extractErrorMessage(error);
@@ -3614,13 +3741,6 @@ function ApprovalRequests({ refreshKey }) {
       toast.success('Payroll payment completed successfully.');
       setSuccessMessage('Payroll payment completed successfully.');
       setShowSuccessModal(true);
-
-      setTimeout(() => {
-        setShowSuccessModal(false);
-        setDetailsOpen(false);
-        setDecisionNotes('');
-        fetchApprovals();
-      }, 5000);
     } catch (error) {
       console.error('[ApprovalRequests.handleCompletePayment] Error:', error);
       const errMsg = extractErrorMessage(error);
@@ -3712,7 +3832,7 @@ function ApprovalRequests({ refreshKey }) {
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
                     Approval Progress
                   </th>
-                  <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                  <th className="border-b border-slate-600 px-3 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
                     Status
                   </th>
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
@@ -3747,7 +3867,7 @@ function ApprovalRequests({ refreshKey }) {
                         {approval.requestNumber || approval.id}
                       </td>
                       <td className="px-3 py-3 text-xs text-white font-semibold">
-                        {approval.budgetName || 'Budget Configuration'}
+                        {approval.budgetName || approval.budget_name || approval.configName || 'Budget Configuration'}
                       </td>
                       <td className="px-3 py-3 text-center text-xs text-slate-300">
                         {approval.is_client_sponsored || approval.client_sponsored || approval.clientSponsored ? 'Yes' : 'No'}
@@ -3806,8 +3926,8 @@ function ApprovalRequests({ refreshKey }) {
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3">
-                        <Badge className={getStageStatusBadgeClass(stageStatus)}>
+                      <td className="px-3 py-3 text-center">
+                        <Badge className={`${getStageStatusBadgeClass(stageStatus)} mx-auto`}>
                           {displayStatus}
                         </Badge>
                       </td>
@@ -3880,7 +4000,7 @@ function ApprovalRequests({ refreshKey }) {
                       }).replace(', ', '-').replace(' ', '') : '—'}
                     </span>
                   </div>
-                  <div className="text-lg font-semibold text-white">{detailRecord.budget_name || requestConfigDetails?.budget_name || requestConfigDetails?.name || 'Budget Configuration'}</div>
+                  <div className="text-lg font-semibold text-white">{requestConfigDetails?.name || requestConfigDetails?.budget_name || detailRecord.budgetName || detailRecord.budget_name || 'Budget Configuration'}</div>
                   <div className="text-sm text-slate-400">
                     {requestConfigDetails?.description || requestConfigDetails?.budget_description || 'No configuration description.'}
                   </div>
@@ -3900,7 +4020,17 @@ function ApprovalRequests({ refreshKey }) {
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
-                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString()}</div>
+                  <div className="flex gap-4">
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-gray-400">Deduction Total</div>
+                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-gray-400">Net to Pay</div>
+                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString()}</div>
+                    </div>
+                  </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
@@ -3952,7 +4082,9 @@ function ApprovalRequests({ refreshKey }) {
                         <th className="px-3 py-2 text-left text-slate-300">Department</th>
                         <th className="px-3 py-2 text-left text-slate-300">Hire Date</th>
                         <th className="px-3 py-2 text-left text-slate-300">Term. Date</th>
-                        <th className="px-3 py-2 text-right text-slate-300">Amount</th>
+                        {(userRole === 'payroll' || detailRecord?.is_self_request) && (
+                          <th className="px-3 py-2 text-right text-slate-300">Amount</th>
+                        )}
                         <th className="px-3 py-2 text-center text-slate-300">Deduction</th>
                         <th className="px-3 py-2 text-left text-slate-300">Notes</th>
                       </tr>
@@ -3980,9 +4112,11 @@ function ApprovalRequests({ refreshKey }) {
                               <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.hire_date || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.termination_date || '—'}</td>
-                              <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                ₱{Math.abs(amountValue).toLocaleString()}
-                              </td>
+                              {(userRole === 'payroll' || detailRecord?.is_self_request) && (
+                                <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                  ₱{Math.abs(amountValue).toLocaleString()}
+                                </td>
+                              )}
                               <td className="px-3 py-2 text-center">
                                 {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
                               </td>
@@ -4115,6 +4249,44 @@ function ApprovalRequests({ refreshKey }) {
                       placeholder="Add notes (required for rejection)."
                     />
                   </div>
+
+                  {/* Payroll Cycle Selection (Visible only for Payroll during approval phase) */}
+                  {userRole === 'payroll' && currentApprovalLevel === 4 && payrollApprovalStatus === 'pending' && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label className="text-white">Payroll Cycle *</Label>
+                        <Select value={payrollCycle} onValueChange={setPayrollCycle}>
+                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
+                            <SelectValue placeholder="Select cycle" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-800 border-slate-600 text-white">
+                            <SelectItem value="15th of Month">15th</SelectItem>
+                            <SelectItem value="End of Month">End of Month</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-white">Payroll Cycle Date *</Label>
+                        <Select value={payrollCycleDate} onValueChange={setPayrollCycleDate}>
+                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
+                            <SelectValue placeholder="Select date" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-800 border-slate-600 text-white max-h-[200px]">
+                            {/* Generate next 12 months dynamically */}
+                            {Array.from({ length: 12 }).map((_, i) => {
+                              const d = new Date();
+                              d.setMonth(d.getMonth() + i);
+                              const value = d.toLocaleString('default', { month: 'long', year: 'numeric' });
+                              return (
+                                <SelectItem key={value} value={value}>{value}</SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex justify-end gap-2">
                     {(canStandardApprove || canPayrollApprove) && (
                       <Button
@@ -4187,8 +4359,8 @@ function ApprovalRequests({ refreshKey }) {
                   <SelectValue placeholder="Select cycle" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-900 border-slate-700 text-white">
-                  <SelectItem value="15th" className="text-white">15th</SelectItem>
-                  <SelectItem value="end_of_month" className="text-white">End of Month</SelectItem>
+                  <SelectItem value="15th of Month" className="text-white">15th</SelectItem>
+                  <SelectItem value="End of Month" className="text-white">End of Month</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -4198,9 +4370,19 @@ function ApprovalRequests({ refreshKey }) {
                 <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                   <SelectValue placeholder="Select date" />
                 </SelectTrigger>
-                <SelectContent className="bg-slate-900 border-slate-700 text-white">
-                  <SelectItem value="this_month" className="text-white">This Month</SelectItem>
-                  <SelectItem value="next_month" className="text-white">Next Month</SelectItem>
+                <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-[200px]">
+                  {Array.from({ length: 12 }, (_, i) => {
+                    const date = new Date();
+                    date.setMonth(i);
+                    const monthName = date.toLocaleString('default', { month: 'long' });
+                    const year = new Date().getFullYear();
+                    const value = `${monthName} ${year}`;
+                    return (
+                      <SelectItem key={value} value={value} className="text-white">
+                        {value}
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
             </div>
@@ -4222,6 +4404,9 @@ function ApprovalRequests({ refreshKey }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Loading Overlay */}
+      {actionSubmitting && <LoadingOverlay />}
 
       {/* Confirmation Modal */}
       <Dialog open={Boolean(confirmAction)} onOpenChange={() => setConfirmAction(null)}>
@@ -4259,7 +4444,15 @@ function ApprovalRequests({ refreshKey }) {
       </Dialog>
 
       {/* Success Modal with Auto-close */}
-      <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
+      <Dialog
+        open={showSuccessModal}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowSuccessModal(false);
+            window.location.reload();
+          }
+        }}
+      >
         <DialogContent className="bg-slate-900 border-slate-700 text-white w-[400px]">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold text-emerald-400">Success</DialogTitle>
@@ -4268,23 +4461,8 @@ function ApprovalRequests({ refreshKey }) {
             </DialogDescription>
           </DialogHeader>
           <div className="text-xs text-slate-400 text-center py-2">
-            This modal will close automatically in 5 seconds...
+            Closing in {successCountdown} second{successCountdown !== 1 ? 's' : ''}...
           </div>
-          <DialogFooter className="flex justify-center">
-            <Button 
-              className="bg-emerald-600 hover:bg-emerald-700 text-white" 
-              onClick={() => {
-                setShowSuccessModal(false);
-                setDetailsOpen(false);
-                setDecisionNotes('');
-                setPayrollCycle('');
-                setPayrollCycleDate('');
-                fetchApprovals();
-              }}
-            >
-              Close Now
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </Card>
@@ -4294,6 +4472,7 @@ function ApprovalRequests({ refreshKey }) {
 function ApprovalHistory({ refreshKey }) {
   const { user } = useAuth();
   const toast = useToast();
+  const userRole = resolveUserRole(user);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -4328,6 +4507,7 @@ function ApprovalHistory({ refreshKey }) {
     const isApprover = record.approvals && record.approvals.some(
       approval => approval.assigned_to_primary === userId || 
                   approval.assigned_to_backup === userId || 
+                  approval.approved_by === userId ||
                   approval.approver_name === user?.name ||
                   approval.user_id === userId
     );
@@ -4350,7 +4530,7 @@ function ApprovalHistory({ refreshKey }) {
 
     try {
       const data = await approvalRequestService.getApprovalRequest(record.id, getToken());
-      setDetailData(data || null);
+      setDetailData(data ? normalizeRequest(data) : null);
 
       if (data && data.budget_id) {
         const config = await getBudgetConfigurationById(data.budget_id, getToken());
@@ -4392,6 +4572,10 @@ function ApprovalHistory({ refreshKey }) {
     .reduce((sum, item) => sum + Number(item.amount || 0), 0);
   
   const totalAmount = Number(detailData?.total_request_amount || 0);
+  const historyLineItems = detailData?.line_items || [];
+  const canViewHistoryLineItems =
+    userRole === 'payroll' ||
+    String(detailData?.submitted_by || detailData?.submittedBy || '') === String(user?.id || '');
 
   const handleExportData = () => {
     if (!detailData) return;
@@ -4486,7 +4670,7 @@ function ApprovalHistory({ refreshKey }) {
                       ₱{Number(record.amount || 0).toLocaleString()}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-300">
-                      {record.submittedAt || '—'}
+                        {formatDate(record.submittedAt)}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <Button
@@ -4507,7 +4691,7 @@ function ApprovalHistory({ refreshKey }) {
       </CardContent>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[900px] max-h-[85vh] overflow-y-auto flex flex-col">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[1100px] max-h-[85vh] overflow-y-auto flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request History Details</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -4535,11 +4719,10 @@ function ApprovalHistory({ refreshKey }) {
                     <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
                       {formatStatusLabel(detailData?.overall_status)}
                     </Badge>
-                    <div className="text-xs text-slate-400">Stage: {formatStatusLabel(detailData?.approval_stage_status)}</div>
                   </div>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-wide text-slate-400">Submitted By</div>
-                    <div className="text-sm text-slate-200">{detailData?.submitted_by_name || detailData?.submitted_by || '—'}</div>
+                    <div className="text-sm text-slate-200">{detailData?.submittedByName || detailData?.submittedBy || detailData?.submitted_by_name || detailData?.submitted_by || '—'}</div>
                   </div>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-wide text-slate-400">Submitted</div>
@@ -4614,6 +4797,44 @@ function ApprovalHistory({ refreshKey }) {
                     </div>
                   )}
                 </div>
+
+                {canViewHistoryLineItems && (
+                  <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                    <div className="text-sm font-semibold text-white mb-2">Submitted Line Items</div>
+                    {historyLineItems.length === 0 ? (
+                      <div className="text-xs text-slate-400">No line items available.</div>
+                    ) : (
+                      <div className="border border-slate-700 rounded-md max-h-[320px] overflow-y-auto overflow-x-auto">
+                        <table className="w-full text-xs text-left text-slate-300 border-collapse">
+                          <thead className="bg-slate-800 sticky top-0">
+                            <tr>
+                              <th className="px-3 py-2 border-b border-slate-600">Employee ID</th>
+                              <th className="px-3 py-2 border-b border-slate-600">Name</th>
+                              <th className="px-3 py-2 border-b border-slate-600">Department</th>
+                              <th className="px-3 py-2 border-b border-slate-600">Position</th>
+                              <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
+                              <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
+                              <th className="px-3 py-2 border-b border-slate-600">Notes</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-700">
+                            {historyLineItems.map((item, index) => (
+                              <tr key={`${item.item_id || item.employee_id || 'line'}-${index}`}>
+                                <td className="px-3 py-2 text-slate-200">{item.employee_id || '—'}</td>
+                                <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
+                                <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
+                                <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
+                                <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString()}</td>
+                                <td className="px-3 py-2 text-center text-slate-300">{item.is_deduction ? 'Yes' : 'No'}</td>
+                                <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <DialogFooter className="mt-4 pt-4 border-t border-slate-800">
                 <Button variant="outline" onClick={handleExportData} className="border-slate-600 text-white hover:bg-slate-800 ml-auto">

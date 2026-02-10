@@ -105,12 +105,14 @@ export default function BudgetConfigurationPage() {
             >
               Configuration List
             </TabsTrigger>
-            <TabsTrigger
-              value="create"
-              className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-            >
-              Create Configuration
-            </TabsTrigger>
+            {!['l2', 'l3'].includes(String(userRole || '').toLowerCase()) && (
+              <TabsTrigger
+                value="create"
+                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+              >
+                Create Configuration
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="list">
@@ -118,7 +120,9 @@ export default function BudgetConfigurationPage() {
           </TabsContent>
 
           <TabsContent value="create">
-            {activeTab === "create" && <CreateConfiguration />}
+            {activeTab === "create" && !['l2', 'l3'].includes(String(userRole || '').toLowerCase()) && (
+              <CreateConfiguration />
+            )}
           </TabsContent>
         </Tabs>
       </div>
@@ -126,7 +130,7 @@ export default function BudgetConfigurationPage() {
   );
 }
 
-function ConfigurationList() {
+function ConfigurationList({ userRole }) {
   const { user } = useAuth();
   const toast = useToast();
   const [searchQuery, setSearchQuery] = useState("");
@@ -288,22 +292,23 @@ function ConfigurationList() {
   }, [user, transformConfig]);
 
   useEffect(() => {
+    // Initial fetch
     fetchConfigurations();
-  }, [fetchConfigurations]);
-
-  useEffect(() => {
+    
+    // Auto-refresh when tab/window regains focus to update ongoing amounts
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         fetchConfigurations(true);
       }
     };
-
-    window.addEventListener('focus', handleVisibility);
-    document.addEventListener('visibilitychange', handleVisibility);
+    document.addEventListener("visibilitychange", handleVisibility);
+    
+    // Auto-refresh on mount if data might be stale effectively
+    const timer = setTimeout(() => fetchConfigurations(true), 500);
 
     return () => {
-      window.removeEventListener('focus', handleVisibility);
-      document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      clearTimeout(timer);
     };
   }, [fetchConfigurations]);
 
@@ -676,7 +681,7 @@ function ConfigurationList() {
   const historyItems = selectedConfig?.history || [];
   const logItems = selectedConfig?.logs || selectedConfig?.logEntries || [];
   const isOwner = editConfig && String(editConfig.createdById || '') === String(user?.id || '');
-  const canViewLogs = String((selectedConfig?.createdById || editConfig?.createdById) || '') === String(user?.id || '');
+  const canViewLogs = String((selectedConfig?.createdById || editConfig?.createdById) || '') === String(user?.id || '') || ['payroll', 'admin', 'super_admin'].includes(userRole);
   const normalizedStatus = String(editConfig?.status || 'active').toLowerCase();
   const isExpired = normalizedStatus === 'expired';
   const hasApprovalActivity = Boolean(editConfig?.hasApprovalActivity || editConfig?.has_approval_activity);
@@ -796,9 +801,9 @@ function ConfigurationList() {
           ) : filteredConfigurations.length === 0 ? (
             <div className="text-sm text-gray-400">No configurations found.</div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
               <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
-                <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0">
+                <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
                   <tr>
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[160px] max-w-[280px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Configuration
@@ -965,7 +970,10 @@ function ConfigurationList() {
       </Card>
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] 2xl:w-[50vw] max-w-[900px] max-h-[85vh] overflow-y-auto">
+        <DialogContent
+          className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] 2xl:w-[50vw] max-w-[900px] max-h-[85vh] overflow-y-auto"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="text-white">{selectedConfig?.name || "Configuration"}</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -975,7 +983,8 @@ function ConfigurationList() {
 
           <Tabs defaultValue="edit" className="space-y-4">
             <TabsList className="bg-slate-700/60 border-slate-600 p-1">
-              <TabsTrigger
+              {/* History & Logs Removed as per request */}
+              {/* <TabsTrigger
                 value="edit"
                 className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
               >
@@ -996,7 +1005,7 @@ function ConfigurationList() {
                     Logs
                   </TabsTrigger>
                 </>
-              )}
+              )} */}
             </TabsList>
 
             <TabsContent value="edit" className="space-y-4">
@@ -1275,80 +1284,83 @@ function ConfigurationList() {
                 </div>
               )}
             </TabsContent>
+            {false && (
+              <>
+                <TabsContent value="history" className="space-y-2">
+                  {!canViewLogs ? (
+                    <p className="text-sm text-gray-400">Only the configuration creator can view history.</p>
+                  ) : historyItems.length === 0 ? (
+                    <p className="text-sm text-gray-400">No history available.</p>
+                  ) : (
+                    <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
+                      <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                        <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
+                          <tr>
+                            <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Event</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Details</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700">
+                          {historyItems.map((item, index) => (
+                            <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-200">
+                                {getLogValue(item, ['event', 'action', 'action_type', 'type', 'message'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </TabsContent>
 
-            <TabsContent value="history" className="space-y-2">
-              {!canViewLogs ? (
-                <p className="text-sm text-gray-400">Only the configuration creator can view history.</p>
-              ) : historyItems.length === 0 ? (
-                <p className="text-sm text-gray-400">No history available.</p>
-              ) : (
-                <div className="border border-slate-700 rounded-md overflow-auto">
-                  <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
-                    <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0">
-                      <tr>
-                        <th className="px-3 py-2 border-b border-slate-600">Date</th>
-                        <th className="px-3 py-2 border-b border-slate-600">Event</th>
-                        <th className="px-3 py-2 border-b border-slate-600">Details</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-700">
-                      {historyItems.map((item, index) => (
-                        <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
-                          <td className="px-3 py-2 text-xs text-slate-300">
-                            {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
-                          </td>
-                          <td className="px-3 py-2 text-xs text-slate-200">
-                            {getLogValue(item, ['event', 'action', 'action_type', 'type', 'message'], '—')}
-                          </td>
-                          <td className="px-3 py-2 text-xs text-slate-300">
-                            {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="logs" className="space-y-2">
-              {!canViewLogs ? (
-                <p className="text-sm text-gray-400">Only the configuration creator can view logs.</p>
-              ) : logItems.length === 0 ? (
-                <p className="text-sm text-gray-400">No logs available.</p>
-              ) : (
-                <div className="border border-slate-700 rounded-md overflow-auto">
-                  <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
-                    <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0">
-                      <tr>
-                        <th className="px-3 py-2 border-b border-slate-600">Date</th>
-                        <th className="px-3 py-2 border-b border-slate-600">Action</th>
-                        <th className="px-3 py-2 border-b border-slate-600">Description</th>
-                        <th className="px-3 py-2 border-b border-slate-600">By</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-700">
-                      {logItems.map((item, index) => (
-                        <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
-                          <td className="px-3 py-2 text-xs text-slate-300">
-                            {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
-                          </td>
-                          <td className="px-3 py-2 text-xs text-slate-200">
-                            {getLogValue(item, ['action_type', 'action', 'event', 'type'], '—')}
-                          </td>
-                          <td className="px-3 py-2 text-xs text-slate-300">
-                            {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
-                          </td>
-                          <td className="px-3 py-2 text-xs text-slate-300">
-                            {getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '—')}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </TabsContent>
+                <TabsContent value="logs" className="space-y-2">
+                  {!canViewLogs ? (
+                    <p className="text-sm text-gray-400">Only the configuration creator can view logs.</p>
+                  ) : logItems.length === 0 ? (
+                    <p className="text-sm text-gray-400">No logs available.</p>
+                  ) : (
+                    <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
+                      <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                        <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
+                          <tr>
+                            <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Action</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Description</th>
+                            <th className="px-3 py-2 border-b border-slate-600">By</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700">
+                          {logItems.map((item, index) => (
+                            <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-200">
+                                {getLogValue(item, ['action_type', 'action', 'event', 'type'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '—')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </TabsContent>
+              </>
+            )}
           </Tabs>
         </DialogContent>
       </Dialog>
@@ -2842,13 +2854,6 @@ function CreateConfiguration() {
             </div>
             <div className="flex items-center justify-between text-xs text-gray-400">
               <span>Auto-closing in {successCountdown}s</span>
-              <Button
-                variant="outline"
-                onClick={() => setSuccessModalOpen(false)}
-                className="border-slate-500 text-white"
-              >
-                Close now
-              </Button>
             </div>
           </div>
         </DialogContent>
