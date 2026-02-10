@@ -46,7 +46,7 @@ export default function DashboardPage() {
       const data = await fetchWithCache(
         'dashboardMetrics',
         metricsCacheKey,
-        () => aiInsightsService.getRealtimeMetrics({}, getToken()),
+        () => aiInsightsService.getRealtimeMetrics({ role: userRole }, getToken()),
         2 * 60 * 1000
       );
       setMetricsData(data);
@@ -146,6 +146,18 @@ export default function DashboardPage() {
               metricsError={metricsError}
               onGenerate={handleGenerateInsights}
             />
+            {userRole === 'requestor' && (
+              <RequestorSubmissionTables
+                tables={metricsData?.requestor_tables}
+                error={metricsError}
+              />
+            )}
+            {userRole === 'l1' && (
+              <ApproverSubmissionCharts
+                tables={metricsData?.approver_tables}
+                error={metricsError}
+              />
+            )}
             {showNotifications && (
               <ApprovalNotificationsTable
                 items={notifications}
@@ -330,20 +342,6 @@ function RoleInsightsLayout({ loading, error, data, role, metrics, metricsError,
             <InsightList title="Risk Signals" items={data?.risks} emptyLabel="No risks flagged." />
             <InsightList title="Recommended Actions" items={data?.actions} emptyLabel="No actions available." />
           </div>
-
-          {statusBreakdown.length > 0 && (
-            <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
-              <div className="text-sm text-white font-semibold mb-2">Status Snapshot</div>
-              <div className="grid gap-2 md:grid-cols-2">
-                {statusBreakdown.map((item) => (
-                  <div key={item.label} className="flex items-center justify-between text-sm text-slate-300">
-                    <span className="capitalize">{String(item.label || '').replace(/_/g, ' ')}</span>
-                    <span className="text-white font-semibold">{Number(item.value || 0)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </CardContent>
     </Card>
@@ -655,5 +653,312 @@ function LatestUpdatesTable({ updates = [], error }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function RequestorSubmissionTables({ tables, error }) {
+  const approvalCounts = Array.isArray(tables?.approval_counts) ? tables.approval_counts : [];
+  const approvedAmounts = Array.isArray(tables?.approved_amounts) ? tables.approved_amounts : [];
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card className="bg-slate-800">
+        <CardHeader>
+          <CardTitle className="text-white">Approved vs Rejected by Configuration</CardTitle>
+          <p className="text-xs text-slate-400">Counts for requests under configurations you created.</p>
+        </CardHeader>
+        <CardContent>
+          {error && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {error}
+            </div>
+          )}
+          {!error && approvalCounts.length === 0 && (
+            <div className="text-sm text-slate-400">No configuration submissions available.</div>
+          )}
+          {approvalCounts.length > 0 && (
+            <RequestorCountsBarChart data={approvalCounts} />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="bg-slate-800">
+        <CardHeader>
+          <CardTitle className="text-white">Approved Amounts by Configuration</CardTitle>
+          <p className="text-xs text-slate-400">Approved value totals for your created configurations.</p>
+        </CardHeader>
+        <CardContent>
+          {error && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {error}
+            </div>
+          )}
+          {!error && approvedAmounts.length === 0 && (
+            <div className="text-sm text-slate-400">No approved amounts available.</div>
+          )}
+          {approvedAmounts.length > 0 && (
+            <RequestorAmountsBarChart data={approvedAmounts} />
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function RequestorCountsBarChart({ data }) {
+  const safeData = Array.isArray(data) ? data : [];
+  const maxValue = Math.max(
+    ...safeData.map((row) => Math.max(Number(row.approved_count || 0), Number(row.rejected_count || 0))),
+    1
+  );
+
+  return (
+    <div className="space-y-3">
+      {safeData.map((row) => {
+        const approved = Number(row.approved_count || 0);
+        const rejected = Number(row.rejected_count || 0);
+        const approvedPercent = (approved / maxValue) * 100;
+        const rejectedPercent = (rejected / maxValue) * 100;
+
+        return (
+          <div key={row.budget_id} className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">
+            <div className="flex items-center justify-between text-sm text-slate-300">
+              <span className="truncate max-w-[240px] text-white">{row.budget_name || '—'}</span>
+              <span className="text-xs text-slate-400">Total: {Number(row.total_requests || 0)}</span>
+            </div>
+            <div className="space-y-2">
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>Approved</span>
+                  <span className="text-emerald-400 font-semibold">{approved}</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-slate-700">
+                  <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${approvedPercent}%` }} />
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>Rejected</span>
+                  <span className="text-rose-400 font-semibold">{rejected}</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-slate-700">
+                  <div className="h-2 rounded-full bg-rose-500" style={{ width: `${rejectedPercent}%` }} />
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RequestorAmountsBarChart({ data }) {
+  const safeData = Array.isArray(data) ? data : [];
+  const maxValue = Math.max(...safeData.map((row) => Number(row.approved_amount || 0)), 1);
+
+  return (
+    <div className="space-y-3">
+      {safeData.map((row) => {
+        const amount = Number(row.approved_amount || 0);
+        const percent = (amount / maxValue) * 100;
+
+        return (
+          <div key={row.budget_id} className="space-y-1">
+            <div className="flex items-center justify-between text-sm text-slate-300">
+              <span className="truncate max-w-[260px] text-white">{row.budget_name || '—'}</span>
+              <span className="text-emerald-400 font-semibold">₱{amount.toLocaleString()}</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-slate-700">
+              <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${percent}%` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ApproverSubmissionCharts({ tables, error }) {
+  const submittedCounts = Array.isArray(tables?.submitted_counts) ? tables.submitted_counts : [];
+  const submittedAmounts = Array.isArray(tables?.submitted_amounts) ? tables.submitted_amounts : [];
+  const approvedCounts = Array.isArray(tables?.approved_counts) ? tables.approved_counts : [];
+  const approvedAmounts = Array.isArray(tables?.approved_amounts) ? tables.approved_amounts : [];
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card className="bg-slate-800">
+          <CardHeader>
+            <CardTitle className="text-white">Submitted Requests: Approved vs Rejected</CardTitle>
+            <p className="text-xs text-slate-400">Counts per submitted configuration in your queue.</p>
+          </CardHeader>
+          <CardContent>
+            {error && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                {error}
+              </div>
+            )}
+            {!error && submittedCounts.length === 0 && (
+              <div className="text-sm text-slate-400">No submitted approvals available.</div>
+            )}
+            {submittedCounts.length > 0 && (
+              <ApproverStackedBarChart data={submittedCounts} />
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="bg-slate-800">
+          <CardHeader>
+            <CardTitle className="text-white">Submitted Requests: Approved Amounts</CardTitle>
+            <p className="text-xs text-slate-400">Approved value per submitted configuration.</p>
+          </CardHeader>
+          <CardContent>
+            {error && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                {error}
+              </div>
+            )}
+            {!error && submittedAmounts.length === 0 && (
+              <div className="text-sm text-slate-400">No approved amounts available.</div>
+            )}
+            {submittedAmounts.length > 0 && (
+              <ApproverVerticalAmountsBarChart data={submittedAmounts} />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card className="bg-slate-800">
+          <CardHeader>
+            <CardTitle className="text-white">Approved Requests: Approved vs Rejected</CardTitle>
+            <p className="text-xs text-slate-400">Your approval decisions by configuration.</p>
+          </CardHeader>
+          <CardContent>
+            {error && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                {error}
+              </div>
+            )}
+            {!error && approvedCounts.length === 0 && (
+              <div className="text-sm text-slate-400">No approval actions recorded.</div>
+            )}
+            {approvedCounts.length > 0 && (
+              <ApproverStackedBarChart data={approvedCounts} />
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="bg-slate-800">
+          <CardHeader>
+            <CardTitle className="text-white">Approved Requests: Amounts Approved</CardTitle>
+            <p className="text-xs text-slate-400">Approved value totals by configuration.</p>
+          </CardHeader>
+          <CardContent>
+            {error && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                {error}
+              </div>
+            )}
+            {!error && approvedAmounts.length === 0 && (
+              <div className="text-sm text-slate-400">No approved amounts recorded.</div>
+            )}
+            {approvedAmounts.length > 0 && (
+              <ApproverAmountsPieChart data={approvedAmounts} />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ApproverStackedBarChart({ data }) {
+  const safeData = Array.isArray(data) ? data : [];
+  const maxTotal = Math.max(
+    ...safeData.map((row) => Number(row.approved_count || 0) + Number(row.rejected_count || 0)),
+    1
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-3">
+        {safeData.map((row) => {
+          const approved = Number(row.approved_count || 0);
+          const rejected = Number(row.rejected_count || 0);
+          const total = approved + rejected;
+          const totalWidth = (total / maxTotal) * 100;
+          const approvedWidth = total ? (approved / total) * totalWidth : 0;
+          const rejectedWidth = total ? (rejected / total) * totalWidth : 0;
+
+          return (
+            <div key={row.budget_id} className="space-y-1">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span className="text-slate-200 truncate max-w-[220px]">{row.budget_name || '—'}</span>
+                <span>A {approved} · R {rejected}</span>
+              </div>
+              <div className="h-3 w-full rounded-full bg-slate-800 border border-slate-700 overflow-hidden">
+                <div className="flex h-full">
+                  <div className="bg-emerald-500" style={{ width: `${approvedWidth}%` }} />
+                  <div className="bg-rose-500" style={{ width: `${rejectedWidth}%` }} />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-4 text-xs text-slate-400">
+        <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Approved</span>
+        <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-rose-500" /> Rejected</span>
+      </div>
+    </div>
+  );
+}
+
+function ApproverVerticalAmountsBarChart({ data }) {
+  const safeData = Array.isArray(data) ? data : [];
+  const maxValue = Math.max(...safeData.map((row) => Number(row.approved_amount || 0)), 1);
+  const chartHeight = 180;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-end gap-3 overflow-x-auto pb-2">
+        {safeData.map((row) => {
+          const amount = Number(row.approved_amount || 0);
+          const height = (amount / maxValue) * chartHeight;
+
+          return (
+            <div key={row.budget_id} className="flex flex-col items-center min-w-[90px]">
+              <div className="flex flex-col justify-end w-10 rounded bg-slate-800 border border-slate-700" style={{ height: chartHeight }}>
+                <div className="w-full bg-emerald-500" style={{ height: `${height}px` }} />
+              </div>
+              <div className="mt-2 text-[10px] text-slate-300 text-center truncate max-w-[90px]">
+                {row.budget_name || '—'}
+              </div>
+              <div className="text-[10px] text-emerald-400">₱{amount.toLocaleString()}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ApproverAmountsPieChart({ data }) {
+  const sections = Array.isArray(data)
+    ? data.map((row) => ({
+        label: row.budget_name || '—',
+        value: Number(row.approved_amount || 0),
+      }))
+    : [];
+
+  return (
+    <PieChartCard
+      title="Approved Amounts by Configuration"
+      data={sections}
+      totalLabel="Total Approved"
+      valueFormatter={(value) => `₱${Number(value || 0).toLocaleString()}`}
+    />
   );
 }

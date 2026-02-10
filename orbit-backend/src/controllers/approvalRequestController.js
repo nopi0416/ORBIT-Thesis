@@ -350,7 +350,16 @@ export class ApprovalRequestController {
   static async approveRequest(req, res) {
     try {
       const { id } = req.params;
-      const { approval_level, approver_name, approver_title, approval_notes, conditions_applied, user_id } = req.body;
+      const {
+        approval_level,
+        approver_name,
+        approver_title,
+        approval_notes,
+        conditions_applied,
+        payroll_cycle,
+        payroll_cycle_date,
+        user_id,
+      } = req.body;
       const userId = req.user?.id || user_id;
 
       if (!approval_level) {
@@ -361,12 +370,21 @@ export class ApprovalRequestController {
         return sendError(res, 'user_id is required', 400);
       }
 
+      const normalizedLevel = Number(approval_level);
+      if (normalizedLevel === 4) {
+        if (!payroll_cycle || !payroll_cycle_date) {
+          return sendError(res, 'payroll_cycle and payroll_cycle_date are required for payroll approval', 400);
+        }
+      }
+
       const result = await ApprovalRequestService.approveRequestAtLevel(id, approval_level, {
         approved_by: userId,
         approver_name,
         approver_title,
         approval_notes,
         conditions_applied,
+        payroll_cycle,
+        payroll_cycle_date,
       });
 
       if (!result.success) {

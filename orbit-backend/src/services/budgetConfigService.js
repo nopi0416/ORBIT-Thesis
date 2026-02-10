@@ -81,6 +81,36 @@ export class BudgetConfigService {
       ])
     );
   }
+
+  static async getBudgetApprovalAmounts(budgetIds = []) {
+    const uniqueIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblbudgetapprovalrequests')
+      .select('budget_id, total_request_amount, overall_status')
+      .in('budget_id', uniqueIds);
+
+    if (error) throw error;
+
+    const totals = new Map();
+    (data || []).forEach((row) => {
+      const key = row.budget_id;
+      const status = String(row.overall_status || '').toLowerCase();
+      const amount = Number(row.total_request_amount || 0);
+      const current = totals.get(key) || { approvedAmount: 0, ongoingAmount: 0 };
+
+      if (status === 'approved' || status === 'completed') {
+        current.approvedAmount += amount;
+      } else if (status !== 'rejected' && status !== 'draft') {
+        current.ongoingAmount += amount;
+      }
+
+      totals.set(key, current);
+    });
+
+    return totals;
+  }
   static computeConfigStatus(config) {
     const storedStatus = String(config?.status || '').toLowerCase();
     if (storedStatus === 'deactivated') return 'deactivated';
@@ -261,6 +291,15 @@ export class BudgetConfigService {
         });
       }
 
+      let approvalAmounts = new Map();
+      try {
+        approvalAmounts = await this.getBudgetApprovalAmounts(
+          (filteredByOrg || []).map((row) => row.budget_id)
+        );
+      } catch (amountError) {
+        console.warn('[getAllBudgetConfigs] Failed to compute approval amounts:', amountError?.message || amountError);
+      }
+
       // Fetch related data for each config
       let userNameMap = new Map();
       try {
@@ -277,6 +316,7 @@ export class BudgetConfigService {
           const creatorName = userNameMap.get(config.created_by);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
           const computedStatus = this.computeConfigStatus(config);
+          const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0 };
 
           return {
             ...config,
@@ -284,6 +324,8 @@ export class BudgetConfigService {
             budget_tracking: [],
             status: computedStatus,
             created_by_name: creatorDetails?.name || config.created_by,
+            approved_amount: totals.approvedAmount,
+            ongoing_amount: totals.ongoingAmount,
           };
         })
       );
@@ -324,6 +366,14 @@ export class BudgetConfigService {
         this.getApproversByBudgetId(budgetId),
       ]);
 
+      let approvalTotals = { approvedAmount: 0, ongoingAmount: 0 };
+      try {
+        const totalsMap = await this.getBudgetApprovalAmounts([budgetId]);
+        approvalTotals = totalsMap.get(budgetId) || approvalTotals;
+      } catch (amountError) {
+        console.warn('[getBudgetConfigById] Failed to compute approval amounts:', amountError?.message || amountError);
+      }
+
       let creatorName = null;
       try {
         const userNameMap = await this.getUserNameMap([data.created_by]);
@@ -341,6 +391,8 @@ export class BudgetConfigService {
           approvers: approvers.data || [],
           status: computedStatus,
           created_by_name: creatorDetails?.name || data.created_by,
+          approved_amount: approvalTotals.approvedAmount,
+          ongoing_amount: approvalTotals.ongoingAmount,
         },
       };
     } catch (error) {

@@ -32,6 +32,25 @@ const parseStoredList = (value) => {
   return [value];
 };
 
+const sanitizeTextInput = (value = "") =>
+  String(value).replace(/[^A-Za-z0-9 _\-";:'\n\r]/g, "");
+
+const sanitizeSingleLine = (value = "") =>
+  sanitizeTextInput(value).replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trimStart();
+
+const blockShortcuts = (event) => {
+  const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+  if (!hasModifier) return;
+
+  const key = String(event.key || "").toLowerCase();
+  const allowClipboard = (event.ctrlKey || event.metaKey) && (key === "v" || key === "c" || key === "x");
+  const allowShiftInsert = event.shiftKey && key === "insert";
+
+  if (allowClipboard || allowShiftInsert) return;
+
+  event.preventDefault();
+};
+
 const currencyOptions = [{ value: "PHP", label: "PHP - Philippine Peso" }];
 
 const getApprovalStatusInfo = (status) => {
@@ -202,6 +221,8 @@ function ConfigurationList() {
       budgetLimit: config.budget_limit || config.budgetLimit || config.max_limit || 0,
       payCycle: config.pay_cycle || config.payCycle || "—",
       currency: config.currency || config.currency_code || config.currencyCode || "—",
+      approvedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
+      ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
@@ -519,7 +540,9 @@ function ConfigurationList() {
   };
 
   const handleEditChange = (field, value) => {
-    setEditConfig((prev) => (prev ? { ...prev, [field]: value } : prev));
+    const textFields = new Set(["name", "description"]);
+    const nextValue = textFields.has(field) ? sanitizeSingleLine(value) : value;
+    setEditConfig((prev) => (prev ? { ...prev, [field]: nextValue } : prev));
   };
 
   const handleSaveEdit = async () => {
@@ -668,7 +691,8 @@ function ConfigurationList() {
                   id="search"
                   placeholder="Search by configuration name..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => setSearchQuery(sanitizeSingleLine(e.target.value))}
+                  onKeyDown={blockShortcuts}
                   className="pl-9 bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
                 />
               </div>
@@ -769,6 +793,12 @@ function ConfigurationList() {
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[110px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Budget Limit
                     </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Approved Amount
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Ongoing Amount
+                    </th>
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[90px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Min - Max
                     </th>
@@ -828,6 +858,16 @@ function ConfigurationList() {
                         ) : (
                           <div className="text-xs text-gray-400">No limit</div>
                         )}
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        <div className="font-medium text-emerald-400">
+                          {config.currency} {Number(config.approvedAmount || 0).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        <div className="font-medium text-amber-300">
+                          {config.currency} {Number(config.ongoingAmount || 0).toLocaleString()}
+                        </div>
                       </td>
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
                         <div className="text-xs">
@@ -963,6 +1003,7 @@ function ConfigurationList() {
                         ]}
                         placeholder="Select status"
                         searchPlaceholder="Search status..."
+                        maxLength={10}
                         disabled={!isOwner}
                       />
                     </div>
@@ -979,6 +1020,8 @@ function ConfigurationList() {
                       <Input
                         value={editConfig.name}
                         onChange={(e) => handleEditChange("name", e.target.value)}
+                        onKeyDown={blockShortcuts}
+                        maxLength={100}
                         className="bg-slate-700 border-gray-300 text-white"
                         disabled={!isOwner}
                       />
@@ -1043,7 +1086,8 @@ function ConfigurationList() {
                       <Input
                         type="number"
                         value={editConfig.budgetControlLimit}
-                        onChange={(e) => handleEditChange("budgetControlLimit", e.target.value)}
+                        onChange={(e) => handleEditChange("budgetControlLimit", e.target.value.slice(0, 15))}
+                        maxLength={15}
                         className="bg-slate-700 border-gray-300 text-white"
                         disabled={!isOwner || !editConfig.budgetControlEnabled}
                       />
@@ -1053,7 +1097,8 @@ function ConfigurationList() {
                       <Input
                         type="number"
                         value={editConfig.limitMin}
-                        onChange={(e) => handleEditChange("limitMin", e.target.value)}
+                        onChange={(e) => handleEditChange("limitMin", e.target.value.slice(0, 10))}
+                        maxLength={10}
                         className="bg-slate-700 border-gray-300 text-white"
                         disabled={!isOwner}
                       />
@@ -1063,7 +1108,8 @@ function ConfigurationList() {
                       <Input
                         type="number"
                         value={editConfig.limitMax}
-                        onChange={(e) => handleEditChange("limitMax", e.target.value)}
+                        onChange={(e) => handleEditChange("limitMax", e.target.value.slice(0, 10))}
+                        maxLength={10}
                         className="bg-slate-700 border-gray-300 text-white"
                         disabled={!isOwner}
                       />
@@ -1075,6 +1121,8 @@ function ConfigurationList() {
                     <textarea
                       value={editConfig.description}
                       onChange={(e) => handleEditChange("description", e.target.value)}
+                      onKeyDown={blockShortcuts}
+                      maxLength={500}
                       rows={3}
                       className="w-full rounded-md bg-slate-700 border border-gray-300 px-3 py-2 text-white"
                       disabled={!isOwner}
@@ -1099,6 +1147,7 @@ function ConfigurationList() {
                         disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                         searchPlaceholder="Search approver..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1115,6 +1164,7 @@ function ConfigurationList() {
                         disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                         searchPlaceholder="Search backup..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1134,6 +1184,7 @@ function ConfigurationList() {
                         disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                         searchPlaceholder="Search approver..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1150,6 +1201,7 @@ function ConfigurationList() {
                         disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                         searchPlaceholder="Search backup..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1169,6 +1221,7 @@ function ConfigurationList() {
                         disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                         searchPlaceholder="Search approver..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1185,6 +1238,7 @@ function ConfigurationList() {
                         disabled={approvalsLoading || !isOwner}
                         placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                         searchPlaceholder="Search backup..."
+                        maxLength={50}
                       />
                     </div>
                   </div>
@@ -1694,7 +1748,9 @@ function CreateConfiguration() {
   };
 
   const updateField = (field, value) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
+    const textFields = new Set(["budgetName", "description"]);
+    const nextValue = textFields.has(field) ? sanitizeSingleLine(value) : value;
+    setFormData((prev) => ({ ...prev, [field]: nextValue }));
   };
 
   const getCurrencyLabel = (code) => {
@@ -2034,6 +2090,8 @@ function CreateConfiguration() {
                       placeholder="e.g., Q1 2024 Performance Bonus"
                       value={formData.budgetName}
                       onChange={(e) => updateField("budgetName", e.target.value)}
+                      onKeyDown={blockShortcuts}
+                      maxLength={100}
                       className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
                     />
                   </div>
@@ -2071,6 +2129,8 @@ function CreateConfiguration() {
                     placeholder="Describe the purpose and details of this budget configuration..."
                     value={formData.description || ""}
                     onChange={(e) => updateField("description", e.target.value)}
+                    onKeyDown={blockShortcuts}
+                    maxLength={500}
                     rows={4}
                     className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400"
                   />
@@ -2101,7 +2161,8 @@ function CreateConfiguration() {
                       type="number"
                       placeholder="0"
                       value={formData.limitMin}
-                      onChange={(e) => updateField("limitMin", e.target.value)}
+                      onChange={(e) => updateField("limitMin", e.target.value.slice(0, 10))}
+                      maxLength={10}
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
@@ -2112,7 +2173,8 @@ function CreateConfiguration() {
                       type="number"
                       placeholder="10000"
                       value={formData.limitMax}
-                      onChange={(e) => updateField("limitMax", e.target.value)}
+                      onChange={(e) => updateField("limitMax", e.target.value.slice(0, 10))}
+                      maxLength={10}
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
@@ -2161,7 +2223,8 @@ function CreateConfiguration() {
                         type="number"
                         placeholder="100000"
                         value={formData.budgetControlLimit}
-                        onChange={(e) => updateField("budgetControlLimit", e.target.value)}
+                        onChange={(e) => updateField("budgetControlLimit", e.target.value.slice(0, 15))}
+                        maxLength={15}
                         className="bg-slate-700 border-gray-300 text-white"
                       />
                     </div>
@@ -2451,6 +2514,7 @@ function CreateConfiguration() {
                               : "No geo available"
                       }
                       searchPlaceholder="Search geo..."
+                      maxLength={30}
                     />
                   </div>
                   <div className="space-y-2">
@@ -2473,6 +2537,7 @@ function CreateConfiguration() {
                               : "No locations available"
                       }
                       searchPlaceholder="Search location..."
+                      maxLength={50}
                     />
                   </div>
                   <div className="space-y-2">
@@ -2492,6 +2557,7 @@ function CreateConfiguration() {
                       }
                       hasAllOption={true}
                       disabled={!hasLocation || orgScopeLoading || availableClientOptions.length === 0}
+                      maxLength={40}
                     />
                   </div>
                 </div>
@@ -2555,6 +2621,7 @@ function CreateConfiguration() {
                             disabled={approvalsLoading}
                             placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                             searchPlaceholder="Search approver..."
+                            maxLength={50}
                           />
                         </div>
                         <div className="space-y-2">
@@ -2571,6 +2638,7 @@ function CreateConfiguration() {
                             disabled={approvalsLoading}
                             placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                             searchPlaceholder="Search backup..."
+                            maxLength={50}
                           />
                         </div>
                       </div>

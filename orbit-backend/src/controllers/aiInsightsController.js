@@ -31,7 +31,7 @@ export class AiInsightsController {
   static async getRealtimeMetrics(req, res) {
     try {
       const userId = req.user?.id || null;
-      const role = req.user?.role || null;
+      const role = req.user?.role || req.user?.userType || req.query?.role || null;
       const orgId = req.user?.org_id || null;
       const { fromDate, toDate } = req.query || {};
 

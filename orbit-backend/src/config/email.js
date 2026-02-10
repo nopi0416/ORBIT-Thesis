@@ -71,4 +71,35 @@ export async function sendPasswordResetEmail(email, firstName = 'User') {
   }
 }
 
+/**
+ * Send approval workflow notification email
+ */
+export async function sendApprovalNotificationEmail({ to, subject, html, text }) {
+  try {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+      console.warn('[EMAIL] Missing EMAIL_USER/EMAIL_PASSWORD, skipping notification send.');
+      return { success: false, error: 'Email credentials not configured' };
+    }
+
+    if (!to || (Array.isArray(to) && to.length === 0)) {
+      return { success: false, error: 'Recipient is required' };
+    }
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to,
+      subject,
+      html,
+      text,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`[EMAIL] Approval notification sent to ${to}:`, info.response);
+    return { success: true, message: 'Notification email sent' };
+  } catch (error) {
+    console.error(`[EMAIL] Failed to send approval notification to ${to}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 export default transporter;

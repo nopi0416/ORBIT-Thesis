@@ -69,6 +69,28 @@ const parseStoredPaths = (value) => {
   return parsed.map((entry) => (Array.isArray(entry) ? entry : [entry]));
 };
 
+const sanitizeTextInput = (value = '') =>
+  String(value).replace(/[^A-Za-z0-9 _\-";:'\n\r]/g, '');
+
+const sanitizeSingleLine = (value = '') =>
+  sanitizeTextInput(value).replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trimStart();
+
+const sanitizeIdInput = (value = '') =>
+  String(value).replace(/[^\p{L}\p{N}]/gu, '');
+
+const blockShortcuts = (event) => {
+  const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+  if (!hasModifier) return;
+
+  const key = String(event.key || '').toLowerCase();
+  const allowClipboard = (event.ctrlKey || event.metaKey) && (key === 'v' || key === 'c' || key === 'x');
+  const allowShiftInsert = event.shiftKey && key === 'insert';
+
+  if (allowClipboard || allowShiftInsert) return;
+
+  event.preventDefault();
+};
+
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
   name: config.budget_name || config.name || config.budgetName || 'Untitled Budget',
@@ -76,11 +98,14 @@ const normalizeConfig = (config) => ({
   description: config.budget_description || config.description || '',
   maxAmount: config.max_limit || config.maxAmount || config.budgetControlLimit || config.total_budget || 0,
   totalBudget: config.total_budget || config.totalBudget || config.total_budget_amount || config.budget_total || 0,
+  budgetLimit: config.budget_limit || config.budgetLimit || config.total_budget || config.totalBudget || 0,
   usedAmount: config.budget_used || config.usedAmount || 0,
+  approvedAmount: config.approved_amount ?? config.approvedAmount ?? config.budget_used ?? config.usedAmount ?? 0,
+  ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
   minLimit: config.min_limit || config.limitMin || 0,
   maxLimit: config.max_limit || config.limitMax || config.maxAmount || 0,
   clients: parseStoredList(config.client || config.clients),
-  clientSponsored: config.client_sponsored ?? config.clientSponsored ?? config.is_client_sponsored ?? null,
+  clientSponsored: config.is_client_sponsored ?? config.client_sponsored ?? config.clientSponsored ?? null,
   approvers: Array.isArray(config.approvers) ? config.approvers : [],
   affectedOUPaths: parseStoredPaths(config.affected_ou || config.affectedOUPaths),
 });
@@ -169,6 +194,9 @@ const normalizeRequest = (request) => {
     is_self_request: request.is_self_request || false,
     submittedByName: request.submitted_by_name || request.submittedByName || null,
     submittedBy: request.submitted_by || request.submittedBy || null,
+    clientSponsored: request.is_client_sponsored ?? request.client_sponsored ?? request.clientSponsored ?? false,
+    payrollCycle: request.payroll_cycle || request.payrollCycle || null,
+    payrollCycleDate: request.payroll_cycle_Date || request.payroll_cycle_date || request.payrollCycleDate || null,
     lineItemsCount,
     deductionCount,
     toBePaidCount,
@@ -316,6 +344,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [requestMode, setRequestMode] = useState('individual');
   const [requestDetails, setRequestDetails] = useState({
     details: '',
+    clientSponsored: false,
   });
   const [individualRequest, setIndividualRequest] = useState({
     employeeId: '',
@@ -357,6 +386,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     total_request_amount: Number(totalAmount || 0),
     submitted_by: user?.id || userId,
     created_by: user?.id || userId,
+    client_sponsored: Boolean(requestDetails.clientSponsored),
   });
 
   // Check if user can proceed with submission
@@ -951,7 +981,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const handleOpenModal = (config) => {
     setSelectedConfig(config);
     setRequestMode('individual');
-    setRequestDetails({ details: '' });
+    setRequestDetails({ details: '', clientSponsored: false });
     setIndividualRequest({
       employeeId: '',
       employeeName: '',
@@ -1833,7 +1863,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     requestConfigDetails?.budget_name ||
     requestConfigDetails?.name ||
     'Budget Configuration';
-  const detailDescription = detailRecord.description || selectedRequest?.description || '';
+  const detailDescriptionRaw = detailRecord.description || selectedRequest?.description || '';
+  const detailDescription = String(detailDescriptionRaw || '').slice(0, 500);
   const detailRequestNumber =
     detailRecord.request_number || selectedRequest?.requestNumber || detailRecord.requestNumber || '—';
   const detailLineItems = requestDetailsData?.line_items || [];
@@ -2042,7 +2073,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   </div>
                   <div className="mt-3 space-y-2">
                     <div className="text-center text-xs text-gray-400">
-                      Used Budget: ₱{Number(config.usedAmount || 0).toLocaleString()} / ₱{Number(config.maxAmount || 0).toLocaleString()}
+                      {(() => {
+                        const used = Number(config.approvedAmount ?? config.usedAmount ?? 0);
+                        const limitValue = Number(config.totalBudget || config.budgetLimit || 0);
+                        const limitLabel = limitValue > 0 ? `₱${limitValue.toLocaleString()}` : 'No limit';
+                        return `Used Budget: ₱${used.toLocaleString()} / ${limitLabel}`;
+                      })()}
                     </div>
                     <Button
                       size="sm"
@@ -2084,6 +2120,15 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     </th>
                     <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
                       Budget Name
+                    </th>
+                    <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                      Client Sponsored
+                    </th>
+                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                      Payroll Cycle
+                    </th>
+                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                      Payroll Cycle Date
                     </th>
                     <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
                       Total Employees
@@ -2130,6 +2175,15 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                         </td>
                         <td className="px-4 py-3 text-xs text-white font-medium">
                           {request.budgetName}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-center text-slate-300">
+                          {request.clientSponsored ? 'Yes' : 'No'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {request.payrollCycle || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {request.payrollCycleDate || '—'}
                         </td>
                         <td className="px-4 py-3 text-xs text-center text-white font-semibold">
                           {employeeCount}
@@ -2221,7 +2275,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Label className="text-white">Employee ID *</Label>
                     <Input
                       value={individualRequest.employeeId}
-                      onChange={(e) => setIndividualRequest((prev) => ({ ...prev, employeeId: e.target.value }))}
+                      onChange={(e) =>
+                        setIndividualRequest((prev) => ({
+                          ...prev,
+                          employeeId: sanitizeIdInput(e.target.value),
+                        }))}
+                      onKeyDown={blockShortcuts}
+                      maxLength={15}
                       placeholder="e.g., EMP001"
                       className="bg-slate-700 border-gray-300 text-white"
                     />
@@ -2312,7 +2372,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="number"
                       min={0}
                       value={individualRequest.amount}
-                      onChange={(e) => setIndividualRequest((prev) => ({ ...prev, amount: e.target.value }))}
+                      onChange={(e) =>
+                        setIndividualRequest((prev) => ({
+                          ...prev,
+                          amount: e.target.value.slice(0, 10),
+                        }))}
+                      maxLength={10}
                       placeholder="e.g., 2500"
                       className="bg-slate-700 border-gray-300 text-white"
                     />
@@ -2351,12 +2416,27 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   />
                   <Label htmlFor="isDeduction" className="text-white text-sm">Deduction?</Label>
                 </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="clientSponsored"
+                    checked={requestDetails.clientSponsored}
+                    onCheckedChange={(checked) => setRequestDetails((prev) => ({ ...prev, clientSponsored: Boolean(checked) }))}
+                    className="border-blue-400 bg-slate-600"
+                  />
+                  <Label htmlFor="clientSponsored" className="text-white text-sm">Client Sponsored?</Label>
+                </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <div className="space-y-2">
                     <Label className="text-white">Notes</Label>
                     <Textarea
                       value={individualRequest.notes}
-                      onChange={(e) => setIndividualRequest((prev) => ({ ...prev, notes: e.target.value }))}
+                      onChange={(e) =>
+                        setIndividualRequest((prev) => ({
+                          ...prev,
+                          notes: sanitizeTextInput(e.target.value),
+                        }))}
+                      onKeyDown={blockShortcuts}
+                      maxLength={500}
                       rows={3}
                       className="bg-slate-700 border-gray-300 text-white"
                     />
@@ -2368,7 +2448,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     <Label className="text-white">Approval Description *</Label>
                     <Textarea
                       value={requestDetails.details}
-                      onChange={(e) => setRequestDetails((prev) => ({ ...prev, details: e.target.value }))}
+                      onChange={(e) =>
+                        setRequestDetails((prev) => ({
+                          ...prev,
+                          details: sanitizeTextInput(e.target.value),
+                        }))}
+                      onKeyDown={blockShortcuts}
+                      maxLength={500}
                       rows={3}
                       className="bg-slate-700 border-gray-300 text-white"
                       placeholder="Describe the request details, purpose, and any important context."
@@ -2433,11 +2519,27 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   <Label className="text-white">Approval Description *</Label>
                   <Textarea
                     value={requestDetails.details}
-                    onChange={(e) => setRequestDetails((prev) => ({ ...prev, details: e.target.value }))}
+                    onChange={(e) =>
+                      setRequestDetails((prev) => ({
+                        ...prev,
+                        details: sanitizeTextInput(e.target.value),
+                      }))}
+                    onKeyDown={blockShortcuts}
+                    maxLength={500}
                     rows={3}
                     className="bg-slate-700 border-gray-300 text-white"
                     placeholder="Describe the request details, purpose, and any important context."
                   />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="clientSponsoredBulk"
+                    checked={requestDetails.clientSponsored}
+                    onCheckedChange={(checked) => setRequestDetails((prev) => ({ ...prev, clientSponsored: Boolean(checked) }))}
+                    className="border-blue-400 bg-slate-600"
+                  />
+                  <Label htmlFor="clientSponsoredBulk" className="text-white text-sm">Client Sponsored?</Label>
                 </div>
 
                 <BulkUploadValidation
@@ -2532,6 +2634,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             setRequestDetailsData(null);
             setRequestConfigDetails(null);
             setDetailSearch('');
+            setPayrollCycle('');
+            setPayrollCycleDate('');
+            setPayrollCycleModalOpen(false);
+            setPayrollCycleError(null);
           }
         }}
       >
@@ -2575,6 +2681,18 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Approval Description</div>
                   <div className="text-sm text-slate-300">{detailDescription || 'No description provided.'}</div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Client Sponsored</div>
+                      <div className="text-sm text-slate-300">{detailRecord.is_client_sponsored || detailRecord.client_sponsored ? 'Yes' : 'No'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Payroll Cycle</div>
+                      <div className="text-sm text-slate-300">
+                        {detailRecord.payroll_cycle || '—'} {detailRecord.payroll_cycle_Date || detailRecord.payroll_cycle_date ? `(${detailRecord.payroll_cycle_Date || detailRecord.payroll_cycle_date})` : ''}
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
@@ -2610,7 +2728,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   <Input
                     placeholder="Search employees by name, ID, department, or position..."
                     value={detailSearch}
-                    onChange={(e) => setDetailSearch(e.target.value)}
+                    onChange={(e) => setDetailSearch(sanitizeSingleLine(e.target.value))}
+                    onKeyDown={blockShortcuts}
                     className="bg-slate-700 border-gray-300 text-white"
                   />
                 </div>
@@ -2942,6 +3061,20 @@ function ApprovalRequests({ refreshKey }) {
   const [confirmAction, setConfirmAction] = useState(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
+  const [payrollCycleModalOpen, setPayrollCycleModalOpen] = useState(false);
+  const [payrollCycle, setPayrollCycle] = useState('');
+  const [payrollCycleDate, setPayrollCycleDate] = useState('');
+  const [payrollCycleError, setPayrollCycleError] = useState(null);
+
+  const handlePayrollCycleContinue = () => {
+    if (!payrollCycle || !payrollCycleDate) {
+      setPayrollCycleError('Please select both payroll cycle and date.');
+      return;
+    }
+    setPayrollCycleError(null);
+    setPayrollCycleModalOpen(false);
+    setConfirmAction('approve');
+  };
 
   useEffect(() => {
     if (userRole === 'requestor') {
@@ -3270,7 +3403,8 @@ function ApprovalRequests({ refreshKey }) {
   const detailAmount = detailRecord.total_request_amount || selectedRequest?.amount || 0;
   const detailBudgetName =
     detailRecord.budget_name || selectedRequest?.budgetName || requestConfigDetails?.budget_name || requestConfigDetails?.name || 'Budget Configuration';
-  const detailDescription = detailRecord.description || selectedRequest?.description || '';
+  const detailDescriptionRaw = detailRecord.description || selectedRequest?.description || '';
+  const detailDescription = String(detailDescriptionRaw || '').slice(0, 500);
   const detailRequestNumber = detailRecord.request_number || selectedRequest?.requestNumber || detailRecord.requestNumber || '—';
   const detailLineItems = requestDetailsData?.line_items || [];
   const approvalsForDetail = requestDetailsData?.approvals || [];
@@ -3347,6 +3481,11 @@ function ApprovalRequests({ refreshKey }) {
     if (!selectedRequest?.id || !currentApprovalLevel) return;
     
     if (!confirmAction) {
+      if (isPayrollUser && currentApprovalLevel === 4 && payrollApprovalStatus === 'pending') {
+        setPayrollCycleError(null);
+        setPayrollCycleModalOpen(true);
+        return;
+      }
       // Show confirmation modal
       setConfirmAction('approve');
       return;
@@ -3357,6 +3496,13 @@ function ApprovalRequests({ refreshKey }) {
     setActionSubmitting(true);
     setActionError(null);
     try {
+      if (isPayrollUser && currentApprovalLevel === 4) {
+        if (!payrollCycle || !payrollCycleDate) {
+          setActionError('Payroll cycle and date are required before approving.');
+          setActionSubmitting(false);
+          return;
+        }
+      }
       await approvalRequestService.approveRequest(
         selectedRequest.id,
         {
@@ -3364,6 +3510,12 @@ function ApprovalRequests({ refreshKey }) {
           approver_name: user?.name || user?.full_name || user?.email || 'Approver',
           approver_title: user?.role || 'approver',
           approval_notes: decisionNotes || '',
+          ...(isPayrollUser && currentApprovalLevel === 4
+            ? {
+                payroll_cycle: payrollCycle,
+                payroll_cycle_date: payrollCycleDate,
+              }
+            : {}),
           user_id: user?.id,
         },
         getToken()
@@ -3377,6 +3529,8 @@ function ApprovalRequests({ refreshKey }) {
         setShowSuccessModal(false);
         setDetailsOpen(false);
         setDecisionNotes('');
+        setPayrollCycle('');
+        setPayrollCycleDate('');
         fetchApprovals();
       }, 5000);
     } catch (error) {
@@ -3493,7 +3647,8 @@ function ApprovalRequests({ refreshKey }) {
             <Input
               placeholder="Search by request number, budget, or description..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => setSearchTerm(sanitizeSingleLine(e.target.value))}
+              onKeyDown={blockShortcuts}
               className="bg-slate-700 border-gray-300 text-white"
             />
           </div>
@@ -3529,6 +3684,15 @@ function ApprovalRequests({ refreshKey }) {
                   </th>
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
                     Budget Config
+                  </th>
+                  <th className="border-b border-slate-600 px-3 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    Client Sponsored
+                  </th>
+                  <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    Payroll Cycle
+                  </th>
+                  <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    Payroll Cycle Date
                   </th>
                   <th className="border-b border-slate-600 px-3 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
                     Total Employees
@@ -3581,6 +3745,15 @@ function ApprovalRequests({ refreshKey }) {
                       </td>
                       <td className="px-3 py-3 text-xs text-white font-semibold">
                         {approval.budgetName || 'Budget Configuration'}
+                      </td>
+                      <td className="px-3 py-3 text-center text-xs text-slate-300">
+                        {approval.is_client_sponsored || approval.client_sponsored || approval.clientSponsored ? 'Yes' : 'No'}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-slate-300">
+                        {approval.payroll_cycle || approval.payrollCycle || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-slate-300">
+                        {approval.payroll_cycle_Date || approval.payroll_cycle_date || approval.payrollCycleDate || '—'}
                       </td>
                       <td className="px-3 py-3 text-center text-sm text-white font-semibold">
                         {employeeCount}
@@ -3709,6 +3882,18 @@ function ApprovalRequests({ refreshKey }) {
                     {requestConfigDetails?.description || requestConfigDetails?.budget_description || 'No configuration description.'}
                   </div>
                   <div className="text-s text-slate-200">Approval Description: {detailDescription || 'No description provided.'}</div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Client Sponsored</div>
+                      <div className="text-sm text-slate-300">{detailRecord.is_client_sponsored || detailRecord.client_sponsored ? 'Yes' : 'No'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Payroll Cycle</div>
+                      <div className="text-sm text-slate-300">
+                        {detailRecord.payroll_cycle || '—'} {detailRecord.payroll_cycle_Date || detailRecord.payroll_cycle_date ? `(${detailRecord.payroll_cycle_Date || detailRecord.payroll_cycle_date})` : ''}
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
@@ -3741,7 +3926,8 @@ function ApprovalRequests({ refreshKey }) {
                   <Input
                     placeholder="Search employees by name, ID, department, or position..."
                     value={detailSearch}
-                    onChange={(e) => setDetailSearch(e.target.value)}
+                    onChange={(e) => setDetailSearch(sanitizeSingleLine(e.target.value))}
+                    onKeyDown={blockShortcuts}
                     className="bg-slate-700 border-gray-300 text-white"
                   />
                 </div>
@@ -3923,6 +4109,64 @@ function ApprovalRequests({ refreshKey }) {
         </DialogContent>
       </Dialog>
 
+      {/* Payroll Cycle Selection Modal */}
+      <Dialog open={payrollCycleModalOpen} onOpenChange={(open) => !open && setPayrollCycleModalOpen(false)}>
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">Payroll Cycle Selection</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              Select the payroll cycle and date before approving.
+            </DialogDescription>
+          </DialogHeader>
+          {payrollCycleError && (
+            <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              {payrollCycleError}
+            </div>
+          )}
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label className="text-white">Payroll Cycle *</Label>
+              <Select value={payrollCycle} onValueChange={setPayrollCycle}>
+                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                  <SelectValue placeholder="Select cycle" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700 text-white">
+                  <SelectItem value="15th" className="text-white">15th</SelectItem>
+                  <SelectItem value="end_of_month" className="text-white">End of Month</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-white">Payroll Cycle Date *</Label>
+              <Select value={payrollCycleDate} onValueChange={setPayrollCycleDate}>
+                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                  <SelectValue placeholder="Select date" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700 text-white">
+                  <SelectItem value="this_month" className="text-white">This Month</SelectItem>
+                  <SelectItem value="next_month" className="text-white">Next Month</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter className="flex justify-end gap-3">
+            <Button
+              variant="outline"
+              className="border-slate-600 text-white hover:bg-slate-800"
+              onClick={() => setPayrollCycleModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              onClick={handlePayrollCycleContinue}
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Confirmation Modal */}
       <Dialog open={Boolean(confirmAction)} onOpenChange={() => setConfirmAction(null)}>
         <DialogContent className="bg-slate-900 border-slate-700 text-white w-[400px]">
@@ -3977,6 +4221,8 @@ function ApprovalRequests({ refreshKey }) {
                 setShowSuccessModal(false);
                 setDetailsOpen(false);
                 setDecisionNotes('');
+                setPayrollCycle('');
+                setPayrollCycleDate('');
                 fetchApprovals();
               }}
             >
@@ -4078,7 +4324,8 @@ function ApprovalHistory({ refreshKey }) {
           <Input
             placeholder="Search by request number or configuration"
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => setSearchTerm(sanitizeSingleLine(e.target.value))}
+            onKeyDown={blockShortcuts}
             className="bg-slate-700 border-gray-300 text-white"
           />
         </div>
@@ -4226,6 +4473,52 @@ function ApprovalHistory({ refreshKey }) {
                             <td className="px-3 py-2 text-slate-300">
                               {approval.approval_notes || approval.rejection_reason || '—'}
                             </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                <div className="text-sm font-semibold text-white mb-2">Submitted Line Items</div>
+                {(detailData?.line_items || []).length === 0 ? (
+                  <div className="text-xs text-slate-400">No line items submitted.</div>
+                ) : (
+                  <div className="border border-slate-700 rounded-md overflow-auto max-h-[320px]">
+                    <table className="w-full text-xs text-left text-slate-300 border-collapse">
+                      <thead className="bg-slate-800 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 border-b border-slate-600">Employee ID</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Name</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Email</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Position</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Department</th>
+                          <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
+                          <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
+                          <th className="px-3 py-2 border-b border-slate-600">Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-700">
+                        {(detailData?.line_items || []).map((item, index) => (
+                          <tr key={`${item.line_item_id || item.item_number || index}`}>
+                            <td className="px-3 py-2 text-slate-300">{item.employee_id || '—'}</td>
+                            <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
+                            <td className="px-3 py-2 text-slate-300">{item.email || '—'}</td>
+                            <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
+                            <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
+                            <td className="px-3 py-2 text-right font-semibold text-emerald-400">
+                              ₱{Number(item.amount || 0).toLocaleString()}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              {item.is_deduction ? (
+                                <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
                           </tr>
                         ))}
                       </tbody>

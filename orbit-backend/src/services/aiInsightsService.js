@@ -27,6 +27,7 @@ const STATIC_INSTRUCTIONS = [
   'Include at least one operational risk (queue/approvals/bottlenecks).',
   'Actions: 2 short bullets.',
   'No HTML/markdown. No personal data. Use UUIDs only.',
+  'Never mention tables, columns, rows, or schemas.',
 ].join(' ');
 
 const roleInstructions = (role) => {
@@ -36,6 +37,9 @@ const roleInstructions = (role) => {
   }
   if (normalized.includes('requestor')) {
     return 'Focus on the user’s submissions, current approval stages, and next steps.';
+  }
+  if (normalized.includes('l1')) {
+    return 'Focus on what the L1 approver can do: submit requests and approve/reject requests, with light financial context (amounts/approvals).';
   }
   if (normalized.includes('l1') || normalized.includes('l2') || normalized.includes('l3') || normalized.includes('approver')) {
     return 'Focus on approval queues, bottlenecks, and aging items by stage.';
@@ -254,6 +258,163 @@ export class AiInsightsService {
           existing.push(row);
           approvalsMap.set(row.request_id, existing);
         });
+      }
+
+
+
+      let approverTables = null;
+      if (userId && (roleNormalized.includes('l1') || roleNormalized.includes('l2') || roleNormalized.includes('l3'))) {
+        const approvalQuery = supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, approved_by, assigned_to_primary, assigned_to_backup');
+
+        if (requestIds.length > 0) {
+          approvalQuery.in('request_id', requestIds);
+        }
+
+        const { data: approverRows, error: approverRowsError } = await approvalQuery
+          .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId},approved_by.eq.${userId}`);
+
+        if (approverRowsError) throw approverRowsError;
+
+        const requestById = new Map(requestRows.map((row) => [row.request_id, row]));
+        const submittedStatusByBudget = new Map();
+        const submittedAmountByBudget = new Map();
+        const approvedStatusByBudget = new Map();
+        const approvedAmountByBudget = new Map();
+
+        (approverRows || []).forEach((row) => {
+          const request = requestById.get(row.request_id);
+          if (!request) return;
+
+          const budgetId = request.budget_id || 'unknown';
+          const budgetName = budgetMap.get(budgetId) || 'Unknown Budget';
+          const overallStatus = String(request.overall_status || request.submission_status || '').toLowerCase();
+          const amount = Number(request.total_request_amount || 0);
+
+          const submittedEntry = submittedStatusByBudget.get(budgetId) || {
+            budget_id: budgetId,
+            budget_name: budgetName,
+            approved_count: 0,
+            rejected_count: 0,
+            total_requests: 0,
+          };
+
+          if (overallStatus === 'approved' || overallStatus === 'completed') {
+            submittedEntry.approved_count += 1;
+            submittedEntry.total_requests += 1;
+            submittedStatusByBudget.set(budgetId, submittedEntry);
+
+            const submittedAmount = submittedAmountByBudget.get(budgetId) || {
+              budget_id: budgetId,
+              budget_name: budgetName,
+              approved_amount: 0,
+            };
+            submittedAmount.approved_amount += amount;
+            submittedAmountByBudget.set(budgetId, submittedAmount);
+          } else if (overallStatus === 'rejected') {
+            submittedEntry.rejected_count += 1;
+            submittedEntry.total_requests += 1;
+            submittedStatusByBudget.set(budgetId, submittedEntry);
+          }
+
+          if (String(row.approved_by || '') === String(userId)) {
+            const actionStatus = String(row.status || '').toLowerCase();
+            const approvedEntry = approvedStatusByBudget.get(budgetId) || {
+              budget_id: budgetId,
+              budget_name: budgetName,
+              approved_count: 0,
+              rejected_count: 0,
+              total_actions: 0,
+            };
+
+            if (actionStatus === 'approved' || actionStatus === 'completed') {
+              approvedEntry.approved_count += 1;
+              approvedEntry.total_actions += 1;
+              approvedStatusByBudget.set(budgetId, approvedEntry);
+
+              const approvedAmount = approvedAmountByBudget.get(budgetId) || {
+                budget_id: budgetId,
+                budget_name: budgetName,
+                approved_amount: 0,
+              };
+              approvedAmount.approved_amount += amount;
+              approvedAmountByBudget.set(budgetId, approvedAmount);
+            } else if (actionStatus === 'rejected') {
+              approvedEntry.rejected_count += 1;
+              approvedEntry.total_actions += 1;
+              approvedStatusByBudget.set(budgetId, approvedEntry);
+            }
+          }
+        });
+
+        approverTables = {
+          submitted_counts: Array.from(submittedStatusByBudget.values()),
+          submitted_amounts: Array.from(submittedAmountByBudget.values()),
+          approved_counts: Array.from(approvedStatusByBudget.values()),
+          approved_amounts: Array.from(approvedAmountByBudget.values()),
+        };
+      }
+
+      let requestorTables = null;
+      if (roleNormalized.includes('requestor') && userId) {
+        const { data: createdBudgets, error: createdBudgetsError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name')
+          .eq('created_by', userId);
+
+        if (createdBudgetsError) throw createdBudgetsError;
+
+        const createdBudgetIds = (createdBudgets || []).map((row) => row.budget_id).filter(Boolean);
+        const createdBudgetMap = new Map((createdBudgets || []).map((row) => [row.budget_id, row.budget_name]));
+
+        let createdRequests = [];
+        if (createdBudgetIds.length > 0) {
+          const { data: createdRequestsData, error: createdRequestsError } = await supabase
+            .from('tblbudgetapprovalrequests')
+            .select('request_id, budget_id, overall_status, total_request_amount')
+            .in('budget_id', createdBudgetIds);
+
+          if (createdRequestsError) throw createdRequestsError;
+          createdRequests = createdRequestsData || [];
+        }
+
+        const statusByBudget = new Map();
+        const approvedAmountByBudget = new Map();
+
+        (createdRequests || []).forEach((request) => {
+          const budgetId = request.budget_id || 'unknown';
+          const status = String(request.overall_status || '').toLowerCase();
+          const approvedLike = status === 'approved' || status === 'completed';
+          const rejected = status === 'rejected';
+          const amount = Number(request.total_request_amount || 0);
+
+          const current = statusByBudget.get(budgetId) || { approved: 0, rejected: 0, total: 0 };
+          if (approvedLike) current.approved += 1;
+          if (rejected) current.rejected += 1;
+          current.total += 1;
+          statusByBudget.set(budgetId, current);
+
+          if (approvedLike) {
+            const existingAmount = approvedAmountByBudget.get(budgetId) || 0;
+            approvedAmountByBudget.set(budgetId, existingAmount + amount);
+          }
+        });
+
+        requestorTables = {
+          approval_counts: Array.from(statusByBudget.entries()).map(([budgetId, stats]) => ({
+            budget_id: budgetId,
+            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            approved_count: stats.approved,
+            rejected_count: stats.rejected,
+            total_requests: stats.total,
+          })),
+          approved_amounts: Array.from(approvedAmountByBudget.entries()).map(([budgetId, amount]) => ({
+            budget_id: budgetId,
+            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            approved_amount: amount,
+          })),
+        };
       }
 
       const statusCounts = {};
@@ -635,6 +796,161 @@ export class AiInsightsService {
         });
       }
 
+      let approverTables = null;
+      if (userId && (roleNormalized.includes('l1') || roleNormalized.includes('l2') || roleNormalized.includes('l3'))) {
+        const approvalQuery = supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, approved_by, assigned_to_primary, assigned_to_backup');
+
+        if (requestIds.length > 0) {
+          approvalQuery.in('request_id', requestIds);
+        }
+
+        const { data: approverRows, error: approverRowsError } = await approvalQuery
+          .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId},approved_by.eq.${userId}`);
+
+        if (approverRowsError) throw approverRowsError;
+
+        const requestById = new Map(requestRows.map((row) => [row.request_id, row]));
+        const submittedStatusByBudget = new Map();
+        const submittedAmountByBudget = new Map();
+        const approvedStatusByBudget = new Map();
+        const approvedAmountByBudget = new Map();
+
+        (approverRows || []).forEach((row) => {
+          const request = requestById.get(row.request_id);
+          if (!request) return;
+
+          const budgetId = request.budget_id || 'unknown';
+          const budgetName = budgetMap.get(budgetId) || 'Unknown Budget';
+          const overallStatus = String(request.overall_status || request.submission_status || '').toLowerCase();
+          const amount = Number(request.total_request_amount || 0);
+
+          const submittedEntry = submittedStatusByBudget.get(budgetId) || {
+            budget_id: budgetId,
+            budget_name: budgetName,
+            approved_count: 0,
+            rejected_count: 0,
+            total_requests: 0,
+          };
+
+          if (overallStatus === 'approved' || overallStatus === 'completed') {
+            submittedEntry.approved_count += 1;
+            submittedEntry.total_requests += 1;
+            submittedStatusByBudget.set(budgetId, submittedEntry);
+
+            const submittedAmount = submittedAmountByBudget.get(budgetId) || {
+              budget_id: budgetId,
+              budget_name: budgetName,
+              approved_amount: 0,
+            };
+            submittedAmount.approved_amount += amount;
+            submittedAmountByBudget.set(budgetId, submittedAmount);
+          } else if (overallStatus === 'rejected') {
+            submittedEntry.rejected_count += 1;
+            submittedEntry.total_requests += 1;
+            submittedStatusByBudget.set(budgetId, submittedEntry);
+          }
+
+          if (String(row.approved_by || '') === String(userId)) {
+            const actionStatus = String(row.status || '').toLowerCase();
+            const approvedEntry = approvedStatusByBudget.get(budgetId) || {
+              budget_id: budgetId,
+              budget_name: budgetName,
+              approved_count: 0,
+              rejected_count: 0,
+              total_actions: 0,
+            };
+
+            if (actionStatus === 'approved' || actionStatus === 'completed') {
+              approvedEntry.approved_count += 1;
+              approvedEntry.total_actions += 1;
+              approvedStatusByBudget.set(budgetId, approvedEntry);
+
+              const approvedAmount = approvedAmountByBudget.get(budgetId) || {
+                budget_id: budgetId,
+                budget_name: budgetName,
+                approved_amount: 0,
+              };
+              approvedAmount.approved_amount += amount;
+              approvedAmountByBudget.set(budgetId, approvedAmount);
+            } else if (actionStatus === 'rejected') {
+              approvedEntry.rejected_count += 1;
+              approvedEntry.total_actions += 1;
+              approvedStatusByBudget.set(budgetId, approvedEntry);
+            }
+          }
+        });
+
+        approverTables = {
+          submitted_counts: Array.from(submittedStatusByBudget.values()),
+          submitted_amounts: Array.from(submittedAmountByBudget.values()),
+          approved_counts: Array.from(approvedStatusByBudget.values()),
+          approved_amounts: Array.from(approvedAmountByBudget.values()),
+        };
+      }
+
+      let requestorTables = null;
+      if (roleNormalized.includes('requestor') && userId) {
+        const { data: createdBudgets, error: createdBudgetsError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name')
+          .eq('created_by', userId);
+
+        if (createdBudgetsError) throw createdBudgetsError;
+
+        const createdBudgetIds = (createdBudgets || []).map((row) => row.budget_id).filter(Boolean);
+        const createdBudgetMap = new Map((createdBudgets || []).map((row) => [row.budget_id, row.budget_name]));
+
+        let createdRequests = [];
+        if (createdBudgetIds.length > 0) {
+          const { data: createdRequestsData, error: createdRequestsError } = await supabase
+            .from('tblbudgetapprovalrequests')
+            .select('request_id, budget_id, overall_status, total_request_amount')
+            .in('budget_id', createdBudgetIds);
+
+          if (createdRequestsError) throw createdRequestsError;
+          createdRequests = createdRequestsData || [];
+        }
+
+        const statusByBudget = new Map();
+        const approvedAmountByBudget = new Map();
+
+        (createdRequests || []).forEach((request) => {
+          const budgetId = request.budget_id || 'unknown';
+          const status = String(request.overall_status || '').toLowerCase();
+          const approvedLike = status === 'approved' || status === 'completed';
+          const rejected = status === 'rejected';
+          const amount = Number(request.total_request_amount || 0);
+
+          const current = statusByBudget.get(budgetId) || { approved: 0, rejected: 0, total: 0 };
+          if (approvedLike) current.approved += 1;
+          if (rejected) current.rejected += 1;
+          current.total += 1;
+          statusByBudget.set(budgetId, current);
+
+          if (approvedLike) {
+            const existingAmount = approvedAmountByBudget.get(budgetId) || 0;
+            approvedAmountByBudget.set(budgetId, existingAmount + amount);
+          }
+        });
+
+        requestorTables = {
+          approval_counts: Array.from(statusByBudget.entries()).map(([budgetId, stats]) => ({
+            budget_id: budgetId,
+            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            approved_count: stats.approved,
+            rejected_count: stats.rejected,
+            total_requests: stats.total,
+          })),
+          approved_amounts: Array.from(approvedAmountByBudget.entries()).map(([budgetId, amount]) => ({
+            budget_id: budgetId,
+            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            approved_amount: amount,
+          })),
+        };
+      }
+
       const statusCounts = {};
       const stageCounts = {};
       const statusAmounts = {};
@@ -761,6 +1077,8 @@ export class AiInsightsService {
           charts,
           totals,
           latest_updates: buildLatestUpdates(safeRequests),
+          requestor_tables: requestorTables,
+          approver_tables: approverTables,
           scope,
           generated_at: new Date().toISOString(),
         },

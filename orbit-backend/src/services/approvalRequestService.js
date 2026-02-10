@@ -1,5 +1,6 @@
 import supabase, { supabaseSecondary } from '../config/database.js';
 import { getUserDetailsFromUUID } from '../utils/userMapping.js';
+import { sendApprovalNotificationEmail } from '../config/email.js';
 
 /**
  * Approval Request Service
@@ -27,6 +28,194 @@ export class ApprovalRequestService {
         `${user.first_name || ''} ${user.last_name || ''}`.trim(),
       ])
     );
+  }
+
+  static async getUserEmailMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblusers')
+      .select('user_id, first_name, last_name, email')
+      .in('user_id', uniqueIds);
+
+    if (error) throw error;
+
+    return new Map(
+      (data || []).map((user) => [
+        user.user_id,
+        {
+          email: user.email,
+          name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+        },
+      ])
+    );
+  }
+
+  static formatCurrency(value) {
+    return `₱${Number(value || 0).toLocaleString()}`;
+  }
+
+  static async sendApprovalNotification({ recipients = [], subject, html, text }) {
+    if (!recipients.length) return;
+    await sendApprovalNotificationEmail({
+      to: recipients,
+      subject,
+      html,
+      text,
+    });
+  }
+
+  static async sendSubmissionNotifications(requestId) {
+    try {
+      const { data: request, error } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('request_id, request_number, budget_id, description, total_request_amount, submitted_by')
+        .eq('request_id', requestId)
+        .single();
+
+      if (error) throw error;
+
+      const { data: approvals, error: approvalsError } = await supabase
+        .from('tblbudgetapprovalrequests_approvals')
+        .select('approval_level, assigned_to_primary, assigned_to_backup')
+        .eq('request_id', requestId)
+        .eq('approval_level', 1)
+        .maybeSingle();
+
+      if (approvalsError) throw approvalsError;
+
+      const approverIds = [approvals?.assigned_to_primary, approvals?.assigned_to_backup].filter(Boolean);
+      const emailMap = await this.getUserEmailMap(approverIds);
+      const recipients = approverIds
+        .map((id) => emailMap.get(id)?.email)
+        .filter(Boolean);
+
+      if (!recipients.length) return;
+
+      const subject = `ORBIT Approval Request ${request.request_number} awaiting L1 review`;
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #111827;">New Approval Request</h2>
+          <p>A new approval request is awaiting L1 review.</p>
+          <p><strong>Request #:</strong> ${request.request_number}</p>
+          <p><strong>Amount:</strong> ${this.formatCurrency(request.total_request_amount)}</p>
+          <p><strong>Description:</strong> ${request.description || '—'}</p>
+        </div>
+      `;
+
+      await this.sendApprovalNotification({ recipients, subject, html });
+
+      const notifications = recipients.map((email, index) => ({
+        request_id: requestId,
+        notification_type: 'submission',
+        title: 'New Approval Request',
+        message: `Request ${request.request_number} is awaiting L1 review.`,
+        recipient_id: approverIds[index] || approverIds[0],
+        recipient_email: email,
+        is_sent: true,
+        sent_date: new Date().toISOString(),
+        related_approval_level: 1,
+      }));
+
+      if (notifications.length) {
+        await supabase.from('tblbudgetapprovalrequests_notifications').insert(notifications);
+      }
+    } catch (error) {
+      console.warn('[email] Failed to send submission notifications:', error?.message || error);
+    }
+  }
+
+  static async sendApprovalStepNotifications({ requestId, approvalLevel, payrollCycle, payrollCycleDate }) {
+    try {
+      const { data: request, error } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('request_id, request_number, description, total_request_amount, submitted_by')
+        .eq('request_id', requestId)
+        .single();
+
+      if (error) throw error;
+
+      const requestorMap = await this.getUserEmailMap([request.submitted_by]);
+      const requestor = requestorMap.get(request.submitted_by);
+      const requestorEmail = requestor?.email ? [requestor.email] : [];
+
+      const nextLevel = Number(approvalLevel) + 1;
+      let nextApproverRecipients = [];
+      if (nextLevel <= 4) {
+        const { data: nextApproval, error: nextError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('assigned_to_primary, assigned_to_backup')
+          .eq('request_id', requestId)
+          .eq('approval_level', nextLevel)
+          .maybeSingle();
+
+        if (!nextError && nextApproval) {
+          const nextApproverIds = [nextApproval.assigned_to_primary, nextApproval.assigned_to_backup].filter(Boolean);
+          const nextMap = await this.getUserEmailMap(nextApproverIds);
+          nextApproverRecipients = nextApproverIds
+            .map((id) => nextMap.get(id)?.email)
+            .filter(Boolean);
+        }
+      }
+
+      const subject = `ORBIT Approval Update: ${request.request_number}`;
+      const payrollLine = payrollCycle
+        ? `<p><strong>Payroll Cycle:</strong> ${payrollCycle} (${payrollCycleDate || '—'})</p>`
+        : '';
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #111827;">Approval Update</h2>
+          <p>Your approval request has advanced to the next step.</p>
+          <p><strong>Request #:</strong> ${request.request_number}</p>
+          <p><strong>Amount:</strong> ${this.formatCurrency(request.total_request_amount)}</p>
+          ${payrollLine}
+          <p><strong>Description:</strong> ${request.description || '—'}</p>
+        </div>
+      `;
+
+      await Promise.allSettled([
+        this.sendApprovalNotification({ recipients: requestorEmail, subject, html }),
+        this.sendApprovalNotification({ recipients: nextApproverRecipients, subject, html }),
+      ]);
+
+      const notificationRows = [];
+      if (requestorEmail.length && request.submitted_by) {
+        notificationRows.push({
+          request_id: requestId,
+          notification_type: 'approval_step',
+          title: 'Approval Update',
+          message: `Request ${request.request_number} advanced to the next step.`,
+          recipient_id: request.submitted_by,
+          recipient_email: requestorEmail[0],
+          is_sent: true,
+          sent_date: new Date().toISOString(),
+          related_approval_level: Number(approvalLevel),
+        });
+      }
+
+      if (nextApproverRecipients.length) {
+        nextApproverRecipients.forEach((email) => {
+          notificationRows.push({
+            request_id: requestId,
+            notification_type: 'approval_step',
+            title: 'Approval Needed',
+            message: `Request ${request.request_number} is ready for your review.`,
+            recipient_id: null,
+            recipient_email: email,
+            is_sent: true,
+            sent_date: new Date().toISOString(),
+            related_approval_level: nextLevel,
+          });
+        });
+      }
+
+      if (notificationRows.length) {
+        await supabase.from('tblbudgetapprovalrequests_notifications').insert(notificationRows);
+      }
+    } catch (error) {
+      console.warn('[email] Failed to send approval step notifications:', error?.message || error);
+    }
   }
 
   static computeLineItemCounts(lineItems = []) {
@@ -247,6 +436,7 @@ export class ApprovalRequestService {
         total_request_amount,
         submitted_by,
         created_by,
+        client_sponsored,
       } = requestData;
 
       // Generate request number
@@ -263,6 +453,7 @@ export class ApprovalRequestService {
             total_request_amount: parseFloat(total_request_amount),
             submitted_by,
             created_by,
+            is_client_sponsored: client_sponsored ?? false,
             overall_status: 'draft',
             created_at: new Date().toISOString(),
           },
@@ -524,6 +715,17 @@ export class ApprovalRequestService {
    */
   static async getUserNotifications({ userId, role = 'requestor', allowedBudgetIds = null }) {
     try {
+      const { data: notificationRows, error: notificationError } = await supabase
+        .from('tblbudgetapprovalrequests_notifications')
+        .select('*')
+        .eq('recipient_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (notificationError) throw notificationError;
+      if (Array.isArray(notificationRows) && notificationRows.length) {
+        return { success: true, data: notificationRows };
+      }
+
       const normalizedRole = String(role || 'requestor').toLowerCase();
       const isApprover = normalizedRole.includes('l1') || normalizedRole.includes('l2') || normalizedRole.includes('l3');
       const isRequestor = normalizedRole.includes('requestor');
@@ -690,6 +892,9 @@ export class ApprovalRequestService {
           approval_stage_status: approvalStageStatus,
           created_at: request.created_at,
           updated_at: request.updated_at,
+          is_client_sponsored: request.is_client_sponsored ?? request.client_sponsored ?? null,
+          payroll_cycle: request.payroll_cycle || null,
+          payroll_cycle_Date: request.payroll_cycle_Date || request.payroll_cycle_date || null,
           context_tags: Array.from(contextMap.get(request.request_id) || []),
         };
       });
@@ -806,10 +1011,11 @@ export class ApprovalRequestService {
 
       // Run these operations in parallel for better performance
       console.log('[submitApprovalRequest] Running parallel operations: activity log, workflow init, auto-approval check');
-      const [activityResult, workflowResult, autoApprovalResult] = await Promise.allSettled([
+      const [activityResult, workflowResult, autoApprovalResult, notificationResult] = await Promise.allSettled([
         this.addActivityLog(requestId, 'submitted', submittedBy),
         this.initializeApprovalWorkflow(requestId),
         this.checkAndAutoApproveL1(requestId, submittedBy),
+        this.sendSubmissionNotifications(requestId),
       ]);
 
       console.log('[submitApprovalRequest] Parallel operations completed');
@@ -820,6 +1026,9 @@ export class ApprovalRequestService {
       }
       if (workflowResult.status === 'rejected') {
         console.warn('Workflow initialization failed:', workflowResult.reason);
+      }
+      if (notificationResult.status === 'rejected') {
+        console.warn('Submission notification failed:', notificationResult.reason);
       }
 
       const autoApproved = autoApprovalResult.status === 'fulfilled' && autoApprovalResult.value?.autoApproved;
@@ -1178,6 +1387,8 @@ export class ApprovalRequestService {
         approver_title,
         approval_notes,
         conditions_applied,
+        payroll_cycle,
+        payroll_cycle_date,
       } = approvalData;
 
       const { data, error } = await supabase
@@ -1207,9 +1418,12 @@ export class ApprovalRequestService {
       );
       const overallStatus = allApprovalsComplete ? 'approved' : 'in_progress';
 
+      const normalizedLevel = Number(approvalLevel);
       await this.updateApprovalRequest(requestId, {
         overall_status: overallStatus,
         ...(allApprovalsComplete && { approved_date: new Date().toISOString() }),
+        ...(normalizedLevel === 4 && payroll_cycle ? { payroll_cycle } : {}),
+        ...(normalizedLevel === 4 && payroll_cycle_date ? { payroll_cycle_Date: payroll_cycle_date } : {}),
         updated_by: approved_by,
       });
 
@@ -1220,6 +1434,13 @@ export class ApprovalRequestService {
         approved_by,
         `Approved at level ${approvalLevel}`
       );
+
+      await this.sendApprovalStepNotifications({
+        requestId,
+        approvalLevel,
+        payrollCycle: payroll_cycle,
+        payrollCycleDate: payroll_cycle_date,
+      });
 
       return {
         success: true,
