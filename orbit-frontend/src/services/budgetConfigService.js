@@ -431,6 +431,76 @@ export const getOrganizations = async (token) => {
 };
 
 /**
+ * POST - Create organization
+ */
+export const createOrganization = async (payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/organizations`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create organization');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error creating organization:', error);
+    throw error;
+  }
+};
+
+/**
+ * PUT - Update organization
+ */
+export const updateOrganization = async (orgId, payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/organizations/${orgId}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to update organization');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error updating organization:', error);
+    throw error;
+  }
+};
+
+/**
+ * DELETE - Delete organization
+ */
+export const deleteOrganization = async (orgId, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/organizations/${orgId}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete organization');
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Error deleting organization:', error);
+    throw error;
+  }
+};
+
+/**
  * GET - Get organizations grouped by hierarchy level
  */
 export const getOrganizationsByLevel = async (token) => {
@@ -477,6 +547,76 @@ export const getGeoList = async (token) => {
 };
 
 /**
+ * POST - Create geo
+ */
+export const createGeo = async (payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/geo`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create geo');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error creating geo:', error);
+    throw error;
+  }
+};
+
+/**
+ * PUT - Update geo
+ */
+export const updateGeo = async (geoId, payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/geo/${geoId}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to update geo');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error updating geo:', error);
+    throw error;
+  }
+};
+
+/**
+ * DELETE - Delete geo
+ */
+export const deleteGeo = async (geoId, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/geo/${geoId}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete geo');
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Error deleting geo:', error);
+    throw error;
+  }
+};
+
+/**
  * GET - Get locations (optional geo_id)
  */
 export const getLocations = async (geoId, token) => {
@@ -496,6 +636,76 @@ export const getLocations = async (geoId, token) => {
     return data.data || [];
   } catch (error) {
     console.error('Error fetching locations:', error);
+    throw error;
+  }
+};
+
+/**
+ * POST - Create location
+ */
+export const createLocation = async (payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/locations`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create location');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error creating location:', error);
+    throw error;
+  }
+};
+
+/**
+ * PUT - Update location
+ */
+export const updateLocation = async (locationId, payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/locations/${locationId}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to update location');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error updating location:', error);
+    throw error;
+  }
+};
+
+/**
+ * DELETE - Delete location
+ */
+export const deleteLocation = async (locationId, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/locations/${locationId}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete location');
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Error deleting location:', error);
     throw error;
   }
 };
@@ -567,6 +777,76 @@ export const getClientsByParentOrg = async (orgIds = [], token) => {
     return data.data || [];
   } catch (error) {
     console.error('Error fetching clients by organization:', error);
+    throw error;
+  }
+};
+
+/**
+ * POST - Create client
+ */
+export const createClient = async (payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/clients`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create client');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error creating client:', error);
+    throw error;
+  }
+};
+
+/**
+ * PUT - Update client
+ */
+export const updateClient = async (clientOrgId, payload, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/clients/${clientOrgId}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to update client');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error updating client:', error);
+    throw error;
+  }
+};
+
+/**
+ * DELETE - Delete client
+ */
+export const deleteClient = async (clientOrgId, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/clients/${clientOrgId}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete client');
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Error deleting client:', error);
     throw error;
   }
 };
@@ -667,11 +947,23 @@ export default {
   // Organizations
   getOrganizations,
   getOrganizationsByLevel,
+  createOrganization,
+  updateOrganization,
+  deleteOrganization,
   getGeoList,
+  createGeo,
+  updateGeo,
+  deleteGeo,
   getLocations,
+  createLocation,
+  updateLocation,
+  deleteLocation,
   getOrganizationGeoLocations,
   getOrganizationGeoLocationsByOrg,
   getClientsByParentOrg,
+  createClient,
+  updateClient,
+  deleteClient,
   
   // Real Approvers Data
   getAllApprovers,
