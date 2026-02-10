@@ -33,13 +33,11 @@ export const validatePassword = (password) => {
   };
 };
 
-export const validateLogin = (email, password) => {
+export const validateLogin = (employeeId, password) => {
   const errors = {};
 
-  if (!email || email.trim() === '') {
-    errors.email = 'Email is required';
-  } else if (!validateEmail(email)) {
-    errors.email = 'Please enter a valid email address';
+  if (!employeeId || employeeId.trim() === '') {
+    errors.employee_id = 'Employee ID is required';
   }
 
   if (!password || password.trim() === '') {

@@ -1,4 +1,5 @@
 import ApprovalRequestService from '../services/approvalRequestService.js';
+import { BudgetConfigService } from '../services/budgetConfigService.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { broadcast } from '../realtime/websocketServer.js';
 
@@ -8,6 +9,47 @@ import { broadcast } from '../realtime/websocketServer.js';
  */
 
 export class ApprovalRequestController {
+  /**
+   * Get notification list for requestor/approver dashboards
+   * GET /api/approval-requests/notifications
+   */
+  static async getUserNotifications(req, res) {
+    try {
+      const userId = req.user?.id;
+      const roleRaw = req.user?.role || req.user?.userType || req.query.role || 'requestor';
+      const role = String(roleRaw || '').toLowerCase();
+      const orgId = req.user?.org_id || null;
+
+      if (!userId) {
+        return sendError(res, 'User ID is required', 400);
+      }
+
+      let allowedBudgetIds = null;
+      if (orgId) {
+        const allowedBudgets = await BudgetConfigService.getBudgetIdsByOrgId(orgId);
+        const budgetIds = allowedBudgets.data || [];
+        if (!budgetIds.length) {
+          return sendSuccess(res, [], 'Notifications retrieved', 200);
+        }
+        allowedBudgetIds = budgetIds;
+      }
+
+      const result = await ApprovalRequestService.getUserNotifications({
+        userId,
+        role,
+        allowedBudgetIds,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      return sendSuccess(res, result.data, 'Notifications retrieved', 200);
+    } catch (error) {
+      console.error('Error in getUserNotifications:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
   /**
    * Get employee by EID (company scoped)
    * GET /api/approval-requests/employees/:eid?company_id=uuid
@@ -33,18 +75,57 @@ export class ApprovalRequestController {
       sendError(res, error.message, 500);
     }
   }
+
+  /**
+   * Get multiple employees by EIDs in batch
+   * POST /api/approval-requests/employees/batch
+   * Body: { eids: ['EMP001', 'EMP002', ...], company_id: 'uuid' }
+   */
+  static async getEmployeesBatch(req, res) {
+    try {
+      const { eids, company_id } = req.body;
+
+      if (!eids || !Array.isArray(eids) || eids.length === 0) {
+        return sendError(res, 'Employee IDs array is required', 400);
+      }
+
+      // Limit batch size to prevent abuse
+      if (eids.length > 500) {
+        return sendError(res, 'Maximum 500 employees per batch request', 400);
+      }
+
+      const result = await ApprovalRequestService.getEmployeesBatch(eids, company_id);
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      sendSuccess(res, result.data, `Found ${result.data.found.length} of ${eids.length} employees`, 200);
+    } catch (error) {
+      console.error('Error in getEmployeesBatch:', error);
+      sendError(res, error.message, 500);
+    }
+  }
   /**
    * Create new approval request (DRAFT)
    * POST /api/approval-requests
    */
   static async createApprovalRequest(req, res) {
     try {
-      const { budget_id, description, total_request_amount } = req.body;
+      const { budget_id, description, total_request_amount, client_sponsored } = req.body;
       const userId = req.user?.id || req.body.submitted_by || req.body.created_by;
+      const orgId = req.user?.org_id || null;
 
       // Validate required fields
       if (!budget_id || !total_request_amount || !userId) {
         return sendError(res, 'Missing required fields: budget_id, total_request_amount, submitted_by', 400);
+      }
+
+      if (orgId) {
+        const accessCheck = await BudgetConfigService.isBudgetConfigInOrg(budget_id, orgId);
+        if (!accessCheck.success || !accessCheck.data) {
+          return sendError(res, 'Access denied for this budget configuration', 403);
+        }
       }
 
       const result = await ApprovalRequestService.createApprovalRequest({
@@ -53,6 +134,7 @@ export class ApprovalRequestController {
         total_request_amount,
         submitted_by: userId,
         created_by: userId,
+        client_sponsored,
       });
 
       if (!result.success) {
@@ -100,7 +182,8 @@ export class ApprovalRequestController {
    */
   static async getAllApprovalRequests(req, res) {
     try {
-      const { budget_id, status, search, submitted_by } = req.query;
+      const { budget_id, status, search, submitted_by, approval_stage_status } = req.query;
+      const orgId = req.user?.org_id || null;
       const isUuid = (value) =>
         typeof value === 'string' &&
         /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -110,7 +193,17 @@ export class ApprovalRequestController {
         ...(status && { status }),
         ...(search && { search }),
         ...(submitted_by && isUuid(submitted_by) && { submitted_by }),
+        ...(approval_stage_status && { approval_stage_status }),
       };
+
+      if (orgId) {
+        const allowedBudgets = await BudgetConfigService.getBudgetIdsByOrgId(orgId);
+        const budgetIds = allowedBudgets.data || [];
+        if (!budgetIds.length) {
+          return sendSuccess(res, [], 'Approval requests retrieved', 200);
+        }
+        filters.budget_ids = budgetIds;
+      }
 
       const result = await ApprovalRequestService.getAllApprovalRequests(filters);
 
@@ -258,8 +351,19 @@ export class ApprovalRequestController {
   static async approveRequest(req, res) {
     try {
       const { id } = req.params;
-      const { approval_level, approver_name, approver_title, approval_notes, conditions_applied, user_id } = req.body;
+      const {
+        approval_level,
+        approver_name,
+        approver_title,
+        approval_notes,
+        conditions_applied,
+        payroll_cycle,
+        payroll_cycle_date,
+        payroll_cycle_Date,
+        user_id,
+      } = req.body;
       const userId = req.user?.id || user_id;
+      const normalizedPayrollCycleDate = payroll_cycle_date || payroll_cycle_Date;
 
       if (!approval_level) {
         return sendError(res, 'approval_level is required', 400);
@@ -269,12 +373,21 @@ export class ApprovalRequestController {
         return sendError(res, 'user_id is required', 400);
       }
 
+      const normalizedLevel = Number(approval_level);
+      if (normalizedLevel === 4) {
+        if (!payroll_cycle || !normalizedPayrollCycleDate) {
+          return sendError(res, 'payroll_cycle and payroll_cycle_date are required for payroll approval', 400);
+        }
+      }
+
       const result = await ApprovalRequestService.approveRequestAtLevel(id, approval_level, {
         approved_by: userId,
         approver_name,
         approver_title,
         approval_notes,
         conditions_applied,
+        payroll_cycle,
+        payroll_cycle_date: normalizedPayrollCycleDate,
       });
 
       if (!result.success) {
@@ -336,6 +449,43 @@ export class ApprovalRequestController {
   }
 
   /**
+   * Complete payroll payment (Step 2)
+   * POST /api/approval-requests/:id/approvals/complete-payment
+   */
+  static async completePayrollPayment(req, res) {
+    try {
+      const { id } = req.params;
+      const { approval_notes } = req.body;
+      const userId = req.user?.id || req.body.user_id;
+
+      if (!userId) {
+        return sendError(res, 'user_id is required', 400);
+      }
+
+      const result = await ApprovalRequestService.completePayrollPayment(id, {
+        completed_by: userId,
+        approver_name: req.user?.name || req.user?.full_name || req.user?.email || 'Payroll',
+        approval_notes,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      broadcast('approval_request_updated', {
+        action: 'payment_completed',
+        request_id: result.data?.request_id || id,
+        approval_level: 4,
+      });
+
+      sendSuccess(res, result.data, result.message, 200);
+    } catch (error) {
+      console.error('Error in completePayrollPayment:', error);
+      sendError(res, error.message, 500);
+    }
+  }
+
+  /**
    * Get approvals for request
    * GET /api/approval-requests/:id/approvals
    */
@@ -346,10 +496,10 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.getApprovalsByRequestId(id);
 
       if (!result.success) {
-        return sendError(res, 500, result.error);
+        return sendError(res, result.error, 500);
       }
 
-      sendSuccess(res, 200, true, 'Approvals retrieved', result.data);
+      sendSuccess(res, result.data, 'Approvals retrieved', 200);
     } catch (error) {
       console.error('Error in getApprovals:', error);
       sendError(res, 500, error.message);
@@ -440,12 +590,19 @@ export class ApprovalRequestController {
   static async getPendingApprovals(req, res) {
     try {
       const userId = req.user?.id || req.query.user_id;
+      const orgId = req.user?.org_id || null;
 
       if (!userId) {
         return sendError(res, 'user_id is required', 400);
       }
 
-      const result = await ApprovalRequestService.getPendingApprovalsForUser(userId);
+      let budgetIds = null;
+      if (orgId) {
+        const allowedBudgets = await BudgetConfigService.getBudgetIdsByOrgId(orgId);
+        budgetIds = allowedBudgets.data || [];
+      }
+
+      const result = await ApprovalRequestService.getPendingApprovalsForUser(userId, budgetIds);
 
       if (!result.success) {
         return sendError(res, result.error, 500);

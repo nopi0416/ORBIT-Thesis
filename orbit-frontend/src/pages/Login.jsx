@@ -33,6 +33,7 @@ export default function Login() {
   const { login, completeLogin } = useAuth();
   const [employeeId, setEmployeeId] = useState('');
   const [email, setEmail] = useState(''); // Store email from login response for OTP
+  const [otpEmail, setOtpEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [showPassword, setShowPassword] = useState(false);
@@ -148,7 +149,13 @@ export default function Login() {
     setTimeRemaining(180);
 
     try {
-      const result = await authAPI.resendOTP(email, 'login');
+      if (!otpEmail) {
+        setError('Unable to resend OTP. Please sign in again.');
+        setTimeRemaining(0);
+        return;
+      }
+
+      const result = await authAPI.resendOTP(otpEmail, 'login');
 
       if (!result.success) {
         setError(result.error || 'Failed to resend OTP');
@@ -212,7 +219,7 @@ export default function Login() {
           return;
         }
 
-        const result = await completeLogin(email, otpCode);
+        const result = await completeLogin(otpEmail || employeeId, otpCode);
         
         console.log('[LOGIN FORM] Complete login result:', result);
 
@@ -220,10 +227,10 @@ export default function Login() {
           // Check if user agreement is required (first-time login)
           if (result.requiresUserAgreement) {
             console.log('[LOGIN FORM] User agreement required, redirecting to user-agreement');
-            navigate(`/user-agreement?email=${encodeURIComponent(email)}&userId=${result.userId}&role=${encodeURIComponent(result.role || 'requestor')}`);
+            navigate(`/user-agreement?email=${encodeURIComponent(otpEmail || employeeId)}&userId=${result.userId}&role=${encodeURIComponent(result.role || 'requestor')}`);
           } else if (result.requiresPasswordChange) {
             console.log('[LOGIN FORM] Password change required, redirecting to first-time-password');
-            navigate(`/first-time-password?email=${encodeURIComponent(email)}&role=${encodeURIComponent(result.role || 'requestor')}`);
+            navigate(`/first-time-password?email=${encodeURIComponent(otpEmail || employeeId)}&role=${encodeURIComponent(result.role || 'requestor')}`);
           } else {
             // OTP verified, redirect to role-specific dashboard
             const dashboardRoute = getDashboardRoute(result.role);
@@ -248,6 +255,7 @@ export default function Login() {
             setEmail(result.email);
             // OTP required - show OTP entry form
             console.log('[LOGIN FORM] Showing OTP page');
+            setOtpEmail(result.email || otpEmail || employeeId);
             setRequiresOTP(true);
             setPassword('');
             setOtp(['', '', '', '', '', '']);
@@ -277,6 +285,7 @@ export default function Login() {
     setFieldErrors({});
     setResendCooldown(0);
     setTimeRemaining(180);
+    setOtpEmail('');
   };
 
   return (

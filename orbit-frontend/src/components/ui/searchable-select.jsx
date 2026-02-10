@@ -12,11 +12,32 @@ export function SearchableSelect({
   searchPlaceholder = "Search...",
   emptyText = "No results.",
   disabled = false,
+  maxLength,
   triggerClassName,
   contentClassName,
 }) {
   const [open, setOpen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
+
+  const sanitizeSingleLine = (value = "") =>
+    String(value)
+      .replace(/[^A-Za-z0-9 _\-";:'\n\r]/g, "")
+      .replace(/[\r\n]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trimStart();
+
+  const blockShortcuts = (event) => {
+    const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+    if (!hasModifier) return;
+
+    const key = String(event.key || "").toLowerCase();
+    const allowClipboard = (event.ctrlKey || event.metaKey) && (key === "v" || key === "c" || key === "x");
+    const allowShiftInsert = event.shiftKey && key === "insert";
+
+    if (allowClipboard || allowShiftInsert) return;
+
+    event.preventDefault();
+  };
 
   const normalizedSearch = searchValue.trim().toLowerCase();
 
@@ -59,6 +80,12 @@ export function SearchableSelect({
     }
   };
 
+  const handleInputKeyDown = (event) => {
+    blockShortcuts(event);
+    if (event.defaultPrevented) return;
+    handleSearchKeyDown(event);
+  };
+
   const displayValue = open ? searchValue : (selectedOption?.label ?? "");
   const placeholderText = placeholder;
 
@@ -75,9 +102,14 @@ export function SearchableSelect({
           onClick={() => !disabled && setOpen(true)}
           onChange={(event) => {
             if (!open) setOpen(true);
-            setSearchValue(event.target.value);
+            let nextValue = sanitizeSingleLine(event.target.value);
+            if (typeof maxLength === "number" && maxLength > 0) {
+              nextValue = nextValue.slice(0, maxLength);
+            }
+            setSearchValue(nextValue);
           }}
-          onKeyDown={handleSearchKeyDown}
+          onKeyDown={handleInputKeyDown}
+          maxLength={maxLength}
           className={cn(
             "w-full bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 pr-8",
             triggerClassName
