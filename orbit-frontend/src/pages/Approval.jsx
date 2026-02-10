@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { Search } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -11,6 +12,7 @@ import { Checkbox } from '../components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Badge } from '../components/ui/badge';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import approvalRequestService from '../services/approvalRequestService';
 import { getApproversByLevel, getBudgetConfigurationById, getBudgetConfigurations, getOrganizations, getUserById } from '../services/budgetConfigService';
 import { connectWebSocket, addWebSocketListener } from '../services/realtimeService';
@@ -76,7 +78,7 @@ const sanitizeSingleLine = (value = '') =>
   sanitizeTextInput(value).replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trimStart();
 
 const sanitizeIdInput = (value = '') =>
-  String(value).replace(/[^\p{L}\p{N}]/gu, '');
+  String(value).replace(/[^\p{L}\p{N}\-]/gu, '');
 
 const blockShortcuts = (event) => {
   const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
@@ -84,9 +86,10 @@ const blockShortcuts = (event) => {
 
   const key = String(event.key || '').toLowerCase();
   const allowClipboard = (event.ctrlKey || event.metaKey) && (key === 'v' || key === 'c' || key === 'x');
+  const allowSelectAll = (event.ctrlKey || event.metaKey) && key === 'a';
   const allowShiftInsert = event.shiftKey && key === 'insert';
 
-  if (allowClipboard || allowShiftInsert) return;
+  if (allowClipboard || allowSelectAll || allowShiftInsert) return;
 
   event.preventDefault();
 };
@@ -108,6 +111,9 @@ const normalizeConfig = (config) => ({
   clientSponsored: config.is_client_sponsored ?? config.client_sponsored ?? config.clientSponsored ?? null,
   approvers: Array.isArray(config.approvers) ? config.approvers : [],
   affectedOUPaths: parseStoredPaths(config.affected_ou || config.affectedOUPaths),
+  status: config.status,
+  geo: parseStoredList(config.geo || config.geos),
+  location: parseStoredList(config.location || config.locations),
 });
 
 const computeStageStatus = (approvals = [], overallStatus = '') => {
@@ -158,8 +164,10 @@ const getStageStatusBadgeClass = (status) => {
   if (normalized === 'pending_payment_completion') return 'bg-blue-500 text-white';
   if (normalized === 'rejected') return 'bg-red-600 text-white';
   if (normalized === 'completed') return 'bg-emerald-600 text-white';
+  if (normalized === 'approved') return 'bg-green-600 text-white';
   if (normalized === 'draft') return 'bg-slate-600 text-white';
-  return 'bg-yellow-500 text-white';
+  if (normalized === 'self_approved') return 'bg-blue-500 text-white';
+  return 'bg-amber-600 text-white'; // Muted yellow (Ongoing/Pending)
 };
 
 const normalizeRequest = (request) => {
@@ -229,9 +237,11 @@ const getStatusBadgeClass = (status) => {
     case 'pending_payment_completion':
       return 'bg-blue-500 text-white';
     case 'ongoing_approval':
-      return 'bg-yellow-500 text-white';
+    case 'pending':
+      return 'bg-amber-600 text-white'; // Muted yellow
     case 'submitted':
-      return 'bg-blue-500 text-white';
+    case 'self_approved':
+      return 'bg-blue-500 text-white'; // Self Approved / Submitted
     case 'approved':
       return 'bg-green-600 text-white';
     case 'rejected':
@@ -239,7 +249,7 @@ const getStatusBadgeClass = (status) => {
     case 'draft':
       return 'bg-slate-600 text-white';
     default:
-      return 'bg-yellow-500 text-white';
+      return 'bg-amber-600 text-white';
   }
 };
 
@@ -259,15 +269,15 @@ export default function ApprovalPage() {
   const handleRefresh = () => setRefreshKey((prev) => prev + 1);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       <PageHeader
         title="Approval Management"
         description="Submit, review, and track budget approval requests"
       />
 
-      <div className="flex-1 p-6">
-        <Tabs defaultValue={defaultTab} className="space-y-6">
-          <TabsList className="bg-slate-800 border-slate-700 p-1">
+      <div className="flex-1 p-6 overflow-hidden">
+        <Tabs defaultValue={defaultTab} className="flex flex-col h-full gap-6">
+          <TabsList className="bg-slate-800 border-slate-700 p-1 w-max flex-shrink-0">
             {canSubmit && (
               <TabsTrigger
                 value="submit"
@@ -293,18 +303,18 @@ export default function ApprovalPage() {
           </TabsList>
 
           {canSubmit && (
-            <TabsContent value="submit">
+            <TabsContent value="submit" className="flex-1 min-h-0">
               <SubmitApproval userId={user?.id} onRefresh={handleRefresh} refreshKey={refreshKey} />
             </TabsContent>
           )}
 
           {canViewRequests && (
-            <TabsContent value="requests">
+            <TabsContent value="requests" className="flex-1 min-h-0">
               <ApprovalRequests refreshKey={refreshKey} />
             </TabsContent>
           )}
 
-          <TabsContent value="history">
+          <TabsContent value="history" className="flex-1 min-h-0">
             <ApprovalHistory refreshKey={refreshKey} />
           </TabsContent>
         </Tabs>
@@ -315,6 +325,7 @@ export default function ApprovalPage() {
 
 function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const { user } = useAuth();
+  const toast = useToast();
   const userRole = resolveUserRole(user);
   const [configurations, setConfigurations] = useState([]);
   const [configLoading, setConfigLoading] = useState(false);
@@ -346,6 +357,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     details: '',
     clientSponsored: false,
   });
+  const [searchTerm, setSearchTerm] = useState(''); // Added for budget config search
   const [individualRequest, setIndividualRequest] = useState({
     employeeId: '',
     employeeName: '',
@@ -422,7 +434,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           () => getBudgetConfigurations({ org_id: user?.org_id }, token),
           5 * 60 * 1000 // 5 minutes TTL
         );
-        setConfigurations((data || []).map(normalizeConfig));
+        setConfigurations((data || []).map(normalizeConfig).filter(config => String(config.status || '').toLowerCase() === 'active'));
       } catch (error) {
         setConfigError(error.message || 'Failed to load configurations');
         setConfigurations([]);
@@ -698,8 +710,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     return formatted.length ? formatted.join(' | ') : 'Not specified';
   };
 
-  // Auto-lookup disabled per user request - remove this comment block to re-enable
-  /*
+  // Auto-lookup re-enabled
+  // useEffect(() => { ... } logic restored
   useEffect(() => {
     const employeeId = individualRequest.employeeId?.trim();
     if (!employeeId) {
@@ -724,114 +736,90 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setEmployeeLookupError(null);
       try {
         const data = await approvalRequestService.getEmployeeByEid(employeeId, companyId, token);
-
         const normalizeText = (value) => String(value || '').trim().toLowerCase();
 
-        const employeeDepartment =
-          data?.department || data?.dept || data?.department_name || data?.dept_name || data?.org_name || data?.ou_name || '';
-        const employeeOrgId = normalizeText(
-          data?.org_id || data?.ou_id || data?.org_unit_id || data?.department_id || ''
+        // 1. Normalize Employee Data
+        const empCompanyCode = normalizeText(data?.company_code);
+        const empDepartment = normalizeText(
+          data?.department || data?.dept || data?.department_name || 
+          data?.dept_name || data?.org_name || data?.ou_name || ''
         );
-        const employeeOrgName = employeeOrgId ? getOrgName(employeeOrgId) : '';
 
-        const employeeDeptCandidates = [
-          employeeDepartment,
-          data?.org_name || '',
-          data?.ou_name || '',
-          employeeOrgName || '',
-        ]
-          .map((value) => normalizeText(value))
-          .filter(Boolean);
-
-        const rawConfigDepartments =
-          selectedConfig?.departments ||
-          selectedConfig?.department ||
-          selectedConfig?.budget_department ||
-          selectedConfig?.budgetDepartment ||
-          '';
-
-        const configDepartmentNames = parseStoredList(rawConfigDepartments)
-          .map((value) => normalizeText(value))
-          .filter(Boolean);
-
+        // 2. Resolve Budget Configuration Scope
+        // Get IDs of selected OUs (leaf nodes)
         const configOuPaths = parseStoredPaths(
           selectedConfig?.affectedOUPaths || selectedConfig?.affected_ou || []
         );
         const configOuIds = new Set(
-          configOuPaths.flat().map((value) => normalizeText(value)).filter(Boolean)
-        );
-        const configOuNames = new Set(
           configOuPaths
             .map((path) => (Array.isArray(path) ? path[path.length - 1] : path))
-            .map((value) => normalizeText(getOrgName(value) || value))
+            .map((value) => normalizeText(value))
             .filter(Boolean)
         );
 
-        const hasOuFilter = configOuIds.size > 0 || configOuPaths.length > 0;
-        const allowedDepartments = hasOuFilter 
-          ? Array.from(configOuNames)
-          : Array.from(new Set([...configDepartmentNames, ...Array.from(configOuNames)]));
-        
-        const hasAllDepartments = !hasOuFilter && allowedDepartments.includes('all');
-        const hasDepartmentFilter = allowedDepartments.length > 0 && !hasAllDepartments;
-        const departmentAllowed =
-          !hasDepartmentFilter || employeeDeptCandidates.some((value) => allowedDepartments.includes(value));
+        const hasOuFilter = configOuIds.size > 0;
+        let isScopeAllowed = false;
+        let rejectionReason = '';
 
-        console.log('[Department Matching Debug]', {
-          employeeData: data,
-          employeeDepartment,
-          employeeOrgId,
-          employeeOrgName,
-          employeeDeptCandidates,
-          rawConfigDepartments,
-          configDepartmentNames,
-          configOuIds: Array.from(configOuIds),
-          configOuNames: Array.from(configOuNames),
-          allowedDepartments,
-          hasAllDepartments,
-          hasDepartmentFilter,
-          departmentAllowed,
-        });
+        if (hasOuFilter) {
+          // Strict Matching: Cross-reference selected OU IDs with loaded Organization data
+          // to get allowed Company Codes and Department Names.
+          // We use the `organizations` state which contains the full loaded list of OUs.
+          const allowedOrgs = organizations.filter((org) =>
+            configOuIds.has(normalizeText(org.id || org.org_id))
+          );
 
-        const employeePathRaw =
-          data?.ou_path || data?.org_path || data?.ou_hierarchy || data?.org_hierarchy || '';
-        const employeePath = parseStoredList(employeePathRaw).map((value) => normalizeText(value));
-        
-        const employeeCompanyName = normalizeText(
-          data?.company_name || data?.companyName || data?.company || ''
-        );
-        
-        const ouAllowed =
-          !hasOuFilter ||
-          (employeeOrgId && configOuIds.has(employeeOrgId)) ||
-          (employeeCompanyName && configOuNames.has(employeeCompanyName)) ||
-          (employeePath.length > 0 &&
-            configOuPaths.some((path) => {
-              const normalizedPath = path.map((value) => normalizeText(value)).filter(Boolean);
-              if (!normalizedPath.length) return false;
-              return normalizedPath.some((configId) => employeePath.includes(configId));
-            }));
+          const allowedCompanyCodes = new Set(
+            allowedOrgs.map((org) => normalizeText(org.company_code)).filter(Boolean)
+          );
+          const allowedDeptNames = new Set(
+            allowedOrgs.map((org) => normalizeText(org.name || org.department || org.org_name)).filter(Boolean)
+          );
 
-        console.log('[OU Matching Debug]', {
-          employeePathRaw,
-          employeePath,
-          employeeCompanyName,
-          configOuPaths,
-          configOuIds: Array.from(configOuIds),
-          configOuNames: Array.from(configOuNames),
-          hasOuFilter,
-          employeeOrgIdInSet: employeeOrgId && configOuIds.has(employeeOrgId),
-          companyNameInSet: employeeCompanyName && configOuNames.has(employeeCompanyName),
-          ouAllowed,
-        });
+          // Strict Check 1: Company Code must match
+          const companyMatch = allowedCompanyCodes.has(empCompanyCode);
+          // Strict Check 2: Department Name must match (Name-based, not ID-based)
+          const deptMatch = allowedDeptNames.has(empDepartment);
 
-        if (!departmentAllowed || !ouAllowed) {
-          console.warn('[Employee Lookup] Employee not in budget scope:', {
-            departmentAllowed,
-            ouAllowed,
-            employeeDepartment,
-            allowedDepartments,
+          isScopeAllowed = companyMatch && deptMatch;
+
+          if (!isScopeAllowed) {
+            rejectionReason = `Scope Mismatch. Employee Company Code: '${empCompanyCode}' (Allowed: ${Array.from(allowedCompanyCodes).join(', ')}). Employee Department: '${empDepartment}' (Allowed: ${Array.from(allowedDeptNames).join(', ')})`;
+          }
+
+          console.log('[Strict Scope Debug]', {
+            empCompanyCode,
+            empDepartment,
+            allowedOrgsCount: allowedOrgs.length,
+            allowedCompanyCodes: Array.from(allowedCompanyCodes),
+            allowedDeptNames: Array.from(allowedDeptNames),
+            companyMatch,
+            deptMatch,
+            isScopeAllowed
           });
+
+        } else {
+           // Fallback: If no specific OUs selected, check loosely against generic department field
+           const rawConfigDepartments =
+              selectedConfig?.departments ||
+              selectedConfig?.department ||
+              selectedConfig?.budget_department ||
+              '';
+            
+           const configDepartmentNames = parseStoredList(rawConfigDepartments)
+              .map(v => normalizeText(v))
+              .filter(Boolean);
+            
+           const hasAll = configDepartmentNames.includes('all');
+           isScopeAllowed = hasAll || configDepartmentNames.includes(empDepartment); 
+           
+           if (!isScopeAllowed) {
+               rejectionReason = `Employee department '${empDepartment}' not allowed (Allowed: ${configDepartmentNames.join(', ')})`;
+           }
+        }
+
+        if (!isScopeAllowed) {
+          console.warn('[Employee Lookup] Validation Failed:', rejectionReason);
           setEmployeeLookupError('Employee is not within the selected budget scope.');
           setIndividualRequest((prev) => ({
             ...prev,
@@ -848,6 +836,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           return;
         }
 
+        // 3. Success: Populate Data
         setIndividualRequest((prev) => ({
           ...prev,
           employeeName: data?.name || data?.employee_name || data?.fullname || data?.full_name || '',
@@ -856,7 +845,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           employeeStatus: data?.employee_status || data?.active_status || data?.employment_status || data?.status || '',
           geo: data?.geo || data?.region || data?.country || '',
           location: data?.location || data?.site || data?.office || '',
-          department: employeeDepartment || employeeOrgName || '',
+          department: empDepartment || '', // Use the resolved department name
           hireDate: data?.hire_date || data?.date_hired || data?.start_date || '',
           terminationDate: data?.termination_date || data?.end_date || data?.exit_date || '',
         }));
@@ -892,7 +881,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     selectedConfig?.affected_ou,
     organizations,
   ]);
-  */
 
   useEffect(() => {
     const fetchApprovers = async () => {
@@ -1159,9 +1147,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }
     const cached = userDetailsCache[userId];
     if (cached) {
-      return `${cached.first_name || ''} ${cached.last_name || ''}`.trim() || userId;
+      return `${cached.first_name || ''} ${cached.last_name || ''}`.trim() || 'Loading...';
     }
-    return userId;
+    return 'Loading...';
   };
 
   const formatApprovers = (approvers = []) => {
@@ -1560,20 +1548,67 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }
   };
 
+  const validateEmployeeCb = useCallback((item) => {
+    const errors = [];
+    const warnings = [];
+    
+    // Check if employee ID exists
+    if (!item.employee_id) {
+      errors.push('Employee ID required');
+    }
+    
+    // Check if employee was found
+    if (item.employee_id && !item.employeeData) {
+      errors.push('Employee not found');
+    }
+    
+    // Check if employee is in configuration scope (same validation as individual)
+    if (item.employeeData && item.scopeValidation && selectedConfig) {
+      if (!item.scopeValidation.departmentAllowed) {
+        errors.push('Employee department not in budget scope');
+      }
+      if (!item.scopeValidation.ouAllowed) {
+        errors.push('Employee OU/organization not in budget scope');
+      }
+    }
+    
+    // Check amount
+    if (!item.amount || item.amount <= 0) {
+      errors.push('Valid amount required');
+    }
+    
+    // Check for warnings - only for amount/deduction issues
+    const minLimit = Number(selectedConfig?.minLimit || 0);
+    const maxLimit = Number(selectedConfig?.maxLimit || 0);
+    const needsNotes = 
+      item.is_deduction ||
+      (minLimit > 0 && item.amount < minLimit) ||
+      (maxLimit > 0 && item.amount > maxLimit);
+    
+    if (needsNotes && !item.notes?.trim()) {
+      warnings.push('Notes required for deduction/out-of-range amount');
+    }
+    
+    return { valid: errors.length === 0, errors, warnings };
+  }, [selectedConfig]);
+
   const handleSubmitIndividual = async () => {
     const commonError = validateCommon();
     if (commonError) {
+      toast.error(commonError);
       setSubmitError(commonError);
       return;
     }
 
     if (!individualRequest.employeeId || !individualRequest.employeeName || !individualRequest.department || !individualRequest.position || !individualRequest.amount) {
+      toast.error('Complete all required individual fields.');
       setSubmitError('Complete all required individual fields.');
       return;
     }
 
     const amountValue = Number(individualRequest.amount);
     if (!amountValue || Number.isNaN(amountValue)) {
+      toast.error('Enter a valid amount.');
       setSubmitError('Enter a valid amount.');
       return;
     }
@@ -1587,6 +1622,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         (maxLimitValue > 0 && amountValue > maxLimitValue));
 
     if (isOutOfRange && !individualRequest.notes?.trim()) {
+      toast.error('Amount is outside the configured range. Please add notes to proceed.');
       setSubmitError('Amount is outside the configured range. Please add notes to proceed.');
       return;
     }
@@ -1661,22 +1697,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setConfirmAction(null);
       setConfirmLoading(false);
       
-      // Show error modal
-      setIsError(true);
-      setSuccessMessage(errorMsg);
-      setShowSuccessModal(true);
-      setCountdown(5);
-      
-      // Countdown and auto-close
-      let timeLeft = 5;
-      const countdownInterval = setInterval(() => {
-        timeLeft -= 1;
-        setCountdown(timeLeft);
-        if (timeLeft <= 0) {
-          clearInterval(countdownInterval);
-          setShowSuccessModal(false);
-        }
-      }, 1000);
+      toast.error(errorMsg);
     } finally {
       setSubmitting(false);
     }
@@ -1829,22 +1850,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setConfirmAction(null);
       setConfirmLoading(false);
       
-      // Show error modal
-      setIsError(true);
-      setSuccessMessage(errorMsg);
-      setShowSuccessModal(true);
-      setCountdown(5);
-      
-      // Countdown and auto-close
-      let timeLeft = 5;
-      const countdownInterval = setInterval(() => {
-        timeLeft -= 1;
-        setCountdown(timeLeft);
-        if (timeLeft <= 0) {
-          clearInterval(countdownInterval);
-          setShowSuccessModal(false);
-        }
-      }, 1000);
+      toast.error(errorMsg);
     } finally {
       setSubmitting(false);
       setConfirmLoading(false);
@@ -1942,7 +1948,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setDecisionNotes('');
     } catch (error) {
       console.error('[SubmitApproval.handleApprove] Error:', error);
-      setActionError(extractErrorMessage(error));
+      const errMsg = extractErrorMessage(error);
+      toast.error(errMsg);
+      setActionError(errMsg);
     } finally {
       setActionSubmitting(false);
     }
@@ -1951,6 +1959,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const handleReject = async () => {
     if (!selectedRequest?.id || !currentApprovalLevel) return;
     if (!decisionNotes.trim()) {
+      toast.error('Rejection reason is required.');
       setActionError('Rejection reason is required.');
       return;
     }
@@ -1978,7 +1987,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setDecisionNotes('');
     } catch (error) {
       console.error('[SubmitApproval.handleReject] Error:', error);
-      setActionError(extractErrorMessage(error));
+      const errMsg = extractErrorMessage(error);
+      toast.error(errMsg);
+      setActionError(errMsg);
     } finally {
       setActionSubmitting(false);
     }
@@ -1997,236 +2008,250 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     return detailApprovals.find((approval) => String(approval.approval_level) === String(level)) || null;
   };
 
+  const filteredConfigs = configurations.filter(config => 
+    !searchTerm || String(config.name || '').toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <>
-      <div className="grid gap-6 xl:grid-cols-[520px_1fr] items-start">
-        <Card className="bg-slate-800 border-slate-700 flex flex-col min-h-[420px] w-full justify-self-start">
-        <CardHeader>
-          <CardTitle className="text-white">Submit New Approval Request</CardTitle>
-          <CardDescription className="text-gray-400">
-            Select a budget configuration and submit approval requests
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex-1 overflow-y-auto pr-1">
-          {configLoading ? (
-            <div className="text-sm text-gray-400">Loading configurations...</div>
-          ) : configError ? (
-            <div className="text-sm text-red-400">{configError}</div>
-          ) : configurations.length === 0 ? (
-            <div className="text-sm text-gray-400">No configurations available.</div>
-          ) : (
-            <div className="space-y-2">
-              {configurations.map((config) => {
-                const pathsText = formatOuPaths(config.affectedOUPaths || config.affected_ou || []);
-                const hasTruncation = pathsText.includes('...(');
-                
-                // Generate full list for tooltip
-                const getAllDepartments = () => {
-                  const paths = config.affectedOUPaths || config.affected_ou || [];
-                  const parentGroups = new Map();
-                  
-                  paths.forEach(path => {
-                    if (!Array.isArray(path) || path.length === 0) return;
-                    const parentId = path[0];
-                    const parentName = getOrgName(parentId);
-                    
-                    if (!parentGroups.has(parentId)) {
-                      parentGroups.set(parentId, { parentName, departments: new Set() });
-                    }
-                    
-                    if (path.length >= 2) {
-                      const deptName = getOrgName(path[path.length - 1]);
-                      parentGroups.get(parentId).departments.add(deptName);
-                    }
-                  });
-                  
-                  const lines = [];
-                  parentGroups.forEach(({ parentName, departments }) => {
-                    if (departments.size > 0) {
-                      lines.push(`${parentName}:`);
-                      Array.from(departments).forEach(dept => lines.push(`  • ${dept}`));
-                    }
-                  });
-                  
-                  return lines.join('\n');
-                };
-                
-                return (
-                  <div
-                    key={config.id}
-                    className="bg-slate-700/50 border border-slate-600 rounded-lg p-3 hover:bg-slate-700/70 transition-colors flex flex-col min-h-[120px]"
-                  >
-                    <div className="space-y-1 flex-1">
-                      <div>
-                        <h3 className="font-semibold text-white text-sm">{config.name}</h3>
-                        <p 
-                          className="text-xs text-gray-400"
-                          title={hasTruncation ? getAllDepartments() : undefined}
-                          style={{ cursor: hasTruncation ? 'help' : 'default' }}
-                        >
-                          {pathsText}
-                        </p>
-                      </div>
-                    <p className="text-xs text-gray-300 line-clamp-2">
-                      {config.description || 'No description provided.'}
-                    </p>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    <div className="text-center text-xs text-gray-400">
-                      {(() => {
-                        const used = Number(config.approvedAmount ?? config.usedAmount ?? 0);
-                        const limitValue = Number(config.totalBudget || config.budgetLimit || 0);
-                        const limitLabel = limitValue > 0 ? `₱${limitValue.toLocaleString()}` : 'No limit';
-                        return `Used Budget: ₱${used.toLocaleString()} / ${limitLabel}`;
-                      })()}
-                    </div>
-                    <Button
-                      size="sm"
-                      className="w-full bg-blue-600 hover:bg-blue-700 text-white"
-                      onClick={() => handleOpenModal(config)}
-                    >
-                      Submit Request
-                    </Button>
-                  </div>
-                </div>
-                );
-              })}
+      <div className="flex flex-col gap-6 h-full min-h-0">
+        <Card className="bg-slate-800 border-slate-700 flex flex-col w-full flex-1 min-h-0 overflow-hidden">
+        <CardHeader className="pb-3 border-b border-slate-700/50">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <CardTitle className="text-white">Submit New Approval Request</CardTitle>
+              <CardDescription className="text-gray-400">
+                Select a budget configuration to submit an approval request
+              </CardDescription>
             </div>
+            <div className="relative w-64">
+              <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-400" />
+              <Input
+                placeholder="Search..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(sanitizeSingleLine(e.target.value))}
+                className="pl-8 bg-slate-700 border-slate-600 text-white placeholder:text-gray-400 h-9"
+                maxLength={100}
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 overflow-y-auto flex-1">
+          {configLoading ? (
+            <div className="p-8 text-center text-gray-400">Loading configurations...</div>
+          ) : configError ? (
+            <div className="p-8 text-center text-red-400">{configError}</div>
+          ) : filteredConfigs.length === 0 ? (
+            <div className="p-8 text-center text-gray-400">No active budget configurations found.</div>
+          ) : (
+            <table className="w-full text-left text-sm text-gray-300">
+              <thead className="text-xs uppercase bg-slate-900/50 text-gray-400 sticky top-0 z-10 backdrop-blur-sm">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Budget Name</th>
+                  <th className="px-4 py-3 font-medium">Description</th>
+                  <th className="px-4 py-3 font-medium">Geo</th>
+                  <th className="px-4 py-3 font-medium">Location</th>
+                  <th className="px-4 py-3 font-medium">Clients</th>
+                  <th className="px-4 py-3 font-medium">Departments</th>
+                  <th className="px-4 py-3 font-medium text-right">Used Amount</th>
+                  <th className="px-4 py-3 font-medium text-right">Ongoing Amount</th>
+                  <th className="px-4 py-3 font-medium text-right">Remaining</th>
+                  <th className="px-4 py-3 font-medium text-center">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700/50">
+                {filteredConfigs.map((config) => {
+                  const used = Number(config.approvedAmount ?? config.usedAmount ?? 0);
+                  const ongoing = Number(config.ongoingAmount ?? 0);
+                  const limitValue = Number(config.totalBudget || config.budgetLimit || 0);
+                  const formattedRemaining = limitValue > 0 
+                      ? (limitValue - used).toLocaleString() 
+                      : 'Unlimited';
+                  
+                  const pathsText = formatOuPaths(config.affectedOUPaths || config.affected_ou || []);
+
+                  return (
+                    <tr key={config.id} className="hover:bg-slate-700/30 transition-colors">
+                      <td className="px-4 py-3 font-medium text-white">{config.name}</td>
+                      <td className="px-4 py-3 max-w-[200px] truncate" title={config.description}>
+                        {config.description || '—'}
+                      </td>
+                      <td className="px-4 py-3 max-w-[150px] truncate" title={config.geo?.join(', ')}>
+                        {config.geo?.length ? config.geo.join(', ') : 'All'}
+                      </td>
+                      <td className="px-4 py-3 max-w-[150px] truncate" title={config.location?.join(', ')}>
+                        {config.location?.length ? config.location.join(', ') : 'All'}
+                      </td>
+                      <td className="px-4 py-3 max-w-[150px] truncate" title={config.clients?.join(', ')}>
+                        {config.clients?.length ? config.clients.join(', ') : 'All'}
+                      </td>
+                      <td className="px-4 py-3 max-w-[200px] truncate" title={pathsText}>
+                        {pathsText}
+                      </td>
+                      <td className="px-4 py-3 text-right text-emerald-400 font-medium">
+                        ₱{used.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right text-amber-400 font-medium">
+                        ₱{ongoing.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right text-blue-400 font-medium">
+                        {limitValue > 0 ? `₱${formattedRemaining}` : '∞'}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <Button
+                          size="sm"
+                          className="h-8 bg-blue-600 hover:bg-blue-700 text-white"
+                          onClick={() => handleOpenModal(config)}
+                        >
+                          Submit
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </CardContent>
       </Card>
 
-      <Card className="bg-slate-800 border-slate-700 flex flex-col min-h-[420px] w-full">
-        <CardHeader>
-          <CardTitle className="text-white">My Ongoing Approval Requests</CardTitle>
-          <CardDescription className="text-gray-400">
-            Track status for your submitted approval requests
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex-1 overflow-hidden flex flex-col">
-          {requestsLoading ? (
-            <div className="text-sm text-gray-400">Loading requests...</div>
-          ) : requestsError ? (
-            <div className="text-sm text-red-400">{requestsError}</div>
-          ) : myRequests.length === 0 ? (
-            <div className="text-sm text-gray-400">No approval requests submitted yet.</div>
-          ) : (
-            <div className="border border-slate-600 rounded-md overflow-auto flex-1">
-              <table className="w-full border-collapse">
-                <thead className="bg-slate-700 sticky top-0 z-10">
-                  <tr>
-                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Request #
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Budget Name
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Client Sponsored
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Payroll Cycle
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Payroll Cycle Date
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Total Employees
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Deductions
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      To Be Paid
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Description
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Amount
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Submitted
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-slate-800/50">
-                  {myRequests.map((request) => {
-                    const approvals = request.approvals || [];
-                    const stageStatus = request.approvalStageStatus || computeStageStatus(approvals, request.overall_status || request.status);
-                    const displayStatus = formatStageStatusLabel(stageStatus);
-                    const employeeCount = request.lineItemsCount ?? request.line_items_count ?? request.employeeCount ?? 0;
-                    const deductionCount = request.deductionCount ?? request.deduction_count ?? 0;
-                    const payCount = request.toBePaidCount ?? request.to_be_paid_count ?? Math.max(0, employeeCount - deductionCount);
-                    
-                    return (
-                      <tr
-                        key={request.id}
-                        className="hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0"
-                      >
-                        <td className="px-4 py-3 text-xs text-slate-300 font-mono">
-                          {request.requestNumber || '—'}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-white font-medium">
-                          {request.budgetName}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-center text-slate-300">
-                          {request.clientSponsored ? 'Yes' : 'No'}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-300">
-                          {request.payrollCycle || '—'}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-300">
-                          {request.payrollCycleDate || '—'}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-center text-white font-semibold">
-                          {employeeCount}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-center text-red-400">
-                          {deductionCount}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-center text-emerald-400">
-                          {payCount}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-300 max-w-xs truncate" title={request.description}>
-                          {request.description || 'No description'}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-right font-semibold text-emerald-400">
-                          ₱{Number(request.amount || 0).toLocaleString()}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-400">
-                          {formatDatePHT(request.submittedAt)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge className={`text-[10px] ${getStageStatusBadgeClass(stageStatus)}`}>
-                            {displayStatus}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 text-xs text-blue-400 hover:text-blue-300 hover:bg-slate-700"
-                            onClick={() => handleOpenRequestDetails(request)}
-                          >
-                            View Details
-                          </Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <Card className="bg-slate-800 border-slate-700 flex flex-col w-full flex-1 min-h-0 overflow-hidden">
+  <CardHeader>
+    <CardTitle className="text-white">My Ongoing Approval Requests</CardTitle>
+    <CardDescription className="text-gray-400">
+      Track status for your submitted approval requests
+    </CardDescription>
+  </CardHeader>
+  <CardContent className="flex-1 min-h-0 flex flex-col overflow-hidden">
+    {requestsLoading ? (
+      <div className="text-sm text-gray-400">Loading requests...</div>
+    ) : requestsError ? (
+      <div className="text-sm text-red-400">{requestsError}</div>
+    ) : myRequests.length === 0 ? (
+      <div className="text-sm text-gray-400">No approval requests submitted yet.</div>
+    ) : (
+      /* The wrapper below is the key: 
+         'overflow-x-auto' enables the horizontal scroll.
+         'max-w-full' ensures it doesn't push the screen width.
+      */
+      <div className="border border-slate-600 rounded-md w-full max-w-full overflow-x-auto overflow-y-auto flex-1">
+        <table className="min-w-[1300px] w-full border-collapse">
+          <thead className="bg-slate-700 sticky top-0 z-20">
+            <tr>
+              <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Request #
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Budget Name
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Client Sponsored
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Payroll Cycle
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Payroll Cycle Date
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Total Employees
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Deductions
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                To Be Paid
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Description
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Amount
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Submitted
+              </th>
+              <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                Status
+              </th>
+              {/* Sticky Right Column Header */}
+              <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider sticky right-0 bg-slate-700 z-30">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody className="bg-slate-800/50">
+            {myRequests.map((request) => {
+              const approvals = request.approvals || [];
+              const stageStatus = request.approvalStageStatus || computeStageStatus(approvals, request.overall_status || request.status);
+              const displayStatus = formatStageStatusLabel(stageStatus);
+              const employeeCount = request.lineItemsCount ?? request.line_items_count ?? request.employeeCount ?? 0;
+              const deductionCount = request.deductionCount ?? request.deduction_count ?? 0;
+              const payCount = request.toBePaidCount ?? request.to_be_paid_count ?? Math.max(0, employeeCount - deductionCount);
+              
+              return (
+                <tr
+                  key={request.id}
+                  className="group hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0"
+                >
+                  <td className="px-4 py-3 text-xs text-slate-300 font-mono">
+                    {request.requestNumber || '—'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-white font-medium">
+                    {request.budgetName}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-center text-slate-300">
+                    {request.clientSponsored ? 'Yes' : 'No'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-300">
+                    {request.payrollCycle || '—'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-300">
+                    {request.payrollCycleDate || '—'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-center text-white font-semibold">
+                    {employeeCount}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-center text-red-400">
+                    {deductionCount}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-center text-emerald-400">
+                    {payCount}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-300 max-w-xs truncate" title={request.description}>
+                    {request.description || 'No description'}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-right font-semibold text-emerald-400">
+                    ₱{Number(request.amount || 0).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-400">
+                    {formatDatePHT(request.submittedAt)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge className={`text-[10px] ${getStageStatusBadgeClass(stageStatus)}`}>
+                      {displayStatus}
+                    </Badge>
+                  </td>
+                  {/* Sticky Right Column Data */}
+                  <td className="px-4 py-3 text-center sticky right-0 bg-slate-800 group-hover:bg-slate-700 transition-colors z-10 border-l border-slate-700/50">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-blue-400 hover:text-blue-300 hover:bg-slate-700"
+                      onClick={() => handleOpenRequestDetails(request)}
+                    >
+                      View Details
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </CardContent>
+</Card>
     </div>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
@@ -2485,6 +2510,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   <p className="text-xs text-gray-400">
                     Required columns: Employee ID, Amount, Is Deduction, Notes.
                   </p>
+                  {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
+                    <p className="text-xs text-emerald-400 font-medium">
+                      Configured Range: {Number(selectedConfig.minLimit).toLocaleString()} - {Number(selectedConfig.maxLimit).toLocaleString()}
+                    </p>
+                  )}
                   {bulkFileName && (
                     <div className="flex items-center justify-between">
                       <p className="text-xs text-gray-300">Uploaded: {bulkFileName}</p>
@@ -2547,49 +2577,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   setBulkItems={setBulkItems}
                   selectedConfig={selectedConfig}
                   organizations={organizations}
-                  validateEmployee={(item) => {
-                    const errors = [];
-                    const warnings = [];
-                    
-                    // Check if employee ID exists
-                    if (!item.employee_id) {
-                      errors.push('Employee ID required');
-                    }
-                    
-                    // Check if employee was found
-                    if (item.employee_id && !item.employeeData) {
-                      errors.push('Employee not found');
-                    }
-                    
-                    // Check if employee is in configuration scope (same validation as individual)
-                    if (item.employeeData && item.scopeValidation && selectedConfig) {
-                      if (!item.scopeValidation.departmentAllowed) {
-                        errors.push('Employee department not in budget scope');
-                      }
-                      if (!item.scopeValidation.ouAllowed) {
-                        errors.push('Employee OU/organization not in budget scope');
-                      }
-                    }
-                    
-                    // Check amount
-                    if (!item.amount || item.amount <= 0) {
-                      errors.push('Valid amount required');
-                    }
-                    
-                    // Check for warnings - only for amount/deduction issues
-                    const minLimit = Number(selectedConfig?.minLimit || 0);
-                    const maxLimit = Number(selectedConfig?.maxLimit || 0);
-                    const needsNotes = 
-                      item.is_deduction ||
-                      (minLimit > 0 && item.amount < minLimit) ||
-                      (maxLimit > 0 && item.amount > maxLimit);
-                    
-                    if (needsNotes && !item.notes?.trim()) {
-                      warnings.push('Notes required for deduction/out-of-range amount');
-                    }
-                    
-                    return { valid: errors.length === 0, errors, warnings };
-                  }}
+                  validateEmployee={validateEmployeeCb}
                 />
               </TabsContent>
             </Tabs>
@@ -2988,6 +2976,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 }
 function ApprovalRequests({ refreshKey }) {
   const { user } = useAuth();
+  const toast = useToast();
   const userRole = resolveUserRole(user);
   const requestorFlag = [user?.role_name, user?.roleName, user?.user_role, user?.userRole, user?.role]
     .filter(Boolean)
@@ -3446,9 +3435,12 @@ function ApprovalRequests({ refreshKey }) {
     payrollApprovalStatus === 'approved' &&
     String(detailStageStatus || '').toLowerCase() === 'pending_payment_completion';
 
+  const canStandardApprove =
+    Boolean(pendingApprovalForUser) && userRole !== 'requestor' && !userHasApproved;
+
   const canActOnRequest = isPayrollUser
     ? (canPayrollApprove || canPayrollComplete)
-    : Boolean(currentApprovalLevel && userRole !== 'requestor' && !userHasApproved);
+    : canStandardApprove;
   const filteredLineItems = detailLineItems.filter((item) => {
     if (!detailSearch.trim()) return true;
     const term = detailSearch.toLowerCase();
@@ -3498,6 +3490,7 @@ function ApprovalRequests({ refreshKey }) {
     try {
       if (isPayrollUser && currentApprovalLevel === 4) {
         if (!payrollCycle || !payrollCycleDate) {
+          toast.error('Payroll cycle and date are required before approving.');
           setActionError('Payroll cycle and date are required before approving.');
           setActionSubmitting(false);
           return;
@@ -3521,6 +3514,7 @@ function ApprovalRequests({ refreshKey }) {
         getToken()
       );
 
+      toast.success('Approval request approved successfully.');
       setSuccessMessage('Approval request approved successfully.');
       setShowSuccessModal(true);
       
@@ -3535,7 +3529,9 @@ function ApprovalRequests({ refreshKey }) {
       }, 5000);
     } catch (error) {
       console.error('[ApprovalRequests.handleApprove] Error:', error);
-      setActionError(extractErrorMessage(error));
+      const errMsg = extractErrorMessage(error);
+      toast.error(errMsg);
+      setActionError(errMsg);
       setConfirmAction(null);
     } finally {
       setActionSubmitting(false);
@@ -3548,6 +3544,7 @@ function ApprovalRequests({ refreshKey }) {
     if (!confirmAction) {
       // Show confirmation modal
       if (!decisionNotes.trim()) {
+        toast.error('Rejection reason is required.');
         setActionError('Rejection reason is required.');
         return;
       }
@@ -3571,6 +3568,7 @@ function ApprovalRequests({ refreshKey }) {
         getToken()
       );
 
+      toast.success('Approval request rejected.');
       setSuccessMessage('Approval request rejected.');
       setShowSuccessModal(true);
       
@@ -3583,7 +3581,9 @@ function ApprovalRequests({ refreshKey }) {
       }, 5000);
     } catch (error) {
       console.error('[ApprovalRequests.handleReject] Error:', error);
-      setActionError(extractErrorMessage(error));
+      const errMsg = extractErrorMessage(error);
+      toast.error(errMsg);
+      setActionError(errMsg);
       setConfirmAction(null);
     } finally {
       setActionSubmitting(false);
@@ -3611,6 +3611,7 @@ function ApprovalRequests({ refreshKey }) {
         getToken()
       );
 
+      toast.success('Payroll payment completed successfully.');
       setSuccessMessage('Payroll payment completed successfully.');
       setShowSuccessModal(true);
 
@@ -3622,7 +3623,9 @@ function ApprovalRequests({ refreshKey }) {
       }, 5000);
     } catch (error) {
       console.error('[ApprovalRequests.handleCompletePayment] Error:', error);
-      setActionError(extractErrorMessage(error));
+      const errMsg = extractErrorMessage(error);
+      toast.error(errMsg);
+      setActionError(errMsg);
       setConfirmAction(null);
     } finally {
       setActionSubmitting(false);
@@ -3634,14 +3637,14 @@ function ApprovalRequests({ refreshKey }) {
   }
 
   return (
-    <Card className="bg-slate-800 border-slate-700">
+    <Card className="bg-slate-800 border-slate-700 flex flex-col h-full min-h-0">
       <CardHeader>
         <CardTitle className="text-white">Approval Requests</CardTitle>
         <CardDescription className="text-gray-400">
           Review and approve budget requests requiring your attention
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
         <div className="flex flex-wrap gap-3">
           <div className="flex-1 min-w-[240px]">
             <Input
@@ -3675,7 +3678,7 @@ function ApprovalRequests({ refreshKey }) {
         ) : filteredApprovals.length === 0 ? (
           <div className="text-sm text-gray-400">No approval requests found.</div>
         ) : (
-          <div className="border border-slate-600 rounded-md overflow-auto">
+          <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
             <table className="w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
@@ -4093,11 +4096,64 @@ function ApprovalRequests({ refreshKey }) {
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
-                <div className="text-sm text-slate-300">
-                  This request is view-only. No actions can be taken from this screen.
+              {canActOnRequest ? (
+                <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4 space-y-3">
+                  {actionError && (
+                    <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                      {actionError}
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    <Label className="text-white">Decision Notes</Label>
+                    <Textarea
+                      value={decisionNotes}
+                      onChange={(e) => setDecisionNotes(sanitizeTextInput(e.target.value))}
+                      onKeyDown={blockShortcuts}
+                      maxLength={500}
+                      rows={3}
+                      className="bg-slate-700 border-gray-300 text-white"
+                      placeholder="Add notes (required for rejection)."
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    {(canStandardApprove || canPayrollApprove) && (
+                      <Button
+                        variant="outline"
+                        className="border-rose-500 text-rose-300 hover:bg-rose-500/10"
+                        onClick={() => setConfirmAction('reject')}
+                        disabled={actionSubmitting}
+                      >
+                        Reject
+                      </Button>
+                    )}
+                    {canPayrollComplete ? (
+                      <Button
+                        className="bg-blue-600 hover:bg-blue-700 text-white"
+                        onClick={() => setConfirmAction('complete-payment')}
+                        disabled={actionSubmitting}
+                      >
+                        Complete Payment
+                      </Button>
+                    ) : (
+                      (canStandardApprove || canPayrollApprove) && (
+                        <Button
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                          onClick={() => setConfirmAction('approve')}
+                          disabled={actionSubmitting}
+                        >
+                          Approve
+                        </Button>
+                      )
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                  <div className="text-sm text-slate-300">
+                    This request is view-only. No actions can be taken from this screen.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -4236,24 +4292,24 @@ function ApprovalRequests({ refreshKey }) {
 }
 
 function ApprovalHistory({ refreshKey }) {
+  const { user } = useAuth();
+  const toast = useToast();
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState(null);
   const [detailData, setDetailData] = useState(null);
+  const [historyConfigDetails, setHistoryConfigDetails] = useState(null);
 
   useEffect(() => {
     const fetchHistory = async () => {
       setLoading(true);
-      setError(null);
       try {
         const data = await approvalRequestService.getApprovalRequests({}, getToken());
         setHistory((data || []).map(normalizeRequest));
       } catch (error) {
-        setError(error.message || 'Failed to load history');
+        toast.error(error.message || 'Failed to load history');
         setHistory([]);
       } finally {
         setLoading(false);
@@ -4264,6 +4320,20 @@ function ApprovalHistory({ refreshKey }) {
   }, [refreshKey]);
 
   const filteredHistory = history.filter((record) => {
+    // Personalization Filter: Only show records where user is involved
+    const userId = user?.id;
+    const isSubmitter = record.submittedBy === userId;
+    
+    // Check if user is an approver in the workflow
+    const isApprover = record.approvals && record.approvals.some(
+      approval => approval.assigned_to_primary === userId || 
+                  approval.assigned_to_backup === userId || 
+                  approval.approver_name === user?.name ||
+                  approval.user_id === userId
+    );
+
+    if (!isSubmitter && !isApprover) return false;
+
     const term = searchTerm.toLowerCase();
     return (
       record.requestNumber?.toLowerCase().includes(term) ||
@@ -4275,14 +4345,19 @@ function ApprovalHistory({ refreshKey }) {
     if (!record?.id) return;
     setDetailOpen(true);
     setDetailLoading(true);
-    setDetailError(null);
     setDetailData(null);
+    setHistoryConfigDetails(null);
 
     try {
       const data = await approvalRequestService.getApprovalRequest(record.id, getToken());
       setDetailData(data || null);
+
+      if (data && data.budget_id) {
+        const config = await getBudgetConfigurationById(data.budget_id, getToken());
+        setHistoryConfigDetails(config || null);
+      }
     } catch (error) {
-      setDetailError(error.message || 'Failed to load request details.');
+      toast.error(error.message || 'Failed to load request details.');
     } finally {
       setDetailLoading(false);
     }
@@ -4311,15 +4386,49 @@ function ApprovalHistory({ refreshKey }) {
     return `L${level || '—'}`;
   };
 
+  // Calculate totals for history details
+  const deductionTotal = (detailData?.line_items || [])
+    .filter(item => item.is_deduction)
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  
+  const totalAmount = Number(detailData?.total_request_amount || 0);
+
+  const handleExportData = () => {
+    if (!detailData) return;
+    
+    const headers = ['Request Number', 'Budget Name', 'Submitted By', 'Status', 'Total Amount', 'Deduction Total', 'Client Sponsored', 'Payroll Cycle'];
+    const row = [
+      detailData.request_number,
+      detailData.budget_name,
+      detailData.submitted_by_name,
+      detailData.overall_status,
+      totalAmount,
+      deductionTotal,
+      detailData.is_client_sponsored ? 'Yes' : 'No',
+      `${detailData.payroll_cycle || ''} ${detailData.payroll_cycle_Date || ''}`.trim()
+    ];
+    
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + headers.join(",") + "\n" + row.join(",");
+      
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `approval_history_${detailData.request_number}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
-    <Card className="bg-slate-800 border-slate-700">
+    <Card className="bg-slate-800 border-slate-700 flex flex-col h-full min-h-0">
       <CardHeader>
         <CardTitle className="text-white">Approval History & Logs</CardTitle>
         <CardDescription className="text-gray-400">
-          Complete history of submitted approval requests
+          Complete history of approval requests you are involved in
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
         <div className="max-w-md">
           <Input
             placeholder="Search by request number or configuration"
@@ -4332,12 +4441,10 @@ function ApprovalHistory({ refreshKey }) {
 
         {loading ? (
           <div className="text-sm text-gray-400">Loading history...</div>
-        ) : error ? (
-          <div className="text-sm text-red-400">{error}</div>
         ) : filteredHistory.length === 0 ? (
-          <div className="text-sm text-gray-400">No history records found.</div>
+          <div className="text-sm text-gray-400">No history records found where you are a participant.</div>
         ) : (
-          <div className="border border-slate-600 rounded-md overflow-auto">
+          <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
             <table className="w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
@@ -4400,7 +4507,7 @@ function ApprovalHistory({ refreshKey }) {
       </CardContent>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[900px] max-h-[85vh] overflow-y-auto">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[900px] max-h-[85vh] overflow-y-auto flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request History Details</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -4409,124 +4516,111 @@ function ApprovalHistory({ refreshKey }) {
           </DialogHeader>
 
           {detailLoading ? (
-            <div className="text-sm text-gray-400">Loading request details...</div>
-          ) : detailError ? (
-            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
-              {detailError}
-            </div>
+            <div className="flex-1 p-4 text-sm text-gray-400">Loading request details...</div>
           ) : (
-            <div className="space-y-4">
-              <div className="grid gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget</div>
-                  <div className="text-sm font-semibold text-white">{detailData?.budget_name || '—'}</div>
-                  <div className="text-xs text-slate-400">{detailData?.budget_description || 'No description.'}</div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
-                  <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
-                    {formatStatusLabel(detailData?.overall_status)}
-                  </Badge>
-                  <div className="text-xs text-slate-400">Stage: {formatStatusLabel(detailData?.approval_stage_status)}</div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Submitted By</div>
-                  <div className="text-sm text-slate-200">{detailData?.submitted_by_name || detailData?.submitted_by || '—'}</div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Amount</div>
-                  <div className="text-lg font-semibold text-emerald-400">₱{Number(detailData?.total_request_amount || 0).toLocaleString()}</div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Submitted</div>
-                  <div className="text-sm text-slate-200">{formatDate(detailData?.created_at || detailData?.submitted_at)}</div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
-                <div className="text-sm font-semibold text-white mb-2">Approval History</div>
-                {(detailData?.approvals || []).length === 0 ? (
-                  <div className="text-xs text-slate-400">No approvals recorded.</div>
-                ) : (
-                  <div className="border border-slate-700 rounded-md overflow-auto">
-                    <table className="w-full text-xs text-left text-slate-300 border-collapse">
-                      <thead className="bg-slate-800 sticky top-0">
-                        <tr>
-                          <th className="px-3 py-2 border-b border-slate-600">Level</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Status</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Approver</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Date</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Notes</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-700">
-                        {(detailData?.approvals || []).map((approval, index) => (
-                          <tr key={`${approval.request_id || 'req'}-${approval.approval_level || index}`}>
-                            <td className="px-3 py-2 text-slate-200">{getLevelLabel(approval.approval_level)}</td>
-                            <td className="px-3 py-2">
-                              <Badge className={getStatusBadgeClass(approval.status || 'pending')}>
-                                {formatStatusLabel(approval.status)}
-                              </Badge>
-                            </td>
-                            <td className="px-3 py-2 text-slate-300">{approval.approver_name || approval.approved_by || '—'}</td>
-                            <td className="px-3 py-2 text-slate-300">{formatDate(approval.approval_date || approval.updated_at)}</td>
-                            <td className="px-3 py-2 text-slate-300">
-                              {approval.approval_notes || approval.rejection_reason || '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+            <>
+              <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                <div className="grid gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Budget</div>
+                    <div className="text-sm font-semibold text-white">
+                      {historyConfigDetails?.budget_name || detailData?.budget_name || '—'}
+                    </div>
+                    <div className="text-xs text-slate-400">
+                      {historyConfigDetails?.description || historyConfigDetails?.budget_description || detailData?.budget_description || 'No description.'}
+                    </div>
                   </div>
-                )}
-              </div>
-
-              <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
-                <div className="text-sm font-semibold text-white mb-2">Submitted Line Items</div>
-                {(detailData?.line_items || []).length === 0 ? (
-                  <div className="text-xs text-slate-400">No line items submitted.</div>
-                ) : (
-                  <div className="border border-slate-700 rounded-md overflow-auto max-h-[320px]">
-                    <table className="w-full text-xs text-left text-slate-300 border-collapse">
-                      <thead className="bg-slate-800 sticky top-0">
-                        <tr>
-                          <th className="px-3 py-2 border-b border-slate-600">Employee ID</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Name</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Email</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Position</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Department</th>
-                          <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
-                          <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
-                          <th className="px-3 py-2 border-b border-slate-600">Notes</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-700">
-                        {(detailData?.line_items || []).map((item, index) => (
-                          <tr key={`${item.line_item_id || item.item_number || index}`}>
-                            <td className="px-3 py-2 text-slate-300">{item.employee_id || '—'}</td>
-                            <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
-                            <td className="px-3 py-2 text-slate-300">{item.email || '—'}</td>
-                            <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
-                            <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
-                            <td className="px-3 py-2 text-right font-semibold text-emerald-400">
-                              ₱{Number(item.amount || 0).toLocaleString()}
-                            </td>
-                            <td className="px-3 py-2 text-center">
-                              {item.is_deduction ? (
-                                <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge>
-                              ) : (
-                                <span className="text-slate-400">—</span>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
+                    <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
+                      {formatStatusLabel(detailData?.overall_status)}
+                    </Badge>
+                    <div className="text-xs text-slate-400">Stage: {formatStatusLabel(detailData?.approval_stage_status)}</div>
                   </div>
-                )}
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Submitted By</div>
+                    <div className="text-sm text-slate-200">{detailData?.submitted_by_name || detailData?.submitted_by || '—'}</div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Submitted</div>
+                    <div className="text-sm text-slate-200">{formatDate(detailData?.created_at || detailData?.submitted_at)}</div>
+                  </div>
+                  
+                  {/* Financial Details */}
+                  <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-slate-700 mt-2">
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Total Amount</div>
+                      <div className="text-lg font-semibold text-emerald-400">₱{totalAmount.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Deductions</div>
+                      <div className="text-lg font-semibold text-rose-400">₱{deductionTotal.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Net To Pay</div>
+                      <div className="text-lg font-semibold text-blue-400">₱{Math.max(0, totalAmount - deductionTotal).toLocaleString()}</div>
+                    </div>
+                  </div>
+
+                  {/* Additional Details */}
+                  <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-700 mt-2">
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Client Sponsored</div>
+                      <div className="text-sm text-slate-200">{detailData?.is_client_sponsored || detailData?.client_sponsored ? 'Yes' : 'No'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Payroll Cycle</div>
+                      <div className="text-sm text-slate-200">
+                        {detailData?.payroll_cycle || '—'} {detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date ? `(${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date})` : ''}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                  <div className="text-sm font-semibold text-white mb-2">Approval History</div>
+                  {(detailData?.approvals || []).length === 0 ? (
+                    <div className="text-xs text-slate-400">No approvals recorded.</div>
+                  ) : (
+                    <div className="border border-slate-700 rounded-md overflow-auto">
+                      <table className="w-full text-xs text-left text-slate-300 border-collapse">
+                        <thead className="bg-slate-800 sticky top-0">
+                          <tr>
+                            <th className="px-3 py-2 border-b border-slate-600">Level</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Status</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Approver</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Notes</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700">
+                          {(detailData?.approvals || []).map((approval, index) => (
+                            <tr key={`${approval.request_id || 'req'}-${approval.approval_level || index}`}>
+                              <td className="px-3 py-2 text-slate-200">{getLevelLabel(approval.approval_level)}</td>
+                              <td className="px-3 py-2">
+                                <Badge className={getStatusBadgeClass(approval.status || 'pending')}>
+                                  {formatStatusLabel(approval.status)}
+                                </Badge>
+                              </td>
+                              <td className="px-3 py-2 text-slate-300">{approval.approver_name || approval.approved_by || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{formatDate(approval.approval_date || approval.updated_at)}</td>
+                              <td className="px-3 py-2 text-slate-300">
+                                {approval.approval_notes || approval.rejection_reason || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+              <DialogFooter className="mt-4 pt-4 border-t border-slate-800">
+                <Button variant="outline" onClick={handleExportData} className="border-slate-600 text-white hover:bg-slate-800 ml-auto">
+                  Export Data
+                </Button>
+              </DialogFooter>
+            </>
           )}
         </DialogContent>
       </Dialog>

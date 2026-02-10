@@ -3,6 +3,7 @@ import { PageHeader } from '../components/PageHeader';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 import aiInsightsService from '../services/aiInsightsService';
 import approvalRequestService from '../services/approvalRequestService';
@@ -12,14 +13,12 @@ const getToken = () => localStorage.getItem('authToken') || '';
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const toast = useToast();
   const userRole = resolveUserRole(user);
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState(null);
   const [aiData, setAiData] = useState(null);
   const [metricsData, setMetricsData] = useState(null);
-  const [metricsError, setMetricsError] = useState(null);
   const [notifications, setNotifications] = useState([]);
-  const [notificationsError, setNotificationsError] = useState(null);
   const cacheKey = `aiInsightsCache:${user?.id || 'anon'}`;
   const cacheTtlMs = 5 * 60 * 1000;
   const metricsCacheKey = `dashboardMetrics:${user?.id || 'anon'}`;
@@ -28,20 +27,18 @@ export default function DashboardPage() {
 
   const handleGenerateInsights = async () => {
     setAiLoading(true);
-    setAiError(null);
     try {
       const data = await aiInsightsService.getAiInsights({}, getToken());
       setAiData(data);
       localStorage.setItem(cacheKey, JSON.stringify({ data, cachedAt: Date.now() }));
     } catch (error) {
-      setAiError(error.message || 'Failed to generate AI insights.');
+      toast.error(error.message || 'Failed to generate AI insights.');
     } finally {
       setAiLoading(false);
     }
   };
 
   const handleLoadMetrics = async () => {
-    setMetricsError(null);
     try {
       const data = await fetchWithCache(
         'dashboardMetrics',
@@ -51,7 +48,7 @@ export default function DashboardPage() {
       );
       setMetricsData(data);
     } catch (error) {
-      setMetricsError(error.message || 'Failed to load realtime metrics.');
+      toast.error(error.message || 'Failed to load realtime metrics.');
     }
   };
 
@@ -63,7 +60,6 @@ export default function DashboardPage() {
     if (!showNotifications) return;
 
     const loadNotifications = async () => {
-      setNotificationsError(null);
       try {
         const data = await fetchWithCache(
           'dashboardNotifications',
@@ -73,7 +69,7 @@ export default function DashboardPage() {
         );
         setNotifications(Array.isArray(data) ? data : []);
       } catch (error) {
-        setNotificationsError(error.message || 'Failed to load notifications.');
+        toast.error(error.message || 'Failed to load notifications.');
         setNotifications([]);
       }
     };
@@ -95,7 +91,6 @@ export default function DashboardPage() {
     }
 
     const loadLatest = async () => {
-      setAiError(null);
       try {
         const latest = await fetchWithCache(
           'aiInsightsLatest',
@@ -108,7 +103,7 @@ export default function DashboardPage() {
           localStorage.setItem(cacheKey, JSON.stringify({ data: latest, cachedAt: Date.now() }));
         }
       } catch (error) {
-        setAiError(error.message || 'Failed to load latest AI insights.');
+        toast.error(error.message || 'Failed to load latest AI insights.');
       }
     };
 
@@ -127,41 +122,34 @@ export default function DashboardPage() {
           <>
             <PayrollInsightsLayout
               loading={aiLoading}
-              error={aiError}
               data={aiData}
               metrics={metricsData}
-              metricsError={metricsError}
               onGenerate={handleGenerateInsights}
             />
-            <LatestUpdatesTable updates={metricsData?.latest_updates} error={metricsError} />
+            <LatestUpdatesTable updates={metricsData?.latest_updates} />
           </>
         ) : (
           <>
             <RoleInsightsLayout
               loading={aiLoading}
-              error={aiError}
               data={aiData}
               role={userRole}
               metrics={metricsData}
-              metricsError={metricsError}
               onGenerate={handleGenerateInsights}
             />
             {userRole === 'requestor' && (
               <RequestorSubmissionTables
                 tables={metricsData?.requestor_tables}
-                error={metricsError}
               />
             )}
             {userRole === 'l1' && (
               <ApproverSubmissionCharts
                 tables={metricsData?.approver_tables}
-                error={metricsError}
               />
             )}
             {showNotifications && (
               <ApprovalNotificationsTable
                 items={notifications}
-                error={notificationsError}
                 role={userRole}
               />
             )}
@@ -172,7 +160,7 @@ export default function DashboardPage() {
   );
 }
 
-function ApprovalNotificationsTable({ items = [], error, role }) {
+function ApprovalNotificationsTable({ items = [], role }) {
   const rows = Array.isArray(items) ? items : [];
   const formatLabel = (value) => String(value || 'pending').replace(/_/g, ' ');
   const formatDate = (value) => {
@@ -203,13 +191,7 @@ function ApprovalNotificationsTable({ items = [], error, role }) {
         </p>
       </CardHeader>
       <CardContent>
-        {error && (
-          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-            {error}
-          </div>
-        )}
-
-        {!error && rows.length === 0 && (
+        {rows.length === 0 && (
           <div className="text-sm text-slate-400">No approval notifications available.</div>
         )}
 
@@ -284,7 +266,7 @@ function ApprovalNotificationsTable({ items = [], error, role }) {
   );
 }
 
-function RoleInsightsLayout({ loading, error, data, role, metrics, metricsError, onGenerate }) {
+function RoleInsightsLayout({ loading, data, role, metrics, onGenerate }) {
   const charts = metrics?.charts || {};
   const statusBreakdown = Array.isArray(charts.status_breakdown)
     ? charts.status_breakdown
@@ -314,19 +296,7 @@ function RoleInsightsLayout({ loading, error, data, role, metrics, metricsError,
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {error && (
-          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-            {error}
-          </div>
-        )}
-
-        {metricsError && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-            {metricsError}
-          </div>
-        )}
-
-        {!data && !loading && !error && (
+        {!data && !loading && (
           <div className="text-sm text-gray-400">
             Click “Run AI Insights” to generate the latest summary.
           </div>
@@ -348,7 +318,7 @@ function RoleInsightsLayout({ loading, error, data, role, metrics, metricsError,
   );
 }
 
-function PayrollInsightsLayout({ loading, error, data, metrics, metricsError, onGenerate }) {
+function PayrollInsightsLayout({ loading, data, metrics, onGenerate }) {
   const coerceChartArray = (value) => {
     if (!value) return [];
     if (Array.isArray(value)) return value;
@@ -390,19 +360,7 @@ function PayrollInsightsLayout({ loading, error, data, metrics, metricsError, on
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {error && (
-          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-            {error}
-          </div>
-        )}
-
-        {metricsError && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-            {metricsError}
-          </div>
-        )}
-
-        {!data && !loading && !error && (
+        {!data && !loading && (
           <div className="text-sm text-gray-400">
             Click “Run AI Insights” to generate the latest summary.
           </div>
@@ -601,7 +559,7 @@ function MonthlyApprovalsChart({ data }) {
   );
 }
 
-function LatestUpdatesTable({ updates = [], error }) {
+function LatestUpdatesTable({ updates = [] }) {
   const rows = Array.isArray(updates) ? updates : [];
 
   return (
@@ -610,11 +568,6 @@ function LatestUpdatesTable({ updates = [], error }) {
         <CardTitle className="text-white">Latest Payroll Updates</CardTitle>
       </CardHeader>
       <CardContent>
-        {error && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 mb-3">
-            {error}
-          </div>
-        )}
         {rows.length ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-slate-300">
@@ -656,7 +609,7 @@ function LatestUpdatesTable({ updates = [], error }) {
   );
 }
 
-function RequestorSubmissionTables({ tables, error }) {
+function RequestorSubmissionTables({ tables }) {
   const approvalCounts = Array.isArray(tables?.approval_counts) ? tables.approval_counts : [];
   const approvedAmounts = Array.isArray(tables?.approved_amounts) ? tables.approved_amounts : [];
 
@@ -668,12 +621,7 @@ function RequestorSubmissionTables({ tables, error }) {
           <p className="text-xs text-slate-400">Counts for requests under configurations you created.</p>
         </CardHeader>
         <CardContent>
-          {error && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-              {error}
-            </div>
-          )}
-          {!error && approvalCounts.length === 0 && (
+          {approvalCounts.length === 0 && (
             <div className="text-sm text-slate-400">No configuration submissions available.</div>
           )}
           {approvalCounts.length > 0 && (
@@ -688,12 +636,7 @@ function RequestorSubmissionTables({ tables, error }) {
           <p className="text-xs text-slate-400">Approved value totals for your created configurations.</p>
         </CardHeader>
         <CardContent>
-          {error && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-              {error}
-            </div>
-          )}
-          {!error && approvedAmounts.length === 0 && (
+          {approvedAmounts.length === 0 && (
             <div className="text-sm text-slate-400">No approved amounts available.</div>
           )}
           {approvedAmounts.length > 0 && (
@@ -779,7 +722,7 @@ function RequestorAmountsBarChart({ data }) {
   );
 }
 
-function ApproverSubmissionCharts({ tables, error }) {
+function ApproverSubmissionCharts({ tables }) {
   const submittedCounts = Array.isArray(tables?.submitted_counts) ? tables.submitted_counts : [];
   const submittedAmounts = Array.isArray(tables?.submitted_amounts) ? tables.submitted_amounts : [];
   const approvedCounts = Array.isArray(tables?.approved_counts) ? tables.approved_counts : [];
@@ -794,12 +737,7 @@ function ApproverSubmissionCharts({ tables, error }) {
             <p className="text-xs text-slate-400">Counts per submitted configuration in your queue.</p>
           </CardHeader>
           <CardContent>
-            {error && (
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                {error}
-              </div>
-            )}
-            {!error && submittedCounts.length === 0 && (
+            {submittedCounts.length === 0 && (
               <div className="text-sm text-slate-400">No submitted approvals available.</div>
             )}
             {submittedCounts.length > 0 && (
@@ -814,12 +752,7 @@ function ApproverSubmissionCharts({ tables, error }) {
             <p className="text-xs text-slate-400">Approved value per submitted configuration.</p>
           </CardHeader>
           <CardContent>
-            {error && (
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                {error}
-              </div>
-            )}
-            {!error && submittedAmounts.length === 0 && (
+            {submittedAmounts.length === 0 && (
               <div className="text-sm text-slate-400">No approved amounts available.</div>
             )}
             {submittedAmounts.length > 0 && (
@@ -836,12 +769,7 @@ function ApproverSubmissionCharts({ tables, error }) {
             <p className="text-xs text-slate-400">Your approval decisions by configuration.</p>
           </CardHeader>
           <CardContent>
-            {error && (
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                {error}
-              </div>
-            )}
-            {!error && approvedCounts.length === 0 && (
+            {approvedCounts.length === 0 && (
               <div className="text-sm text-slate-400">No approval actions recorded.</div>
             )}
             {approvedCounts.length > 0 && (
@@ -856,12 +784,7 @@ function ApproverSubmissionCharts({ tables, error }) {
             <p className="text-xs text-slate-400">Approved value totals by configuration.</p>
           </CardHeader>
           <CardContent>
-            {error && (
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                {error}
-              </div>
-            )}
-            {!error && approvedAmounts.length === 0 && (
+            {approvedAmounts.length === 0 && (
               <div className="text-sm text-slate-400">No approved amounts recorded.</div>
             )}
             {approvedAmounts.length > 0 && (

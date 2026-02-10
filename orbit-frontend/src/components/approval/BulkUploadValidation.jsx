@@ -7,6 +7,9 @@ import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import approvalRequestService from '../../services/approvalRequestService';
 
+const sanitizeTextInput = (value = '') =>
+  String(value).replace(/[^A-Za-z0-9 _\-";:'\n\r]/g, '');
+
 // Debounce utility function
 const useDebounce = (value, delay) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -90,7 +93,7 @@ const BulkTableRow = React.memo(({
       <td className="px-2 py-1 border-r border-slate-600">
         <Textarea
           value={item.notes || ''}
-          onChange={(e) => handleUpdate(item.index, 'notes', e.target.value)}
+          onChange={(e) => handleUpdate(item.index, 'notes', sanitizeTextInput(e.target.value))}
           className="bg-slate-700 border-gray-600 text-white text-xs min-h-[24px] h-6 resize-none leading-tight"
           rows={1}
           placeholder="Optional"
@@ -146,7 +149,7 @@ const BulkUploadValidation = ({
   const token = localStorage.getItem('authToken') || '';
   const companyId = 'caaa0000-0000-0000-0000-000000000001';
 
-  const debouncedBulkItems = useDebounce(bulkItems, 3500);
+  const debouncedBulkItems = useDebounce(bulkItems, 300);
   const validationSource = debouncedBulkItems.length ? debouncedBulkItems : bulkItems;
   
   // Debounced employee ID changes
@@ -211,11 +214,6 @@ const BulkUploadValidation = ({
     return validatedItems.filter(item => item.status === activeTab);
   }, [validatedItems, activeTab]);
 
-  const MAX_VISIBLE_ROWS = 6;
-  const visibleItems = useMemo(() => {
-    return filteredItems.slice(0, MAX_VISIBLE_ROWS);
-  }, [filteredItems]);
-  
   const counts = useMemo(() => {
     return {
       valid: validatedItems.filter(i => i.status === 'valid').length,
@@ -307,7 +305,7 @@ const BulkUploadValidation = ({
                 </tr>
               </thead>
               <tbody>
-                {visibleItems.map((item) => (
+                {filteredItems.map((item) => (
                   <BulkTableRow 
                     key={`${item.index}-${item.employee_id}`}
                     item={item}
@@ -319,7 +317,7 @@ const BulkUploadValidation = ({
             </table>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            Showing {Math.min(MAX_VISIBLE_ROWS, filteredItems.length)} of {filteredItems.length} rows.
+            Total items: {filteredItems.length}
           </div>
         </TabsContent>
       </Tabs>

@@ -11,6 +11,7 @@ import { SearchableSelect } from "../components/ui/searchable-select";
 import { MultiSelect } from "../components/ui/multi-select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
 import { resolveUserRole } from "../utils/roleUtils";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
 import * as budgetConfigService from "../services/budgetConfigService";
@@ -127,6 +128,7 @@ export default function BudgetConfigurationPage() {
 
 function ConfigurationList() {
   const { user } = useAuth();
+  const toast = useToast();
   const [searchQuery, setSearchQuery] = useState("");
   const [filterGeo, setFilterGeo] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
@@ -134,13 +136,10 @@ function ConfigurationList() {
   const [statusFilter, setStatusFilter] = useState("active");
   const [configurations, setConfigurations] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
   const [editConfig, setEditConfig] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
-  const [editError, setEditError] = useState(null);
-  const [editSuccess, setEditSuccess] = useState(false);
   const [approvalsL1, setApprovalsL1] = useState([]);
   const [approvalsL2, setApprovalsL2] = useState([]);
   const [approvalsL3, setApprovalsL3] = useState([]);
@@ -218,11 +217,19 @@ function ConfigurationList() {
       limitMin: config.min_limit || config.limitMin || 0,
       limitMax: config.max_limit || config.limitMax || 0,
       budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
-      budgetLimit: config.budget_limit || config.budgetLimit || config.max_limit || 0,
+      budgetLimit: config.budget_limit || config.budgetLimit || config.budget_control_limit || config.budgetControlLimit || 0,
       payCycle: config.pay_cycle || config.payCycle || "—",
       currency: config.currency || config.currency_code || config.currencyCode || "—",
       approvedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
+      clientSponsoredAmount:
+        config.client_sponsored_amount ??
+        config.clientSponsoredAmount ??
+        config.client_sponsored_budget ??
+        config.clientSponsoredBudget ??
+        0,
       ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
+      hasApprovalActivity:
+        config.has_approval_activity ?? config.hasApprovalActivity ?? false,
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
@@ -256,30 +263,49 @@ function ConfigurationList() {
     return nameMatch ? nameMatch.user_id : value;
   };
 
+  const fetchConfigurations = useCallback(async (forceRefresh = false) => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const token = user?.token || localStorage.getItem("authToken") || "";
+      if (forceRefresh) {
+        invalidateNamespace('budgetConfigs');
+      }
+      const data = await fetchWithCache(
+        'budgetConfigs',
+        `org_${user?.org_id || 'all'}`,
+        () => budgetConfigService.getBudgetConfigurations({ org_id: user?.org_id }, token),
+        5 * 60 * 1000 // 5 minutes TTL
+      );
+      setConfigurations((data || []).map(transformConfig));
+    } catch (err) {
+      console.error("Error fetching configurations:", err);
+      toast.error(err.message || "Failed to load configurations");
+      setConfigurations([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, transformConfig]);
+
   useEffect(() => {
-    const fetchConfigurations = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const token = user?.token || localStorage.getItem("authToken") || "";
-        const data = await fetchWithCache(
-          'budgetConfigs',
-          `org_${user?.org_id || 'all'}`,
-          () => budgetConfigService.getBudgetConfigurations({ org_id: user?.org_id }, token),
-          5 * 60 * 1000 // 5 minutes TTL
-        );
-        setConfigurations((data || []).map(transformConfig));
-      } catch (err) {
-        console.error("Error fetching configurations:", err);
-        setError(err.message || "Failed to load configurations");
-        setConfigurations([]);
-      } finally {
-        setLoading(false);
+    fetchConfigurations();
+  }, [fetchConfigurations]);
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchConfigurations(true);
       }
     };
 
-    fetchConfigurations();
-  }, [user]);
+    window.addEventListener('focus', handleVisibility);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.removeEventListener('focus', handleVisibility);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchConfigurations]);
 
   useEffect(() => {
     const fetchApprovers = async () => {
@@ -365,6 +391,7 @@ function ConfigurationList() {
         location: config.location,
         client: config.clients,
         approvers: config.approvers, // Preserve the approvers array from backend
+        status: config.status,
       }));
       return rawConfigs.map(transformConfig);
     });
@@ -435,8 +462,6 @@ function ConfigurationList() {
   useEffect(() => {
     if (!selectedConfig) {
       setEditConfig(null);
-      setEditError(null);
-      setEditSuccess(false);
       return;
     }
 
@@ -471,8 +496,6 @@ function ConfigurationList() {
       approverL3: extractApproverId(selectedConfig.approverL3),
       backupApproverL3: extractApproverId(selectedConfig.backupApproverL3),
     });
-    setEditError(null);
-    setEditSuccess(false);
   }, [selectedConfig]);
 
   useEffect(() => {
@@ -549,12 +572,10 @@ function ConfigurationList() {
     if (!editConfig?.id) return;
     const isOwner = String(editConfig.createdById || '') && String(editConfig.createdById) === String(user?.id || '');
     if (!isOwner) {
-      setEditError('Only the configuration creator can modify this configuration.');
+      toast.error('Only the configuration creator can modify this configuration.');
       return;
     }
     setEditSaving(true);
-    setEditError(null);
-    setEditSuccess(false);
 
     try {
       const payload = {
@@ -616,9 +637,9 @@ function ConfigurationList() {
       );
 
       setSelectedConfig((prev) => (prev ? { ...prev, ...editConfig } : prev));
-      setEditSuccess(true);
+      toast.success("Configuration updated successfully.");
     } catch (err) {
-      setEditError(err.message || "Failed to update configuration");
+      toast.error(err.message || "Failed to update configuration");
     } finally {
       setEditSaving(false);
     }
@@ -656,6 +677,9 @@ function ConfigurationList() {
   const logItems = selectedConfig?.logs || selectedConfig?.logEntries || [];
   const isOwner = editConfig && String(editConfig.createdById || '') === String(user?.id || '');
   const canViewLogs = String((selectedConfig?.createdById || editConfig?.createdById) || '') === String(user?.id || '');
+  const normalizedStatus = String(editConfig?.status || 'active').toLowerCase();
+  const isExpired = normalizedStatus === 'expired';
+  const hasApprovalActivity = Boolean(editConfig?.hasApprovalActivity || editConfig?.has_approval_activity);
 
   const normalizeLogItem = (item) => {
     if (!item) return {};
@@ -769,8 +793,6 @@ function ConfigurationList() {
             <div className="flex items-center justify-center py-12">
               <Loader className="h-6 w-6 text-pink-500 animate-spin" />
             </div>
-          ) : error ? (
-            <div className="text-sm text-red-400">{error}</div>
           ) : filteredConfigurations.length === 0 ? (
             <div className="text-sm text-gray-400">No configurations found.</div>
           ) : (
@@ -796,6 +818,9 @@ function ConfigurationList() {
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Approved Amount
                     </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Client Sponsored Amount
+                    </th>
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       Ongoing Amount
                     </th>
@@ -820,7 +845,7 @@ function ConfigurationList() {
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       L3 Approver
                     </th>
-                    <th className="px-2 py-2 min-w-[70px]">Actions</th>
+                    <th className="px-2 py-2 min-w-[70px] sticky right-0 z-20 bg-slate-700">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -862,6 +887,11 @@ function ConfigurationList() {
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
                         <div className="font-medium text-emerald-400">
                           {config.currency} {Number(config.approvedAmount || 0).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        <div className="font-medium text-cyan-300">
+                          {config.currency} {Number(config.clientSponsoredAmount || 0).toLocaleString()}
                         </div>
                       </td>
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
@@ -913,7 +943,7 @@ function ConfigurationList() {
                           )}
                         </div>
                       </td>
-                      <td className="px-2 py-2">
+                      <td className="px-2 py-2 sticky right-0 z-10 bg-slate-800">
                         <Button
                           onClick={() => {
                             setSelectedConfig(config);
@@ -979,32 +1009,22 @@ function ConfigurationList() {
                       Only the configuration creator can modify this configuration.
                     </div>
                   ) : null}
-                  {editError && (
-                    <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
-                      {editError}
-                    </div>
-                  )}
-                  {editSuccess && (
-                    <div className="rounded-lg border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-300">
-                      Configuration updated successfully.
-                    </div>
-                  )}
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <Label className="text-white">Status</Label>
                       <SearchableSelect
-                        value={editConfig.status || "active"}
+                        value={normalizedStatus}
                         onValueChange={(value) => handleEditChange("status", value)}
                         options={[
                           { value: "active", label: "Active" },
-                          { value: "expired", label: "Expired" },
+                          ...(isExpired ? [{ value: "expired", label: "Expired" }] : []),
                           { value: "deactivated", label: "Deactivated" },
                         ]}
                         placeholder="Select status"
                         searchPlaceholder="Search status..."
                         maxLength={10}
-                        disabled={!isOwner}
+                        disabled={!isOwner || isExpired}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1045,7 +1065,7 @@ function ConfigurationList() {
                         value={editConfig.startDate || ""}
                         onChange={(e) => handleEditChange("startDate", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
-                        disabled={!isOwner}
+                        disabled={!isOwner || hasApprovalActivity || isExpired}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1338,10 +1358,8 @@ function ConfigurationList() {
 
 function CreateConfiguration() {
   const { user } = useAuth();
+  const toast = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState(null);
-  const [submitSuccess, setSubmitSuccess] = useState(false);
-  const [stepError, setStepError] = useState(null);
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successCountdown, setSuccessCountdown] = useState(5);
   const [viewStep, setViewStep] = useState("form");
@@ -1816,10 +1834,9 @@ function CreateConfiguration() {
   };
 
   const handleNext = () => {
-    setStepError(null);
     const validationError = validateForm();
     if (validationError) {
-      setStepError(validationError);
+      toast.error(validationError);
       return;
     }
     setViewStep("review");
@@ -1827,13 +1844,11 @@ function CreateConfiguration() {
 
   const handleSubmit = async () => {
     setIsSubmitting(true);
-    setSubmitError(null);
-    setStepError(null);
 
     const validationError = validateForm();
 
     if (validationError) {
-      setStepError(validationError);
+      toast.error(validationError);
       setIsSubmitting(false);
       return;
     }
@@ -1873,7 +1888,7 @@ function CreateConfiguration() {
         (configData.accessibleOUPaths && configData.accessibleOUPaths.length > 0);
 
       if (!hasScope) {
-        setSubmitError("Please select at least one scope field.");
+        toast.error("Please select at least one scope field.");
         setIsSubmitting(false);
         return;
       }
@@ -1883,7 +1898,7 @@ function CreateConfiguration() {
       // Invalidate budget configs cache to force refresh on list
       invalidateNamespace('budgetConfigs');
 
-      setSubmitSuccess(true);
+      toast.success("Budget configuration created successfully.");
       setSuccessCountdown(5);
       setSuccessModalOpen(true);
       setViewStep("form");
@@ -1913,11 +1928,9 @@ function CreateConfiguration() {
         approverL3: "",
         backupApproverL3: "",
       });
-
-      setTimeout(() => setSubmitSuccess(false), 3000);
     } catch (err) {
       console.error("Error creating configuration:", err);
-      setSubmitError(err.message || "Failed to create budget configuration");
+      toast.error(err.message || "Failed to create budget configuration");
     } finally {
       setIsSubmitting(false);
     }
@@ -2020,48 +2033,6 @@ function CreateConfiguration() {
 
   return (
     <div className="space-y-6">
-      {submitError && (
-        <Card className="bg-red-500/10 border-red-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <XCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-red-500">Error</h3>
-                <p className="text-red-300 text-sm">{submitError}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {stepError && (
-        <Card className="bg-amber-500/10 border-amber-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-amber-400">Incomplete Form</h3>
-                <p className="text-amber-200 text-sm">{stepError}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {submitSuccess && (
-        <Card className="bg-green-500/10 border-green-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-green-500">Success</h3>
-                <p className="text-green-300 text-sm">Budget configuration created successfully!</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       <Card className="bg-slate-800 border-slate-700">
         <CardHeader>
           <div className="flex items-start justify-between gap-4">
@@ -2132,7 +2103,7 @@ function CreateConfiguration() {
                     onKeyDown={blockShortcuts}
                     maxLength={500}
                     rows={4}
-                    className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400"
+                    className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400 resize-none"
                   />
                 </div>
               </div>
@@ -2814,14 +2785,14 @@ function CreateConfiguration() {
       </Card>
 
       <Card className="bg-slate-800 border-slate-700">
-        <CardContent className="py-4">
+        <CardContent className="!py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-gray-400">
               {viewStep === "review"
                 ? "Review the details before creating the configuration."
                 : "All required fields must be completed before continuing."}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-3">
               {viewStep === "review" ? (
                 <>
                   <Button

@@ -1,6 +1,21 @@
 import supabase from '../config/database.js';
 import { getUserUUID, isValidUser, getUserNameFromUUID, getUserDetailsFromUUID } from '../utils/userMapping.js';
 
+const getNetworkNow = async () => {
+  try {
+    const response = await fetch('https://worldtimeapi.org/api/timezone/Etc/UTC');
+    if (!response.ok) throw new Error(`Time API error: ${response.status}`);
+    const data = await response.json();
+    const timestamp = data?.utc_datetime || data?.datetime;
+    const parsed = new Date(timestamp);
+    if (Number.isNaN(parsed.getTime())) throw new Error('Invalid time API response');
+    return parsed;
+  } catch (error) {
+    console.warn('[getNetworkNow] Falling back to local time:', error?.message || error);
+    return new Date();
+  }
+};
+
 const parseStoredList = (value) => {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -111,6 +126,28 @@ export class BudgetConfigService {
 
     return totals;
   }
+
+  static async getBudgetDecisionMap(budgetIds = []) {
+    const uniqueIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblbudgetapprovalrequests')
+      .select('budget_id, overall_status')
+      .in('budget_id', uniqueIds);
+
+    if (error) throw error;
+
+    const map = new Map();
+    (data || []).forEach((row) => {
+      const status = String(row?.overall_status || '').toLowerCase();
+      if (status === 'approved' || status === 'rejected') {
+        map.set(row.budget_id, true);
+      }
+    });
+
+    return map;
+  }
   static computeConfigStatus(config) {
     const storedStatus = String(config?.status || '').toLowerCase();
     if (storedStatus === 'deactivated') return 'deactivated';
@@ -174,7 +211,7 @@ export class BudgetConfigService {
             start_date: start_date || null,
             end_date: end_date || null,
             budget_description: budget_description || null,
-            status: status || 'active',
+            status: status || 'ACTIVE',
             created_by,
             created_at: new Date().toISOString(),
           },
@@ -300,6 +337,13 @@ export class BudgetConfigService {
         console.warn('[getAllBudgetConfigs] Failed to compute approval amounts:', amountError?.message || amountError);
       }
 
+      let decisionMap = new Map();
+      try {
+        decisionMap = await this.getBudgetDecisionMap((filteredByOrg || []).map((row) => row.budget_id));
+      } catch (decisionError) {
+        console.warn('[getAllBudgetConfigs] Failed to compute approval decisions:', decisionError?.message || decisionError);
+      }
+
       // Fetch related data for each config
       let userNameMap = new Map();
       try {
@@ -315,9 +359,11 @@ export class BudgetConfigService {
           ]);
           const creatorName = userNameMap.get(config.created_by);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
-          const computedStatus = this.computeConfigStatus(config);
           const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0 };
+          const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
 
+          const computedStatus = BudgetConfigService.computeConfigStatus(config);
+          
           return {
             ...config,
             approvers: approvers.data || [],
@@ -326,6 +372,7 @@ export class BudgetConfigService {
             created_by_name: creatorDetails?.name || config.created_by,
             approved_amount: totals.approvedAmount,
             ongoing_amount: totals.ongoingAmount,
+            has_approval_activity: hasApprovalActivity,
           };
         })
       );
@@ -382,7 +429,15 @@ export class BudgetConfigService {
         console.warn('[getBudgetConfigById] User lookup failed:', lookupError?.message || lookupError);
       }
       const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(data.created_by);
-      const computedStatus = this.computeConfigStatus(data);
+      let hasApprovalActivity = false;
+      try {
+        const decisionMap = await this.getBudgetDecisionMap([budgetId]);
+        hasApprovalActivity = decisionMap.get(budgetId) || false;
+      } catch (decisionError) {
+        console.warn('[getBudgetConfigById] Failed to compute approval decisions:', decisionError?.message || decisionError);
+      }
+
+      const computedStatus = BudgetConfigService.computeConfigStatus(data);
 
       return {
         success: true,
@@ -393,6 +448,7 @@ export class BudgetConfigService {
           created_by_name: creatorDetails?.name || data.created_by,
           approved_amount: approvalTotals.approvedAmount,
           ongoing_amount: approvalTotals.ongoingAmount,
+          has_approval_activity: hasApprovalActivity,
         },
       };
     } catch (error) {
@@ -437,6 +493,31 @@ export class BudgetConfigService {
         .eq('budget_id', budgetId)
         .single();
 
+      const decisionMap = await this.getBudgetDecisionMap([budgetId]);
+      const hasApprovalActivity = decisionMap.get(budgetId) || false;
+      const existingStatus = String(existingConfig?.status || '').toLowerCase();
+      const isExpired = existingStatus === 'expired';
+      const now = await getNetworkNow();
+      const canEditStartDate = !hasApprovalActivity && !isExpired;
+
+      let nextStatus = status;
+      if (String(nextStatus || '').toLowerCase() === 'expired') {
+        nextStatus = undefined;
+      }
+
+      if (isExpired) {
+        if (end_date !== undefined) {
+          const endDateValue = end_date ? new Date(end_date) : null;
+          if (endDateValue && !Number.isNaN(endDateValue.getTime()) && endDateValue > now) {
+            nextStatus = 'active';
+          } else {
+            nextStatus = undefined;
+          }
+        } else {
+          nextStatus = undefined;
+        }
+      }
+
       // Update main budget configuration
       const { data, error } = await supabase
         .from('tblbudgetconfiguration')
@@ -448,7 +529,7 @@ export class BudgetConfigService {
           ...(budget_limit !== undefined && { budget_limit: budget_limit ? parseFloat(budget_limit) : null }),
           ...(currency !== undefined && { currency }),
           ...(pay_cycle !== undefined && { pay_cycle }),
-          ...(start_date !== undefined && { start_date }),
+          ...(canEditStartDate && start_date !== undefined && { start_date }),
           ...(end_date !== undefined && { end_date }),
           ...(geo !== undefined && { geo }),
           ...(location !== undefined && { location }),
@@ -457,9 +538,9 @@ export class BudgetConfigService {
           ...(affected_ou !== undefined && { affected_ou }),
           ...(tenure_group !== undefined && { tenure_group }),
           ...(budget_description !== undefined && { budget_description }),
-          ...(status !== undefined && { status }),
+          ...(nextStatus !== undefined && { status: nextStatus }),
           updated_by,
-          updated_at: new Date().toISOString(),
+          updated_at: now.toISOString(),
         })
         .eq('budget_id', budgetId)
         .select();
@@ -567,6 +648,13 @@ export class BudgetConfigService {
         console.warn('[getConfigsByUser] User lookup failed:', lookupError?.message || lookupError);
       }
 
+      let decisionMap = new Map();
+      try {
+        decisionMap = await this.getBudgetDecisionMap((data || []).map((row) => row.budget_id));
+      } catch (decisionError) {
+        console.warn('[getConfigsByUser] Failed to compute approval decisions:', decisionError?.message || decisionError);
+      }
+
       const configsWithRelations = await Promise.all(
         data.map(async (config) => {
           const [approvers] = await Promise.all([
@@ -574,13 +662,14 @@ export class BudgetConfigService {
           ]);
           const creatorName = userNameMap.get(config.created_by);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
-          const computedStatus = this.computeConfigStatus(config);
+          const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
 
           return {
             ...config,
             approvers: approvers.data || [],
-            status: computedStatus,
+            status: config.status,
             created_by_name: creatorDetails?.name || config.created_by,
+            has_approval_activity: hasApprovalActivity,
           };
         })
       );
@@ -1640,36 +1729,47 @@ export class BudgetConfigService {
         throw new Error(`Invalid approval level: ${level}`);
       }
 
-      // Query: Get users with specific role
-      let query = supabase
-        .from('tbluserroles')
-        .select(`
-          user_id,
-          is_active,
-          tblusers!inner (
+      const runApproverQuery = async (orgField) => {
+        let query = supabase
+          .from('tbluserroles')
+          .select(`
             user_id,
-            employee_id,
-            first_name,
-            last_name,
-            email,
-            org_id,
-            status
-          ),
-          tblroles!inner (
-            role_id,
-            role_name,
-            description
-          )
-        `)
-        .eq('tblroles.role_name', roleName)
-        .eq('is_active', true)
-        .order('first_name', { foreignTable: 'tblusers', ascending: true });
+            is_active,
+            tblusers!inner (
+              user_id,
+              employee_id,
+              first_name,
+              last_name,
+              email,
+              ${orgField},
+              status
+            ),
+            tblroles!inner (
+              role_id,
+              role_name,
+              description
+            )
+          `)
+          .eq('tblroles.role_name', roleName)
+          .eq('is_active', true)
+          .order('first_name', { foreignTable: 'tblusers', ascending: true });
 
-      if (orgId) {
-        query = query.eq('tblusers.org_id', orgId);
+        if (orgId) {
+          query = query.eq(`tblusers.${orgField}`, orgId);
+        }
+
+        return { ...(await query), orgField };
+      };
+
+      let data;
+      let error;
+      let orgField = 'org_id';
+
+      ({ data, error, orgField } = await runApproverQuery(orgField));
+
+      if (error && error.code === '42703' && String(error.message || '').includes('org_id')) {
+        ({ data, error, orgField } = await runApproverQuery('geo_id'));
       }
-
-      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -1686,7 +1786,8 @@ export class BudgetConfigService {
           first_name: userObj.first_name,
           last_name: userObj.last_name,
           email: userObj.email,
-          org_id: userObj.org_id,
+          org_id: userObj.org_id ?? userObj.geo_id ?? null,
+          geo_id: userObj.geo_id ?? null,
           status: userObj.status,
           role_name: roleObj.role_name,
           role_id: roleObj.role_id,

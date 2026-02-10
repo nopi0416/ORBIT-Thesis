@@ -1423,7 +1423,7 @@ export class ApprovalRequestService {
         overall_status: overallStatus,
         ...(allApprovalsComplete && { approved_date: new Date().toISOString() }),
         ...(normalizedLevel === 4 && payroll_cycle ? { payroll_cycle } : {}),
-        ...(normalizedLevel === 4 && payroll_cycle_date ? { payroll_cycle_Date: payroll_cycle_date } : {}),
+        ...(normalizedLevel === 4 && payroll_cycle_date ? { payroll_cycle_date: payroll_cycle_date } : {}),
         updated_by: approved_by,
       });
 
