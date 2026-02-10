@@ -24,9 +24,11 @@ import AdminProfile from '../pages/admin/AdminProfile';
 // Role-based Route Protection Component
 const AdminRoute = ({ children }) => {
   const { user } = useAuth();
+  const normalizedRole = (user?.role || '').toLowerCase();
+  const isAdmin = normalizedRole.includes('admin');
   
   // If not admin, redirect to dashboard
-  if (user?.role !== "admin") {
+  if (!isAdmin) {
     return <Navigate to="/dashboard" replace />;
   }
   
