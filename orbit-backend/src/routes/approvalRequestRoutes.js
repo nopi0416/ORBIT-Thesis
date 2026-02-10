@@ -24,11 +24,24 @@ router.post('/', authenticateToken, ApprovalRequestController.createApprovalRequ
 router.get('/', authenticateToken, ApprovalRequestController.getAllApprovalRequests);
 
 /**
+ * POST /api/approval-requests/employees/batch
+ * Get multiple employees by EIDs in batch (optimized for bulk uploads)
+ * Body: { eids: ['EMP001', 'EMP002', ...], company_id: 'uuid' }
+ */
+router.post('/employees/batch', authenticateToken, ApprovalRequestController.getEmployeesBatch);
+
+/**
  * GET /api/approval-requests/employees/:eid
  * Get employee details by employee ID (EID)
  * Query: ?company_id=uuid (optional)
  */
 router.get('/employees/:eid', authenticateToken, ApprovalRequestController.getEmployeeByEid);
+
+/**
+ * GET /api/approval-requests/notifications
+ * Get notification list for requestor/approver dashboards
+ */
+router.get('/notifications', authenticateToken, ApprovalRequestController.getUserNotifications);
 
 /**
  * GET /api/approval-requests/:id
@@ -103,6 +116,13 @@ router.post('/:id/approvals/approve', authenticateToken, ApprovalRequestControll
  * Body: { approval_level, approver_name, rejection_reason }
  */
 router.post('/:id/approvals/reject', authenticateToken, ApprovalRequestController.rejectRequest);
+
+/**
+ * POST /api/approval-requests/:id/approvals/complete-payment
+ * Complete payroll payment step
+ * Body: { approval_notes }
+ */
+router.post('/:id/approvals/complete-payment', authenticateToken, ApprovalRequestController.completePayrollPayment);
 
 /**
  * ATTACHMENTS ENDPOINTS

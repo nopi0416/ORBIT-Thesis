@@ -1,6 +1,76 @@
 import supabase from '../config/database.js';
 import { getUserUUID, isValidUser, getUserNameFromUUID, getUserDetailsFromUUID } from '../utils/userMapping.js';
 
+const getNetworkNow = async () => {
+  try {
+    const response = await fetch('https://worldtimeapi.org/api/timezone/Etc/UTC');
+    if (!response.ok) throw new Error(`Time API error: ${response.status}`);
+    const data = await response.json();
+    const timestamp = data?.utc_datetime || data?.datetime;
+    const parsed = new Date(timestamp);
+    if (Number.isNaN(parsed.getTime())) throw new Error('Invalid time API response');
+    return parsed;
+  } catch (error) {
+    console.warn('[getNetworkNow] Falling back to local time:', error?.message || error);
+    return new Date();
+  }
+};
+
+const parseStoredList = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return trimmed.split(',').map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  return [value];
+};
+
+const containsOrgId = (value, orgId) => {
+  if (!orgId) return true;
+  const parsed = parseStoredList(value);
+  if (!Array.isArray(parsed)) return false;
+  return parsed.some((entry) => {
+    if (Array.isArray(entry)) return entry.includes(orgId);
+    return entry === orgId;
+  });
+};
+
+const logBudgetConfigAction = async ({
+  budgetId,
+  actionType,
+  description,
+  performedBy,
+  oldValue,
+  newValue,
+  logMeta = {},
+}) => {
+  if (!budgetId || !performedBy) return;
+
+  try {
+    await supabase.from('tblbudgetconfigurationlogs').insert([
+      {
+        budget_id: budgetId,
+        action_type: actionType || null,
+        description: description || null,
+        performed_by: performedBy,
+        old_value: oldValue ? JSON.stringify(oldValue) : null,
+        new_value: newValue ? JSON.stringify(newValue) : null,
+        ip_address: logMeta?.ip_address || null,
+        user_agent: logMeta?.user_agent || null,
+      },
+    ]);
+  } catch (error) {
+    console.warn('[budgetConfigLogs] Failed to insert log:', error?.message || error);
+  }
+};
+
 /**
  * Budget Configuration Service
  * Handles all database operations for budget configurations
@@ -8,6 +78,120 @@ import { getUserUUID, isValidUser, getUserNameFromUUID, getUserDetailsFromUUID }
  */
 
 export class BudgetConfigService {
+  static async getUserNameMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblusers')
+      .select('user_id, first_name, last_name')
+      .in('user_id', uniqueIds);
+
+    if (error) throw error;
+
+    return new Map(
+      (data || []).map((user) => [
+        user.user_id,
+        `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+      ])
+    );
+  }
+
+  static async getUserRoleMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tbluserroles')
+      .select(`
+        user_id,
+        is_active,
+        tblroles:role_id (
+          role_name
+        )
+      `)
+      .in('user_id', uniqueIds)
+      .eq('is_active', true);
+
+    if (error) {
+      console.warn('[getUserRoleMap] Role lookup failed:', error);
+      // Return empty map instead of throwing to avoid breaking the entire list
+      return new Map();
+    }
+
+    return new Map(
+      (data || []).map((ur) => [
+        ur.user_id,
+        String(ur.tblroles?.role_name || '').toLowerCase(),
+      ])
+    );
+  }
+
+  static async getBudgetApprovalAmounts(budgetIds = []) {
+    const uniqueIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblbudgetapprovalrequests')
+      .select('budget_id, total_request_amount, overall_status')
+      .in('budget_id', uniqueIds);
+
+    if (error) throw error;
+
+    const totals = new Map();
+    (data || []).forEach((row) => {
+      const key = row.budget_id;
+      const status = String(row.overall_status || '').toLowerCase();
+      const amount = Number(row.total_request_amount || 0);
+      const current = totals.get(key) || { approvedAmount: 0, ongoingAmount: 0 };
+
+      if (status === 'approved' || status === 'completed') {
+        current.approvedAmount += amount;
+      } else if (status !== 'rejected' && status !== 'draft') {
+        current.ongoingAmount += amount;
+      }
+
+      totals.set(key, current);
+    });
+
+    return totals;
+  }
+
+  static async getBudgetDecisionMap(budgetIds = []) {
+    const uniqueIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblbudgetapprovalrequests')
+      .select('budget_id, overall_status')
+      .in('budget_id', uniqueIds);
+
+    if (error) throw error;
+
+    const map = new Map();
+    (data || []).forEach((row) => {
+      const status = String(row?.overall_status || '').toLowerCase();
+      if (status === 'approved' || status === 'rejected') {
+        map.set(row.budget_id, true);
+      }
+    });
+
+    return map;
+  }
+  static computeConfigStatus(config) {
+    const storedStatus = String(config?.status || '').toLowerCase();
+    if (storedStatus === 'deactivated') return 'deactivated';
+
+    const endDateValue = config?.end_date || config?.endDate || null;
+    if (endDateValue) {
+      const endDate = new Date(endDateValue);
+      if (!Number.isNaN(endDate.getTime()) && endDate < new Date()) {
+        return 'expired';
+      }
+    }
+
+    return 'active';
+  }
   /**
    * Create a new budget configuration with tenure groups, approvers, and access scopes
    */
@@ -32,6 +216,8 @@ export class BudgetConfigService {
         affected_ou,
         tenure_group,
         budget_description,
+        status,
+        log_meta,
       } = configData;
 
       // Step 1: Create main budget configuration (without geo/location/department scopes)
@@ -55,6 +241,7 @@ export class BudgetConfigService {
             start_date: start_date || null,
             end_date: end_date || null,
             budget_description: budget_description || null,
+            status: status || 'ACTIVE',
             created_by,
             created_at: new Date().toISOString(),
           },
@@ -64,6 +251,15 @@ export class BudgetConfigService {
       if (budgetError) throw budgetError;
 
       const budget_id = budgetData[0].budget_id;
+      await logBudgetConfigAction({
+        budgetId: budget_id,
+        actionType: 'created',
+        description: 'Budget configuration created',
+        performedBy: created_by,
+        oldValue: null,
+        newValue: budgetData[0],
+        logMeta: log_meta,
+      });
       
       console.log('=== Budget Created ===');
       console.log('Budget ID:', budget_id);
@@ -90,6 +286,16 @@ export class BudgetConfigService {
           throw approverError;
         }
         console.log('Approvers inserted successfully');
+
+        await logBudgetConfigAction({
+          budgetId: budget_id,
+          actionType: 'approver_configured',
+          description: 'Approvers configured during budget creation',
+          performedBy: created_by,
+          oldValue: null,
+          newValue: approverRecords,
+          logMeta: log_meta,
+        });
       } else {
         console.log('No approvers to insert');
       }
@@ -141,24 +347,81 @@ export class BudgetConfigService {
 
       if (error) throw error;
 
+      let filteredByOrg = data || [];
+      if (filters.org_id) {
+        const subtreeResult = await this.getOrganizationSubtreeIds(filters.org_id);
+        const allowedOrgIds = new Set(subtreeResult.data || [filters.org_id]);
+        filteredByOrg = (data || []).filter((row) => {
+          const accessMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.access_ou, id));
+          const affectedMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.affected_ou, id));
+          return accessMatch || affectedMatch;
+        });
+      }
+
+      let approvalAmounts = new Map();
+      try {
+        approvalAmounts = await this.getBudgetApprovalAmounts(
+          (filteredByOrg || []).map((row) => row.budget_id)
+        );
+      } catch (amountError) {
+        console.warn('[getAllBudgetConfigs] Failed to compute approval amounts:', amountError?.message || amountError);
+      }
+
+      let decisionMap = new Map();
+      try {
+        decisionMap = await this.getBudgetDecisionMap((filteredByOrg || []).map((row) => row.budget_id));
+      } catch (decisionError) {
+        console.warn('[getAllBudgetConfigs] Failed to compute approval decisions:', decisionError?.message || decisionError);
+      }
+
       // Fetch related data for each config
+      let userNameMap = new Map();
+      let userRoleMap = new Map();
+      const creatorIds = (filteredByOrg || []).map((row) => row.created_by);
+      try {
+        [userNameMap, userRoleMap] = await Promise.all([
+          this.getUserNameMap(creatorIds),
+          this.getUserRoleMap(creatorIds)
+        ]);
+      } catch (lookupError) {
+        console.warn('[getAllBudgetConfigs] User lookup failed:', lookupError?.message || lookupError);
+      }
+
       const configsWithRelations = await Promise.all(
-        data.map(async (config) => {
+        filteredByOrg.map(async (config) => {
           const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
           ]);
+          const creatorName = userNameMap.get(config.created_by);
+          const creatorRole = userRoleMap.get(config.created_by);
+          const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
+          const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0 };
+          const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
 
+          const computedStatus = BudgetConfigService.computeConfigStatus(config);
+          
           return {
             ...config,
             approvers: approvers.data || [],
             budget_tracking: [],
+            status: computedStatus,
+            created_by_name: creatorDetails?.name || config.created_by,
+            created_by_role: creatorRole || null,
+            approved_amount: totals.approvedAmount,
+            ongoing_amount: totals.ongoingAmount,
+            has_approval_activity: hasApprovalActivity,
           };
         })
       );
 
+      const statusFilter = String(filters.status || '').toLowerCase();
+      const filteredByStatus = statusFilter && statusFilter !== 'all'
+        ? configsWithRelations.filter((config) => String(config.status || '').toLowerCase() === statusFilter)
+        : configsWithRelations;
+
       return {
         success: true,
-        data: configsWithRelations,
+        data: filteredByStatus,
       };
     } catch (error) {
       console.error('Error fetching budget configs:', error);
@@ -187,11 +450,42 @@ export class BudgetConfigService {
         this.getApproversByBudgetId(budgetId),
       ]);
 
+      let approvalTotals = { approvedAmount: 0, ongoingAmount: 0 };
+      try {
+        const totalsMap = await this.getBudgetApprovalAmounts([budgetId]);
+        approvalTotals = totalsMap.get(budgetId) || approvalTotals;
+      } catch (amountError) {
+        console.warn('[getBudgetConfigById] Failed to compute approval amounts:', amountError?.message || amountError);
+      }
+
+      let creatorName = null;
+      try {
+        const userNameMap = await this.getUserNameMap([data.created_by]);
+        creatorName = userNameMap.get(data.created_by) || null;
+      } catch (lookupError) {
+        console.warn('[getBudgetConfigById] User lookup failed:', lookupError?.message || lookupError);
+      }
+      const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(data.created_by);
+      let hasApprovalActivity = false;
+      try {
+        const decisionMap = await this.getBudgetDecisionMap([budgetId]);
+        hasApprovalActivity = decisionMap.get(budgetId) || false;
+      } catch (decisionError) {
+        console.warn('[getBudgetConfigById] Failed to compute approval decisions:', decisionError?.message || decisionError);
+      }
+
+      const computedStatus = BudgetConfigService.computeConfigStatus(data);
+
       return {
         success: true,
         data: {
           ...data,
           approvers: approvers.data || [],
+          status: computedStatus,
+          created_by_name: creatorDetails?.name || data.created_by,
+          approved_amount: approvalTotals.approvedAmount,
+          ongoing_amount: approvalTotals.ongoingAmount,
+          has_approval_activity: hasApprovalActivity,
         },
       };
     } catch (error) {
@@ -225,8 +519,41 @@ export class BudgetConfigService {
         affected_ou,
         tenure_group,
         budget_description,
+        status,
         updated_by,
+        log_meta,
       } = updateData;
+
+      const { data: existingConfig } = await supabase
+        .from('tblbudgetconfiguration')
+        .select('*')
+        .eq('budget_id', budgetId)
+        .single();
+
+      const decisionMap = await this.getBudgetDecisionMap([budgetId]);
+      const hasApprovalActivity = decisionMap.get(budgetId) || false;
+      const existingStatus = String(existingConfig?.status || '').toLowerCase();
+      const isExpired = existingStatus === 'expired';
+      const now = await getNetworkNow();
+      const canEditStartDate = !hasApprovalActivity && !isExpired;
+
+      let nextStatus = status;
+      if (String(nextStatus || '').toLowerCase() === 'expired') {
+        nextStatus = undefined;
+      }
+
+      if (isExpired) {
+        if (end_date !== undefined) {
+          const endDateValue = end_date ? new Date(end_date) : null;
+          if (endDateValue && !Number.isNaN(endDateValue.getTime()) && endDateValue > now) {
+            nextStatus = 'active';
+          } else {
+            nextStatus = undefined;
+          }
+        } else {
+          nextStatus = undefined;
+        }
+      }
 
       // Update main budget configuration
       const { data, error } = await supabase
@@ -239,7 +566,7 @@ export class BudgetConfigService {
           ...(budget_limit !== undefined && { budget_limit: budget_limit ? parseFloat(budget_limit) : null }),
           ...(currency !== undefined && { currency }),
           ...(pay_cycle !== undefined && { pay_cycle }),
-          ...(start_date !== undefined && { start_date }),
+          ...(canEditStartDate && start_date !== undefined && { start_date }),
           ...(end_date !== undefined && { end_date }),
           ...(geo !== undefined && { geo }),
           ...(location !== undefined && { location }),
@@ -248,13 +575,29 @@ export class BudgetConfigService {
           ...(affected_ou !== undefined && { affected_ou }),
           ...(tenure_group !== undefined && { tenure_group }),
           ...(budget_description !== undefined && { budget_description }),
+          ...(nextStatus !== undefined && { status: nextStatus }),
           updated_by,
-          updated_at: new Date().toISOString(),
+          updated_at: now.toISOString(),
         })
         .eq('budget_id', budgetId)
         .select();
 
       if (error) throw error;
+
+      const actionType = status === 'deactivated' ? 'deactivated' : 'updated';
+      const actionDescription = status === 'deactivated'
+        ? 'Budget configuration deactivated'
+        : 'Budget configuration updated';
+
+      await logBudgetConfigAction({
+        budgetId,
+        actionType,
+        description: actionDescription,
+        performedBy: updated_by,
+        oldValue: existingConfig || null,
+        newValue: data?.[0] || null,
+        logMeta: log_meta,
+      });
 
       // Note: To update tenure_groups, approvers, or access_scopes,
       // use the specific methods (addTenureGroups, setApprover, addAccessScope, etc.)
@@ -280,8 +623,27 @@ export class BudgetConfigService {
   /**
    * Delete a budget configuration (cascade deletes related records)
    */
-  static async deleteBudgetConfig(budgetId) {
+  static async deleteBudgetConfig(budgetId, performedBy = null, logMeta = null) {
     try {
+      const { data: existingConfig } = await supabase
+        .from('tblbudgetconfiguration')
+        .select('*')
+        .eq('budget_id', budgetId)
+        .single();
+
+      const performer = performedBy || existingConfig?.created_by;
+      if (existingConfig?.budget_id && performer) {
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'deleted',
+          description: 'Budget configuration deleted',
+          performedBy: performer,
+          oldValue: existingConfig,
+          newValue: null,
+          logMeta,
+        });
+      }
+
       const { error } = await supabase
         .from('tblbudgetconfiguration')
         .delete()
@@ -316,15 +678,35 @@ export class BudgetConfigService {
       if (error) throw error;
 
       // Fetch related data for each config
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap((data || []).map((row) => row.created_by));
+      } catch (lookupError) {
+        console.warn('[getConfigsByUser] User lookup failed:', lookupError?.message || lookupError);
+      }
+
+      let decisionMap = new Map();
+      try {
+        decisionMap = await this.getBudgetDecisionMap((data || []).map((row) => row.budget_id));
+      } catch (decisionError) {
+        console.warn('[getConfigsByUser] Failed to compute approval decisions:', decisionError?.message || decisionError);
+      }
+
       const configsWithRelations = await Promise.all(
         data.map(async (config) => {
           const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
           ]);
+          const creatorName = userNameMap.get(config.created_by);
+          const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
+          const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
 
           return {
             ...config,
             approvers: approvers.data || [],
+            status: config.status,
+            created_by_name: creatorDetails?.name || config.created_by,
+            has_approval_activity: hasApprovalActivity,
           };
         })
       );
@@ -373,7 +755,7 @@ export class BudgetConfigService {
   /**
    * Add tenure groups to a budget configuration
    */
-  static async addTenureGroups(budgetId, tenureGroups) {
+  static async addTenureGroups(budgetId, tenureGroups, createdBy = null, logMeta = null) {
     try {
       const records = tenureGroups.map((group) => ({
         budget_id: budgetId,
@@ -387,6 +769,18 @@ export class BudgetConfigService {
         .select();
 
       if (error) throw error;
+
+      if (records?.length && createdBy) {
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'tenure_group_added',
+          description: 'Tenure group(s) added',
+          performedBy: createdBy,
+          oldValue: null,
+          newValue: records,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -405,14 +799,32 @@ export class BudgetConfigService {
   /**
    * Remove tenure group from a budget configuration
    */
-  static async removeTenureGroup(configTenureId) {
+  static async removeTenureGroup(configTenureId, performedBy = null, logMeta = null) {
     try {
+      const { data: existing } = await supabase
+        .from('tblbudgetconfig_tenure_groups')
+        .select('*')
+        .eq('config_tenure_id', configTenureId)
+        .single();
+
       const { error } = await supabase
         .from('tblbudgetconfig_tenure_groups')
         .delete()
         .eq('config_tenure_id', configTenureId);
 
       if (error) throw error;
+
+      if (existing?.budget_id && performedBy) {
+        await logBudgetConfigAction({
+          budgetId: existing.budget_id,
+          actionType: 'tenure_group_removed',
+          description: 'Tenure group removed',
+          performedBy,
+          oldValue: existing,
+          newValue: null,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -500,7 +912,7 @@ export class BudgetConfigService {
   /**
    * Add or update approver for a budget configuration
    */
-  static async setApprover(budgetId, approvalLevel, primaryApprover, backupApprover, createdBy) {
+  static async setApprover(budgetId, approvalLevel, primaryApprover, backupApprover, createdBy, logMeta = null) {
     try {
       // Check if approver already exists for this level
       const { data: existing, error: checkError } = await supabase
@@ -531,6 +943,16 @@ export class BudgetConfigService {
 
         if (error) throw error;
         result = data[0];
+
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'approver_updated',
+          description: `Approver updated for level ${approvalLevel}`,
+          performedBy: createdBy,
+          oldValue: existing,
+          newValue: result,
+          logMeta,
+        });
       } else {
         // Insert new approver
         const { data, error } = await supabase
@@ -549,6 +971,16 @@ export class BudgetConfigService {
 
         if (error) throw error;
         result = data[0];
+
+        await logBudgetConfigAction({
+          budgetId,
+          actionType: 'approver_created',
+          description: `Approver set for level ${approvalLevel}`,
+          performedBy: createdBy,
+          oldValue: null,
+          newValue: result,
+          logMeta,
+        });
       }
 
       return {
@@ -568,14 +1000,32 @@ export class BudgetConfigService {
   /**
    * Remove approver for a budget configuration
    */
-  static async removeApprover(approverId) {
+  static async removeApprover(approverId, performedBy = null, logMeta = null) {
     try {
+      const { data: existing } = await supabase
+        .from('tblbudgetconfig_approvers')
+        .select('*')
+        .eq('approver_id', approverId)
+        .single();
+
       const { error } = await supabase
         .from('tblbudgetconfig_approvers')
         .delete()
         .eq('approver_id', approverId);
 
       if (error) throw error;
+
+      if (existing?.budget_id && performedBy) {
+        await logBudgetConfigAction({
+          budgetId: existing.budget_id,
+          actionType: 'approver_removed',
+          description: `Approver removed for level ${existing.approval_level || ''}`.trim(),
+          performedBy,
+          oldValue: existing,
+          newValue: null,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -621,7 +1071,7 @@ export class BudgetConfigService {
   /**
    * Add access scope to a budget configuration
    */
-  static async addAccessScope(budgetId, scopeType, scopeValue, createdBy) {
+  static async addAccessScope(budgetId, scopeType, scopeValue, createdBy, logMeta = null) {
     try {
       const { data, error } = await supabase
         .from('tblbudgetconfig_scopes')
@@ -637,6 +1087,16 @@ export class BudgetConfigService {
         .select();
 
       if (error) throw error;
+
+      await logBudgetConfigAction({
+        budgetId,
+        actionType: 'access_scope_added',
+        description: `Access scope added (${scopeType})`,
+        performedBy: createdBy,
+        oldValue: null,
+        newValue: data?.[0] || null,
+        logMeta,
+      });
 
       return {
         success: true,
@@ -655,14 +1115,32 @@ export class BudgetConfigService {
   /**
    * Remove access scope from a budget configuration
    */
-  static async removeAccessScope(scopeId) {
+  static async removeAccessScope(scopeId, performedBy = null, logMeta = null) {
     try {
+      const { data: existing } = await supabase
+        .from('tblbudgetconfig_scopes')
+        .select('*')
+        .eq('scope_id', scopeId)
+        .single();
+
       const { error } = await supabase
         .from('tblbudgetconfig_scopes')
         .delete()
         .eq('scope_id', scopeId);
 
       if (error) throw error;
+
+      if (existing?.budget_id && performedBy) {
+        await logBudgetConfigAction({
+          budgetId: existing.budget_id,
+          actionType: 'access_scope_removed',
+          description: `Access scope removed (${existing.scope_type || ''})`.trim(),
+          performedBy,
+          oldValue: existing,
+          newValue: null,
+          logMeta,
+        });
+      }
 
       return {
         success: true,
@@ -908,115 +1386,131 @@ export class BudgetConfigService {
   }
 
   /**
-   * Create organization (company or department)
+   * Get all organization IDs under a given org (including itself)
    */
-  static async createOrganization(payload) {
+  static async getOrganizationSubtreeIds(rootOrgId) {
     try {
-      const {
-        org_name,
-        company_code,
-        parent_org_id,
-        org_description,
-        created_by,
-      } = payload;
+      if (!rootOrgId) {
+        return { success: true, data: [] };
+      }
 
-      const now = new Date().toISOString();
       const { data, error } = await supabase
         .from('tblorganization')
-        .insert([
-          {
-            org_name,
-            company_code: company_code || null,
-            parent_org_id: parent_org_id || null,
-            org_description: org_description || null,
-            created_by: created_by || null,
-            created_at: now,
-            updated_by: created_by || null,
-            updated_at: now,
-          },
-        ])
-        .select()
-        .single();
+        .select('org_id, parent_org_id');
 
       if (error) throw error;
 
-      return {
-        success: true,
-        data,
-      };
+      const childrenMap = new Map();
+      (data || []).forEach((org) => {
+        if (!childrenMap.has(org.parent_org_id)) {
+          childrenMap.set(org.parent_org_id, []);
+        }
+        childrenMap.get(org.parent_org_id).push(org.org_id);
+      });
+
+      const result = new Set([rootOrgId]);
+      const queue = [rootOrgId];
+
+      while (queue.length) {
+        const current = queue.shift();
+        const children = childrenMap.get(current) || [];
+        children.forEach((childId) => {
+          if (!result.has(childId)) {
+            result.add(childId);
+            queue.push(childId);
+          }
+        });
+      }
+
+      return { success: true, data: Array.from(result) };
     } catch (error) {
-      console.error('Error creating organization:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      console.error('Error building organization subtree:', error);
+      return { success: false, error: error.message, data: [] };
     }
   }
 
   /**
-   * Update organization
+   * Get organizations under a given org (including itself)
    */
-  static async updateOrganization(orgId, payload) {
+  static async getOrganizationsByOrgId(rootOrgId) {
     try {
-      const {
-        org_name,
-        company_code,
-        parent_org_id,
-        org_description,
-        updated_by,
-      } = payload;
+      const allResult = await this.getAllOrganizations();
+      if (!allResult.success) return allResult;
+
+      if (!rootOrgId) {
+        return allResult;
+      }
+
+      const subtreeResult = await this.getOrganizationSubtreeIds(rootOrgId);
+      if (!subtreeResult.success) return subtreeResult;
+
+      const allowed = new Set(subtreeResult.data || []);
+      const filtered = (allResult.data || []).filter((org) => allowed.has(org.org_id));
+
+      return { success: true, data: filtered };
+    } catch (error) {
+      console.error('Error fetching organizations by org ID:', error);
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  /**
+   * Get budget IDs accessible to a given org ID
+   */
+  static async getBudgetIdsByOrgId(orgId) {
+    try {
+      if (!orgId) return { success: true, data: [] };
+
+      const subtreeResult = await this.getOrganizationSubtreeIds(orgId);
+      const allowedOrgIds = new Set(subtreeResult.data || [orgId]);
 
       const { data, error } = await supabase
-        .from('tblorganization')
-        .update({
-          ...(org_name !== undefined && { org_name }),
-          ...(company_code !== undefined && { company_code: company_code || null }),
-          ...(parent_org_id !== undefined && { parent_org_id: parent_org_id || null }),
-          ...(org_description !== undefined && { org_description: org_description || null }),
-          ...(updated_by !== undefined && { updated_by }),
-          updated_at: new Date().toISOString(),
+        .from('tblbudgetconfiguration')
+        .select('budget_id, access_ou, affected_ou');
+
+      if (error) throw error;
+
+      const allowed = (data || [])
+        .filter((row) => {
+          const accessMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.access_ou, id));
+          const affectedMatch = Array.from(allowedOrgIds).some((id) => containsOrgId(row.affected_ou, id));
+          return accessMatch || affectedMatch;
         })
-        .eq('org_id', orgId)
-        .select()
-        .single();
+        .map((row) => row.budget_id);
 
-      if (error) throw error;
-
-      return {
-        success: true,
-        data,
-      };
+      return { success: true, data: allowed };
     } catch (error) {
-      console.error('Error updating organization:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      console.error('Error fetching budget IDs by org:', error);
+      return { success: false, error: error.message, data: [] };
     }
   }
 
   /**
-   * Delete organization
+   * Check if a budget config is accessible for an org
    */
-  static async deleteOrganization(orgId) {
+  static async isBudgetConfigInOrg(budgetId, orgId) {
     try {
-      const { error } = await supabase
-        .from('tblorganization')
-        .delete()
-        .eq('org_id', orgId);
+      if (!budgetId || !orgId) return { success: true, data: true };
+
+      const subtreeResult = await this.getOrganizationSubtreeIds(orgId);
+      const allowedOrgIds = new Set(subtreeResult.data || [orgId]);
+
+      const { data, error } = await supabase
+        .from('tblbudgetconfiguration')
+        .select('budget_id, access_ou, affected_ou')
+        .eq('budget_id', budgetId)
+        .single();
 
       if (error) throw error;
 
-      return {
-        success: true,
-        data: { org_id: orgId },
-      };
+      const allowed = Array.from(allowedOrgIds).some((id) =>
+        containsOrgId(data.access_ou, id) || containsOrgId(data.affected_ou, id)
+      );
+
+      return { success: true, data: allowed };
     } catch (error) {
-      console.error('Error deleting organization:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      console.error('Error checking budget org access:', error);
+      return { success: false, error: error.message, data: false };
     }
   }
 
@@ -1572,7 +2066,7 @@ export class BudgetConfigService {
    * Fetch approvers by role level (L1, L2, or L3)
    * Returns user information with their assigned roles
    */
-  static async getApproversByLevel(level) {
+  static async getApproversByLevel(level, orgId = null) {
     try {
       // Map level string to role names
       const roleMap = {
@@ -1589,30 +2083,47 @@ export class BudgetConfigService {
         throw new Error(`Invalid approval level: ${level}`);
       }
 
-      // Query: Get users with specific role
-      const { data, error } = await supabase
-        .from('tbluserroles')
-        .select(`
-          user_id,
-          is_active,
-          tblusers!inner (
+      const runApproverQuery = async (orgField) => {
+        let query = supabase
+          .from('tbluserroles')
+          .select(`
             user_id,
-            employee_id,
-            first_name,
-            last_name,
-            email,
-            department,
-            status
-          ),
-          tblroles!inner (
-            role_id,
-            role_name,
-            description
-          )
-        `)
-        .eq('tblroles.role_name', roleName)
-        .eq('is_active', true)
-        .order('first_name', { foreignTable: 'tblusers', ascending: true });
+            is_active,
+            tblusers!inner (
+              user_id,
+              employee_id,
+              first_name,
+              last_name,
+              email,
+              ${orgField},
+              status
+            ),
+            tblroles!inner (
+              role_id,
+              role_name,
+              description
+            )
+          `)
+          .eq('tblroles.role_name', roleName)
+          .eq('is_active', true)
+          .order('first_name', { foreignTable: 'tblusers', ascending: true });
+
+        if (orgId) {
+          query = query.eq(`tblusers.${orgField}`, orgId);
+        }
+
+        return { ...(await query), orgField };
+      };
+
+      let data;
+      let error;
+      let orgField = 'org_id';
+
+      ({ data, error, orgField } = await runApproverQuery(orgField));
+
+      if (error && error.code === '42703' && String(error.message || '').includes('org_id')) {
+        ({ data, error, orgField } = await runApproverQuery('geo_id'));
+      }
 
       if (error) throw error;
 
@@ -1629,7 +2140,8 @@ export class BudgetConfigService {
           first_name: userObj.first_name,
           last_name: userObj.last_name,
           email: userObj.email,
-          department: userObj.department,
+          org_id: userObj.org_id ?? userObj.geo_id ?? null,
+          geo_id: userObj.geo_id ?? null,
           status: userObj.status,
           role_name: roleObj.role_name,
           role_id: roleObj.role_id,
@@ -1726,9 +2238,9 @@ export class BudgetConfigService {
   /**
    * Get all users with their active roles
    */
-  static async getAllUsers() {
+  static async getAllUsers(orgId = null) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('tblusers')
         .select(`
           user_id,
@@ -1736,6 +2248,8 @@ export class BudgetConfigService {
           first_name,
           last_name,
           email,
+          geo_id,
+          org_id,
           status,
           tbluserroles (
             is_active,
@@ -1746,6 +2260,12 @@ export class BudgetConfigService {
           )
         `)
         .order('first_name', { ascending: true });
+
+      if (orgId) {
+        query = query.eq('org_id', orgId);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -1764,6 +2284,8 @@ export class BudgetConfigService {
           first_name: user.first_name,
           last_name: user.last_name,
           email: user.email,
+          geo_id: user.geo_id,
+          org_id: user.org_id,
           status: user.status,
           roles,
           full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),

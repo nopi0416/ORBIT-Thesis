@@ -4,8 +4,9 @@ import { cn } from '../utils/cn';
 import { LayoutDashboard, FileText, Building2, User, LogOut } from '../components/icons';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../context/AuthContext';
+import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 
-export function Sidebar({ userRole }) {
+export function Sidebar({ userRole: userRoleProp }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();

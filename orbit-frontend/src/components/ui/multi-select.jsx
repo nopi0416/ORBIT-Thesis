@@ -12,9 +12,30 @@ export function MultiSelect({
   placeholder = "Select...",
   hasAllOption = false,
   disabled = false,
+  maxLength,
 }) {
   const [open, setOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
+
+  const sanitizeSingleLine = (value = "") =>
+    String(value)
+      .replace(/[^A-Za-z0-9 _\-";:'\n\r]/g, "")
+      .replace(/[\r\n]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trimStart();
+
+  const blockShortcuts = (event) => {
+    const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+    if (!hasModifier) return;
+
+    const key = String(event.key || '').toLowerCase();
+    const allowClipboard = (event.ctrlKey || event.metaKey) && (key === 'v' || key === 'c' || key === 'x');
+    const allowShiftInsert = event.shiftKey && key === 'insert';
+
+    if (allowClipboard || allowShiftInsert) return;
+
+    event.preventDefault();
+  };
 
   const handleToggle = (value) => {
     if (disabled) return;
@@ -56,6 +77,12 @@ export function MultiSelect({
     }
   };
 
+  const handleInputKeyDown = (event) => {
+    blockShortcuts(event);
+    if (event.defaultPrevented) return;
+    handleSearchKeyDown(event);
+  };
+
   const handleOpenChange = (nextOpen) => {
     if (disabled) return;
     setOpen(nextOpen);
@@ -84,9 +111,14 @@ export function MultiSelect({
           onClick={() => !disabled && setOpen(true)}
           onChange={(event) => {
             if (!open) setOpen(true);
-            setSearchValue(event.target.value);
+            let nextValue = sanitizeSingleLine(event.target.value);
+            if (typeof maxLength === 'number' && maxLength > 0) {
+              nextValue = nextValue.slice(0, maxLength);
+            }
+            setSearchValue(nextValue);
           }}
-          onKeyDown={handleSearchKeyDown}
+          onKeyDown={handleInputKeyDown}
+          maxLength={maxLength}
           className="w-full bg-slate-700 border-gray-300 text-white placeholder:text-gray-400 pr-8"
         />
         <ChevronDown className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-50 pointer-events-none" />

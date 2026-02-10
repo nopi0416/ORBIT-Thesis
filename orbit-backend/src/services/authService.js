@@ -437,13 +437,15 @@ export class AuthService {
             role: userRole,
             firstName: user.first_name,
             lastName: user.last_name,
+              geo_id: user.geo_id,
+              org_id: user.org_id || null,
           },
           message: 'User agreement acceptance required',
         };
       }
 
       // Generate JWT token
-      const token = this.generateToken(userId, user.email, userRole);
+      const token = this.generateToken(userId, user.email, userRole, user.org_id || null);
 
       // Update last login
       try {
@@ -465,6 +467,8 @@ export class AuthService {
           firstName: user.first_name,
           lastName: user.last_name,
           role: userRole,
+          geo_id: user.geo_id,
+            org_id: user.org_id || null,
           userType: 'user',
         },
         message: 'Login successful',
@@ -1108,11 +1112,12 @@ export class AuthService {
   /**
    * Generate JWT token (stub - replace with actual JWT library)
    */
-  static generateToken(userId, email, role) {
-    const payload = {
-      userId,
-      email,
-      role,
+  static generateToken(userId, email, role, orgId = null) {
+      const payload = {
+        userId,
+        email,
+        role,
+        ...(orgId ? { org_id: orgId } : {}),
     };
 
     // Sign JWT token with 24 hour expiry
@@ -1145,7 +1150,7 @@ export class AuthService {
     try {
       const { data, error } = await supabase
         .from('tblusers')
-        .select('user_id, first_name, last_name, department, status, email')
+        .select('user_id, first_name, last_name, geo_id, org_id, status, email')
         .eq('user_id', userId)
         .single();
 
@@ -1164,7 +1169,8 @@ export class AuthService {
           user_id: data.user_id,
           first_name: data.first_name,
           last_name: data.last_name,
-          department: data.department,
+          geo_id: data.geo_id,
+            org_id: data.org_id,
           status: data.status,
           email: data.email,
         },
