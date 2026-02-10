@@ -58,6 +58,23 @@ export class AdminUserManagementService {
   }
 
   /**
+   * Check if admin email already exists
+   */
+  static async adminEmailExists(email) {
+    const { data, error } = await supabase
+      .from('tbladminusers')
+      .select('admin_id')
+      .eq('email', email)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    return !!data;
+  }
+
+  /**
    * Check if employee_id already exists
    */
   static async employeeIdExists(employeeId) {
@@ -145,6 +162,18 @@ export class AdminUserManagementService {
     return !!data;
   }
 
+  static normalizeAdminRole(role) {
+    return (role || '').toString().trim().toLowerCase();
+  }
+
+  static isSuperAdmin(role) {
+    return this.normalizeAdminRole(role).includes('super admin');
+  }
+
+  static isCompanyAdmin(role) {
+    return this.normalizeAdminRole(role).includes('company admin');
+  }
+
   /**
    * Create a new user
    * @param {Object} userData - User data from request
@@ -158,16 +187,17 @@ export class AdminUserManagementService {
         email,
         employeeId,
         department,
+        departmentId,
         roleId,
         organizationId,
         geoId,
       } = userData;
 
       // Validation
-      if (!firstName || !lastName || !email || !employeeId || !roleId || !geoId) {
+      if (!firstName || !lastName || !email || !employeeId || !roleId || !geoId || !departmentId) {
         return {
           success: false,
-          error: 'Missing required fields: firstName, lastName, email, employeeId, roleId, geoId',
+          error: 'Missing required fields: firstName, lastName, email, employeeId, roleId, geoId, departmentId',
         };
       }
 
@@ -218,6 +248,15 @@ export class AdminUserManagementService {
         }
       }
 
+      // Verify department exists
+      const deptValid = await this.organizationExists(departmentId);
+      if (!deptValid) {
+        return {
+          success: false,
+          error: `Department with ID "${departmentId}" does not exist`,
+        };
+      }
+
       // Generate password
       const { password, suffix } = this.generateDefaultPassword();
       const passwordHash = await this.hashPassword(password);
@@ -232,6 +271,7 @@ export class AdminUserManagementService {
             last_name: lastName,
             email,
             org_id: organizationId || null,
+            department_id: departmentId,
             geo_id: geoId,
             status: 'First_Time',
             is_first_login: true,
@@ -304,11 +344,137 @@ export class AdminUserManagementService {
   }
 
   /**
+   * Create a new admin user
+   * @param {Object} adminData - Admin data from request
+   * @param {Object} adminContext - Authenticated admin context
+   */
+  static async createAdminAccount(adminData, adminContext) {
+    try {
+      const { fullName, email, adminRole, orgId } = adminData;
+      const creatorRole = adminContext?.role || '';
+      const creatorId = adminContext?.id || null;
+
+      if (!fullName || !email || !adminRole) {
+        return {
+          success: false,
+          error: 'Missing required fields: fullName, email, adminRole',
+        };
+      }
+
+      if (!this.isSuperAdmin(adminRole) && !this.isCompanyAdmin(adminRole)) {
+        return {
+          success: false,
+          error: 'Admin role must be Super Admin or Company Admin',
+        };
+      }
+
+      if (this.isSuperAdmin(adminRole) && !this.isSuperAdmin(creatorRole)) {
+        return {
+          success: false,
+          error: 'Only Super Admins can create Super Admin accounts',
+        };
+      }
+
+      if (this.isCompanyAdmin(adminRole) && !orgId) {
+        return {
+          success: false,
+          error: 'Organization is required for Company Admin accounts',
+        };
+      }
+
+      const emailDuplicate = await this.adminEmailExists(email);
+      if (emailDuplicate) {
+        return {
+          success: false,
+          error: `Email "${email}" already exists in admin accounts`,
+        };
+      }
+
+      const userEmailDuplicate = await this.emailExists(email);
+      if (userEmailDuplicate) {
+        return {
+          success: false,
+          error: `Email "${email}" already exists in user accounts`,
+        };
+      }
+
+      if (orgId) {
+        const orgValid = await this.organizationExists(orgId);
+        if (!orgValid) {
+          return {
+            success: false,
+            error: `Organization with ID "${orgId}" does not exist`,
+          };
+        }
+      }
+
+      const { password, suffix } = this.generateDefaultPassword();
+      const passwordHash = await this.hashPassword(password);
+
+      const { data: adminInsert, error: adminError } = await supabase
+        .from('tbladminusers')
+        .insert([
+          {
+            email,
+            full_name: fullName,
+            admin_role: adminRole,
+            password_hash: passwordHash,
+            is_active: true,
+            org_id: orgId || null,
+            created_by: creatorId,
+            updated_by: creatorId,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        ])
+        .select();
+
+      if (adminError) {
+        console.error('Admin Insert Error:', adminError);
+        throw adminError;
+      }
+
+      return {
+        success: true,
+        data: {
+          admin_id: adminInsert?.[0]?.admin_id,
+          email,
+          full_name: fullName,
+          admin_role: adminRole,
+          org_id: orgId || null,
+          generated_password: password,
+          password_suffix: suffix,
+        },
+        message: 'Admin account created successfully',
+      };
+    } catch (error) {
+      console.error('Error in createAdminAccount:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
    * Get all active users
    */
-  static async getAllAdminUsers(filters = {}) {
+  static async getAllAdminUsers(filters = {}, adminContext = {}) {
     try {
       console.log('[getAllAdminUsers] Starting user fetch with filters:', filters);
+
+      const adminRole = adminContext?.role || '';
+      const adminOrgId = adminContext?.orgId || null;
+      const isSuperAdmin = this.isSuperAdmin(adminRole);
+      const isCompanyAdmin = this.isCompanyAdmin(adminRole);
+
+      if (!isSuperAdmin && !isCompanyAdmin) {
+        return {
+          success: false,
+          error: 'Admin role not authorized to view users',
+          data: [],
+        };
+      }
 
       let query = supabase
         .from('tblusers')
@@ -319,10 +485,12 @@ export class AdminUserManagementService {
           last_name,
           email,
           org_id,
+          department_id,
           geo_id,
           status,
           is_first_login,
-          tblorganization(org_id, org_name),
+          organization:tblorganization!tblusers_org_id_fkey(org_id, org_name),
+          department_org:tblorganization!tblusers_department_id_fkey(org_id, org_name),
           tblgeo(geo_id, geo_name, geo_code),
           tbluserroles(role_id, tblroles(role_id, role_name))`
         );
@@ -331,6 +499,17 @@ export class AdminUserManagementService {
       if (filters.status) {
         console.log('[getAllAdminUsers] Applying status filter:', filters.status);
         query = query.eq('status', filters.status);
+      }
+
+      if (isCompanyAdmin) {
+        if (!adminOrgId) {
+          return {
+            success: false,
+            error: 'Company Admin is missing org context',
+            data: [],
+          };
+        }
+        query = query.eq('org_id', adminOrgId);
       }
 
       if (filters.search) {
@@ -350,10 +529,91 @@ export class AdminUserManagementService {
         throw error;
       }
 
-      console.log('[getAllAdminUsers] Returning', data?.length || 0, 'users');
+      const users = data || [];
+
+      const departmentIds = users
+        .map((item) => item.department_id)
+        .filter((id) => !!id);
+
+      let departmentMap = {};
+      if (departmentIds.length > 0) {
+        const { data: departments, error: deptError } = await supabase
+          .from('tblorganization')
+          .select('org_id, org_name')
+          .in('org_id', Array.from(new Set(departmentIds)));
+
+        if (!deptError) {
+          departmentMap = (departments || []).reduce((acc, dept) => {
+            acc[dept.org_id] = dept.org_name;
+            return acc;
+          }, {});
+        }
+      }
+
+      const normalizedUsers = users.map((item) => ({
+        ...item,
+        user_type: 'user',
+        department_name: item.department_id ? departmentMap[item.department_id] || null : null,
+      }));
+
+      let adminAccounts = [];
+      if (isSuperAdmin) {
+        let adminQuery = supabase
+          .from('tbladminusers')
+          .select('admin_id, full_name, email, admin_role, org_id, is_active, created_at, updated_at, tblorganization(org_id, org_name)');
+
+        if (filters.search) {
+          adminQuery = adminQuery.or(
+            `email.ilike.%${filters.search}%,full_name.ilike.%${filters.search}%`
+          );
+        }
+
+        const { data: admins, error: adminError } = await adminQuery;
+
+        if (adminError) {
+          console.error('[getAllAdminUsers] Admin query error:', adminError);
+        } else {
+          const statusFilter = (filters.status || '').toLowerCase();
+          adminAccounts = (admins || [])
+            .filter((admin) => {
+              if (!statusFilter) return true;
+              if (statusFilter === 'active') return admin.is_active === true;
+              if (statusFilter === 'inactive') return admin.is_active === false;
+              return false;
+            })
+            .map((admin) => ({
+              user_id: admin.admin_id,
+              employee_id: null,
+              first_name: admin.full_name || '',
+              last_name: '',
+              email: admin.email,
+              org_id: admin.org_id || null,
+              department_id: null,
+              geo_id: null,
+              status: admin.is_active ? 'Active' : 'Inactive',
+              is_first_login: false,
+              tblorganization: admin.tblorganization || null,
+              tblgeo: null,
+              tbluserroles: [
+                {
+                  role_id: null,
+                  tblroles: {
+                    role_id: null,
+                    role_name: admin.admin_role,
+                  },
+                },
+              ],
+              user_type: 'admin',
+              department_name: null,
+            }));
+        }
+      }
+
+      const combined = [...normalizedUsers, ...adminAccounts];
+      console.log('[getAllAdminUsers] Returning', combined.length, 'users');
       return {
         success: true,
-        data: data || [],
+        data: combined,
       };
     } catch (error) {
       console.error('[getAllAdminUsers] Exception caught:', error.message);
@@ -399,7 +659,7 @@ export class AdminUserManagementService {
     try {
       const { data, error } = await supabase
         .from('tblorganization')
-        .select('org_id, org_name, company_code, org_description')
+        .select('org_id, org_name, parent_org_id, company_code, org_description')
         .order('org_name', { ascending: true });
 
       if (error) throw error;

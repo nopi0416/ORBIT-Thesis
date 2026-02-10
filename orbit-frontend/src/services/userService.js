@@ -20,6 +20,7 @@ export const createUser = async (userData, token) => {
         employeeId: userData.employeeId,
         roleId: userData.role,
         organizationId: userData.ou,
+        departmentId: userData.departmentId,
         geoId: userData.geoId,
       }),
     });
@@ -54,6 +55,50 @@ export const createUser = async (userData, token) => {
 };
 
 /**
+ * Create a single admin user
+ */
+export const createAdminUser = async (adminData, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/admin-users`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({
+        fullName: adminData.fullName,
+        email: adminData.email,
+        adminRole: adminData.adminRole,
+        orgId: adminData.orgId || null,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to create admin user';
+
+      if (data.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = JSON.stringify(data.error);
+        }
+      } else if (data.message) {
+        errorMessage = data.message;
+      } else if (data.errors) {
+        errorMessage = JSON.stringify(data.errors);
+      }
+
+      console.error('Backend error response:', data);
+      throw new Error(errorMessage);
+    }
+
+    return data.data;
+  } catch (error) {
+    console.error('Error creating admin user:', error);
+    throw error;
+  }
+};
+
+/**
  * Get all users
  */
 export const getAllUsers = async (token, filters = {}) => {
@@ -77,13 +122,16 @@ export const getAllUsers = async (token, filters = {}) => {
     if (data.data && Array.isArray(data.data)) {
       return data.data.map((user) => ({
         id: user.user_id,
-        employeeId: user.employee_id,
-        name: `${user.first_name} ${user.last_name}`,
+        employeeId: user.employee_id || (user.user_type === 'admin' ? 'ADMIN' : user.user_id),
+        name: `${user.first_name} ${user.last_name}`.trim() || 'Admin User',
         email: user.email,
-        ou: user.tblorganization?.org_name || 'Unassigned',
-        geo: user.tblgeo?.geo_name || user.tblgeo?.geo_code || 'Unassigned',
+        ou: user.organization?.org_name || 'Unassigned',
+        geo: user.tblgeo?.geo_name || user.tblgeo?.geo_code || (user.user_type === 'admin' ? '—' : 'Unassigned'),
         role: user.tbluserroles?.[0]?.tblroles?.role_name || 'N/A',
-        status: user.status,
+        status: user.status || (user.user_type === 'admin' ? 'Active' : 'Unknown'),
+        department: user.department_org?.org_name || user.department_name || (user.user_type === 'admin' ? '—' : 'Unassigned'),
+        departmentId: user.department_id || null,
+        userType: user.user_type || 'user',
       }));
     }
     return [];
@@ -138,6 +186,7 @@ export const getAvailableOrganizations = async (token) => {
       return data.data.map((org) => ({
         organization_id: org.org_id,
         org_name: org.org_name,
+        parent_org_id: org.parent_org_id || null,
       }));
     }
     return [];

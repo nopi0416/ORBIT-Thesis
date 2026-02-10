@@ -364,6 +364,7 @@ export class AuthService {
             firstName: adminUser.full_name || '',
             lastName: '',
             role: adminUser.admin_role,
+            orgId: adminUser.org_id || null,
             userType: 'admin',
           },
           message: 'Login successful',

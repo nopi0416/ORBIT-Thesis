@@ -4,13 +4,16 @@ import { useState, useEffect, useRef } from "react"
 import * as XLSX from "xlsx"
 import {
   createUser,
+  createAdminUser,
   getAvailableRoles,
   getAvailableOrganizations,
   getAvailableGeos,
   getAllUsers,
 } from "../../services/userService"
+import { useAuth } from "../../context/AuthContext"
 
 export default function UserManagement() {
+  const { user } = useAuth()
   const [activeTab, setActiveTab] = useState("users")
   const [searchQuery, setSearchQuery] = useState("")
   const [filterOU, setFilterOU] = useState("all")
@@ -40,7 +43,10 @@ export default function UserManagement() {
     role: "",
     geoId: "",
     ou: "",
+    departmentId: "",
   })
+  const [accountType, setAccountType] = useState("user")
+  const [adminRole, setAdminRole] = useState("")
   const [formErrors, setFormErrors] = useState({})
   const [availableRoles, setAvailableRoles] = useState([])
   const [availableOrganizations, setAvailableOrganizations] = useState([])
@@ -58,6 +64,27 @@ export default function UserManagement() {
   const bulkFileInputRef = useRef(null)
   const hasBulkReview =
     addUserTab === "bulk" && (bulkValidRows.length > 0 || bulkInvalidRows.length > 0)
+
+  const normalizedAdminRole = (user?.role || "").toLowerCase()
+  const isSuperAdmin = normalizedAdminRole.includes("super admin")
+  const adminRoleOptions = [
+    { value: "Super Admin", label: "Super Admin" },
+    { value: "Company Admin", label: "Company Admin" },
+  ].filter((option) => (isSuperAdmin ? true : option.value !== "Super Admin"))
+
+  const parentOrgIds = new Set(
+    availableOrganizations
+      .filter((org) => org.parent_org_id)
+      .map((org) => org.parent_org_id)
+  )
+
+  const ouOptions = parentOrgIds.size > 0
+    ? availableOrganizations.filter((org) => parentOrgIds.has(org.organization_id))
+    : availableOrganizations.filter((org) => !org.parent_org_id)
+
+  const departmentOptions = availableOrganizations.filter(
+    (org) => org.parent_org_id && org.parent_org_id === individualForm.ou
+  )
 
   // Load roles and organizations on mount
   useEffect(() => {
@@ -302,6 +329,7 @@ export default function UserManagement() {
       "geo": "geo",
       "organizational unit": "organizational unit",
       "ou": "organizational unit",
+      "department": "department",
     }
 
     const getIndex = (label) => {
@@ -311,7 +339,7 @@ export default function UserManagement() {
       return alias ? headerMap[alias] : undefined
     }
 
-    const requiredHeaders = ["employee id", "name", "email", "role", "geo", "organizational unit"]
+    const requiredHeaders = ["employee id", "name", "email", "role", "geo", "organizational unit", "department"]
     const missingHeaders = requiredHeaders.filter((header) => getIndex(header) === undefined)
     if (missingHeaders.length > 0) {
       return { error: `Missing required columns: ${missingHeaders.join(", ")}` }
@@ -339,6 +367,7 @@ export default function UserManagement() {
       const role = (row[getIndex("role")] || "").toString().trim()
       const geo = (row[getIndex("geo")] || "").toString().trim()
       const ou = (row[getIndex("organizational unit")] || "").toString().trim()
+      const department = (row[getIndex("department")] || "").toString().trim()
 
       const errors = []
 
@@ -348,6 +377,7 @@ export default function UserManagement() {
       if (!role) errors.push("Missing Role")
       if (!geo) errors.push("Missing Geo")
       if (!ou) errors.push("Missing Organizational Unit")
+      if (!department) errors.push("Missing Department")
 
       if (email && !emailRegex.test(email)) errors.push("Invalid Email")
 
@@ -370,6 +400,16 @@ export default function UserManagement() {
       const orgId = resolveByIdOrName(ou, availableOrganizations, "organization_id", "org_name")
       if (ou && !orgId) errors.push("Organization not found")
 
+      const departmentId = resolveByIdOrName(department, availableOrganizations, "organization_id", "org_name")
+      if (department && !departmentId) errors.push("Department not found")
+
+      if (orgId && departmentId) {
+        const departmentOrg = availableOrganizations.find((org) => org.organization_id === departmentId)
+        if (departmentOrg?.parent_org_id && departmentOrg.parent_org_id !== orgId) {
+          errors.push("Department does not belong to selected OU")
+        }
+      }
+
       const entry = {
         rowNumber,
         employeeId,
@@ -378,12 +418,13 @@ export default function UserManagement() {
         role,
         geo,
         ou,
+        department,
       }
 
       if (errors.length > 0) {
         invalid.push({ ...entry, errors })
       } else {
-        valid.push({ ...entry, roleId, geoId, orgId })
+        valid.push({ ...entry, roleId, geoId, orgId, departmentId })
       }
     })
 
@@ -466,6 +507,7 @@ export default function UserManagement() {
             role: row.roleId,
             geoId: row.geoId,
             ou: row.orgId,
+            departmentId: row.departmentId,
           },
           token
         )
@@ -512,12 +554,26 @@ export default function UserManagement() {
     
     // Validate all fields are filled
     const newErrors = {}
-    if (!individualForm.employeeId) newErrors.employeeId = "Employee ID is required"
+    const isAdminAccount = accountType === "admin"
+
     if (!individualForm.name) newErrors.name = "Name is required"
     if (!individualForm.email) newErrors.email = "Email is required"
-    if (!individualForm.role) newErrors.role = "Role is required"
-    if (!individualForm.geoId) newErrors.geoId = "Geo is required"
-    if (!individualForm.ou) newErrors.ou = "Organization Unit is required"
+
+    if (isAdminAccount) {
+      if (!adminRole) newErrors.adminRole = "Admin role is required"
+      if (adminRole === "Super Admin" && !isSuperAdmin) {
+        newErrors.adminRole = "Only Super Admins can create Super Admin accounts"
+      }
+      if (adminRole === "Company Admin" && !individualForm.ou) {
+        newErrors.ou = "Organization Unit is required"
+      }
+    } else {
+      if (!individualForm.employeeId) newErrors.employeeId = "Employee ID is required"
+      if (!individualForm.role) newErrors.role = "Role is required"
+      if (!individualForm.geoId) newErrors.geoId = "Geo is required"
+      if (!individualForm.ou) newErrors.ou = "Organization Unit is required"
+      if (!individualForm.departmentId) newErrors.departmentId = "Department is required"
+    }
 
     if (Object.keys(newErrors).length > 0) {
       setFormErrors(newErrors)
@@ -527,10 +583,23 @@ export default function UserManagement() {
     setIsSubmittingUser(true)
     try {
       const token = localStorage.getItem('authToken')
-      await createUser(individualForm, token)
+      if (isAdminAccount) {
+        await createAdminUser(
+          {
+            fullName: individualForm.name,
+            email: individualForm.email,
+            adminRole,
+            orgId: individualForm.ou || null,
+          },
+          token
+        )
+      } else {
+        await createUser(individualForm, token)
+      }
       
       // Show success notification
-      setNotificationMessage(`✓ User ${individualForm.name} added successfully!`)
+      const successLabel = isAdminAccount ? "Admin" : "User"
+      setNotificationMessage(`✓ ${successLabel} ${individualForm.name} added successfully!`)
       setShowNotification(true)
       
       // Close modal and reset form on success
@@ -542,7 +611,10 @@ export default function UserManagement() {
         role: "",
         geoId: "",
         ou: "",
+        departmentId: "",
       })
+      setAccountType("user")
+      setAdminRole("")
       setFormErrors({})
       
       setTimeout(() => setShowNotification(false), 5000)
@@ -583,10 +655,10 @@ export default function UserManagement() {
     const dateTime = now.toISOString().replace(/[:.]/g, "-").slice(0, -5)
     const fileName = `user_template_${dateTime}.csv`
 
-    const headers = ["Employee ID", "Name", "Email", "Role", "Geo", "Organizational Unit"]
+    const headers = ["Employee ID", "Name", "Email", "Role", "Geo", "Organizational Unit", "Department"]
     const sampleRows = [
-      ["EMP001", "John Doe", "john@orbit.com", "Admin", "Asia Pacific", "IT Department"],
-      ["EMP002", "Jane Smith", "jane@orbit.com", "Budget Officer", "Europe", "HR Department"],
+      ["EMP001", "John Doe", "john@orbit.com", "Admin", "Asia Pacific", "Orbit Corp", "IT Department"],
+      ["EMP002", "Jane Smith", "jane@orbit.com", "Budget Officer", "Europe", "Orbit Corp", "HR Department"],
     ]
 
     const csvContent = [headers, ...sampleRows].map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\n")
@@ -711,10 +783,11 @@ export default function UserManagement() {
             className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
           >
             <option value="all">Filter by OU</option>
-            <option value="it">IT Department</option>
-            <option value="hr">HR Department</option>
-            <option value="finance">Finance</option>
-            <option value="operations">Operations</option>
+            {ouOptions.map((org) => (
+              <option key={org.organization_id} value={org.organization_id}>
+                {org.org_name}
+              </option>
+            ))}
           </select>
           <select
             value={filterRole}
@@ -785,6 +858,7 @@ export default function UserManagement() {
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Name</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Email</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">OU</th>
+                <th className="text-left p-3 text-xs font-medium text-slate-300">Department</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Geo</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Role</th>
                 <th className="text-left p-3 text-xs font-medium text-slate-300">Status</th>
@@ -808,6 +882,7 @@ export default function UserManagement() {
                     <td className="p-3 text-sm text-white font-medium">{item.name}</td>
                     <td className="p-3 text-sm text-slate-300">{item.email}</td>
                     <td className="p-3 text-sm text-slate-300">{item.ou}</td>
+                    <td className="p-3 text-sm text-slate-300">{item.department}</td>
                     <td className="p-3 text-sm text-slate-300">{item.geo}</td>
                     <td className="p-3 text-sm text-slate-300">{item.role}</td>
                     <td className="p-3">
@@ -1174,7 +1249,10 @@ export default function UserManagement() {
                     role: "",
                     geoId: "",
                     ou: "",
+                    departmentId: "",
                   })
+                  setAccountType("user")
+                  setAdminRole("")
                   setFormErrors({})
                   clearBulkUpload()
                 }}
@@ -1201,7 +1279,11 @@ export default function UserManagement() {
                 {addUserTab === "individual" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-fuchsia-500" />}
               </button>
               <button
-                onClick={() => setAddUserTab("bulk")}
+                onClick={() => {
+                  setAddUserTab("bulk")
+                  setAccountType("user")
+                  setAdminRole("")
+                }}
                 className={`px-4 py-3 text-sm font-medium transition-colors relative ${
                   addUserTab === "bulk" ? "text-fuchsia-400" : "text-slate-400 hover:text-white"
                 }`}
@@ -1222,137 +1304,235 @@ export default function UserManagement() {
                     </div>
                   )}
 
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Employee ID</label>
-                    <input
-                      type="text"
-                      value={individualForm.employeeId}
-                      onChange={(e) => {
-                        setIndividualForm({ ...individualForm, employeeId: e.target.value })
-                        if (formErrors.employeeId) setFormErrors({ ...formErrors, employeeId: "" })
-                      }}
-                      placeholder="Enter employee ID"
-                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
-                        formErrors.employeeId
-                          ? "border-red-500 focus:ring-red-500"
-                          : "border-slate-600 focus:ring-fuchsia-500"
-                      }`}
-                    />
-                    {formErrors.employeeId && <p className="text-xs text-red-400 mt-1">{formErrors.employeeId}</p>}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-300 mb-2">Account Type</label>
+                      <select
+                        value={accountType}
+                        onChange={(e) => {
+                          const nextType = e.target.value
+                          setAccountType(nextType)
+                          if (nextType === "admin") {
+                            setIndividualForm({
+                              ...individualForm,
+                              employeeId: "",
+                              role: "",
+                              geoId: "",
+                              departmentId: "",
+                            })
+                          }
+                          if (formErrors.accountType) setFormErrors({ ...formErrors, accountType: "" })
+                        }}
+                        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
+                      >
+                        <option value="user">Standard User</option>
+                        <option value="admin">Admin User</option>
+                      </select>
+                    </div>
+
+                    {accountType !== "admin" && (
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Employee ID</label>
+                        <input
+                          type="text"
+                          value={individualForm.employeeId}
+                          onChange={(e) => {
+                            setIndividualForm({ ...individualForm, employeeId: e.target.value })
+                            if (formErrors.employeeId) setFormErrors({ ...formErrors, employeeId: "" })
+                          }}
+                          placeholder="Enter employee ID"
+                          className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                            formErrors.employeeId
+                              ? "border-red-500 focus:ring-red-500"
+                              : "border-slate-600 focus:ring-fuchsia-500"
+                          }`}
+                        />
+                        {formErrors.employeeId && <p className="text-xs text-red-400 mt-1">{formErrors.employeeId}</p>}
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-sm font-medium text-slate-300 mb-2">Name</label>
+                      <input
+                        type="text"
+                        value={individualForm.name}
+                        onChange={(e) => {
+                          setIndividualForm({ ...individualForm, name: e.target.value })
+                          if (formErrors.name) setFormErrors({ ...formErrors, name: "" })
+                        }}
+                        placeholder="Enter full name"
+                        className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                          formErrors.name
+                            ? "border-red-500 focus:ring-red-500"
+                            : "border-slate-600 focus:ring-fuchsia-500"
+                        }`}
+                      />
+                      {formErrors.name && <p className="text-xs text-red-400 mt-1">{formErrors.name}</p>}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
+                      <input
+                        type="email"
+                        value={individualForm.email}
+                        onChange={(e) => {
+                          setIndividualForm({ ...individualForm, email: e.target.value })
+                          if (formErrors.email) setFormErrors({ ...formErrors, email: "" })
+                        }}
+                        placeholder="Enter email address"
+                        className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                          formErrors.email
+                            ? "border-red-500 focus:ring-red-500"
+                            : "border-slate-600 focus:ring-fuchsia-500"
+                        }`}
+                      />
+                      {formErrors.email && <p className="text-xs text-red-400 mt-1">{formErrors.email}</p>}
+                    </div>
+
+                    {accountType === "admin" ? (
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Admin Role</label>
+                        <select
+                          value={adminRole}
+                          onChange={(e) => {
+                            const nextRole = e.target.value
+                            setAdminRole(nextRole)
+                            if (nextRole === "Super Admin") {
+                              setIndividualForm({
+                                ...individualForm,
+                                ou: "",
+                                departmentId: "",
+                              })
+                            }
+                            if (formErrors.adminRole) setFormErrors({ ...formErrors, adminRole: "" })
+                          }}
+                          className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                            formErrors.adminRole
+                              ? "border-red-500 focus:ring-red-500"
+                              : "border-slate-600 focus:ring-fuchsia-500"
+                          }`}
+                        >
+                          <option value="">Select admin role</option>
+                          {adminRoleOptions.map((roleOption) => (
+                            <option key={roleOption.value} value={roleOption.value}>
+                              {roleOption.label}
+                            </option>
+                          ))}
+                        </select>
+                        {formErrors.adminRole && <p className="text-xs text-red-400 mt-1">{formErrors.adminRole}</p>}
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Role</label>
+                          <select
+                            value={individualForm.role}
+                            onChange={(e) => {
+                              setIndividualForm({ ...individualForm, role: e.target.value })
+                              if (formErrors.role) setFormErrors({ ...formErrors, role: "" })
+                            }}
+                            disabled={isLoadingDropdowns || availableRoles.length === 0}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                              formErrors.role
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          >
+                            <option value="">{isLoadingDropdowns ? "Loading..." : "Select role"}</option>
+                            {availableRoles.map((role) => (
+                              <option key={role.role_id} value={role.role_id}>
+                                {role.role_name}
+                              </option>
+                            ))}
+                          </select>
+                          {formErrors.role && <p className="text-xs text-red-400 mt-1">{formErrors.role}</p>}
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Geo</label>
+                          <select
+                            value={individualForm.geoId}
+                            onChange={(e) => {
+                              setIndividualForm({ ...individualForm, geoId: e.target.value })
+                              if (formErrors.geoId) setFormErrors({ ...formErrors, geoId: "" })
+                            }}
+                            disabled={isLoadingDropdowns || availableGeos.length === 0}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                              formErrors.geoId
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          >
+                            <option value="">{isLoadingDropdowns ? "Loading..." : "Select geo"}</option>
+                            {availableGeos.map((geo) => (
+                              <option key={geo.geo_id} value={geo.geo_id}>
+                                {geo.geo_name || geo.geo_code}
+                              </option>
+                            ))}
+                          </select>
+                          {formErrors.geoId && <p className="text-xs text-red-400 mt-1">{formErrors.geoId}</p>}
+                        </div>
+                      </>
+                    )}
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Name</label>
-                    <input
-                      type="text"
-                      value={individualForm.name}
-                      onChange={(e) => {
-                        setIndividualForm({ ...individualForm, name: e.target.value })
-                        if (formErrors.name) setFormErrors({ ...formErrors, name: "" })
-                      }}
-                      placeholder="Enter full name"
-                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
-                        formErrors.name
-                          ? "border-red-500 focus:ring-red-500"
-                          : "border-slate-600 focus:ring-fuchsia-500"
-                      }`}
-                    />
-                    {formErrors.name && <p className="text-xs text-red-400 mt-1">{formErrors.name}</p>}
-                  </div>
+                  {(accountType !== "admin" || adminRole === "Company Admin") && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Organizational Unit</label>
+                        <select
+                          value={individualForm.ou}
+                          onChange={(e) => {
+                            setIndividualForm({ ...individualForm, ou: e.target.value, departmentId: "" })
+                            if (formErrors.ou) setFormErrors({ ...formErrors, ou: "" })
+                          }}
+                          disabled={isLoadingDropdowns || ouOptions.length === 0}
+                          className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                            formErrors.ou
+                              ? "border-red-500 focus:ring-red-500"
+                              : "border-slate-600 focus:ring-fuchsia-500"
+                          }`}
+                        >
+                          <option value="">{isLoadingDropdowns ? "Loading..." : "Select OU"}</option>
+                          {ouOptions.map((org) => (
+                            <option key={org.organization_id} value={org.organization_id}>
+                              {org.org_name}
+                            </option>
+                          ))}
+                        </select>
+                        {formErrors.ou && <p className="text-xs text-red-400 mt-1">{formErrors.ou}</p>}
+                      </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
-                    <input
-                      type="email"
-                      value={individualForm.email}
-                      onChange={(e) => {
-                        setIndividualForm({ ...individualForm, email: e.target.value })
-                        if (formErrors.email) setFormErrors({ ...formErrors, email: "" })
-                      }}
-                      placeholder="Enter email address"
-                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
-                        formErrors.email
-                          ? "border-red-500 focus:ring-red-500"
-                          : "border-slate-600 focus:ring-fuchsia-500"
-                      }`}
-                    />
-                    {formErrors.email && <p className="text-xs text-red-400 mt-1">{formErrors.email}</p>}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Role</label>
-                    <select
-                      value={individualForm.role}
-                      onChange={(e) => {
-                        setIndividualForm({ ...individualForm, role: e.target.value })
-                        if (formErrors.role) setFormErrors({ ...formErrors, role: "" })
-                      }}
-                      disabled={isLoadingDropdowns || availableRoles.length === 0}
-                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
-                        formErrors.role
-                          ? "border-red-500 focus:ring-red-500"
-                          : "border-slate-600 focus:ring-fuchsia-500"
-                      }`}
-                    >
-                      <option value="">{isLoadingDropdowns ? "Loading..." : "Select role"}</option>
-                      {availableRoles.map((role) => (
-                        <option key={role.role_id} value={role.role_id}>
-                          {role.role_name}
-                        </option>
-                      ))}
-                    </select>
-                    {formErrors.role && <p className="text-xs text-red-400 mt-1">{formErrors.role}</p>}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Geo</label>
-                    <select
-                      value={individualForm.geoId}
-                      onChange={(e) => {
-                        setIndividualForm({ ...individualForm, geoId: e.target.value })
-                        if (formErrors.geoId) setFormErrors({ ...formErrors, geoId: "" })
-                      }}
-                      disabled={isLoadingDropdowns || availableGeos.length === 0}
-                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
-                        formErrors.geoId
-                          ? "border-red-500 focus:ring-red-500"
-                          : "border-slate-600 focus:ring-fuchsia-500"
-                      }`}
-                    >
-                      <option value="">{isLoadingDropdowns ? "Loading..." : "Select geo"}</option>
-                      {availableGeos.map((geo) => (
-                        <option key={geo.geo_id} value={geo.geo_id}>
-                          {geo.geo_name || geo.geo_code}
-                        </option>
-                      ))}
-                    </select>
-                    {formErrors.geoId && <p className="text-xs text-red-400 mt-1">{formErrors.geoId}</p>}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Organizational Unit</label>
-                    <select
-                      value={individualForm.ou}
-                      onChange={(e) => {
-                        setIndividualForm({ ...individualForm, ou: e.target.value })
-                        if (formErrors.ou) setFormErrors({ ...formErrors, ou: "" })
-                      }}
-                      disabled={isLoadingDropdowns || availableOrganizations.length === 0}
-                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
-                        formErrors.ou
-                          ? "border-red-500 focus:ring-red-500"
-                          : "border-slate-600 focus:ring-fuchsia-500"
-                      }`}
-                    >
-                      <option value="">{isLoadingDropdowns ? "Loading..." : "Select OU"}</option>
-                      {availableOrganizations.map((org) => (
-                        <option key={org.organization_id} value={org.organization_id}>
-                          {org.org_name}
-                        </option>
-                      ))}
-                    </select>
-                    {formErrors.ou && <p className="text-xs text-red-400 mt-1">{formErrors.ou}</p>}
-                  </div>
+                      {accountType !== "admin" ? (
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Department</label>
+                          <select
+                            value={individualForm.departmentId}
+                            onChange={(e) => {
+                              setIndividualForm({ ...individualForm, departmentId: e.target.value })
+                              if (formErrors.departmentId) setFormErrors({ ...formErrors, departmentId: "" })
+                            }}
+                            disabled={!individualForm.ou || departmentOptions.length === 0}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                              formErrors.departmentId
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          >
+                            <option value="">{individualForm.ou ? "Select Department" : "Select OU first"}</option>
+                            {departmentOptions.map((org) => (
+                              <option key={org.organization_id} value={org.organization_id}>
+                                {org.org_name}
+                              </option>
+                            ))}
+                          </select>
+                          {formErrors.departmentId && <p className="text-xs text-red-400 mt-1">{formErrors.departmentId}</p>}
+                        </div>
+                      ) : (
+                        <div />
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : (
                 // Bulk Add Form
@@ -1372,7 +1552,7 @@ export default function UserManagement() {
                     <ul className="text-xs text-slate-400 space-y-1">
                       <li>• File must be in CSV or Excel format (.csv, .xlsx)</li>
                       <li>• File name must match: user_template_YYYY-MM-DDTHH-MM-SS</li>
-                      <li>• Required columns: Employee ID, Name, Email, Role, Geo, Organizational Unit</li>
+                      <li>• Required columns: Employee ID, Name, Email, Role, Geo, Organizational Unit, Department</li>
                       <li>• Ensure all email addresses are valid and unique</li>
                     </ul>
                   </div>
@@ -1440,7 +1620,10 @@ export default function UserManagement() {
                     role: "",
                     geoId: "",
                     ou: "",
+                    departmentId: "",
                   })
+                  setAccountType("user")
+                  setAdminRole("")
                   setFormErrors({})
                   clearBulkUpload()
                 }}
@@ -1514,6 +1697,7 @@ export default function UserManagement() {
                         <th className="text-left px-3 py-2 text-slate-300">Role</th>
                         <th className="text-left px-3 py-2 text-slate-300">Geo</th>
                         <th className="text-left px-3 py-2 text-slate-300">OU</th>
+                        <th className="text-left px-3 py-2 text-slate-300">Department</th>
                         {bulkActiveTab === "invalid" && (
                           <th className="text-left px-3 py-2 text-slate-300">Issues</th>
                         )}
@@ -1529,6 +1713,7 @@ export default function UserManagement() {
                           <td className="px-3 py-2 text-slate-300">{row.role}</td>
                           <td className="px-3 py-2 text-slate-300">{row.geo}</td>
                           <td className="px-3 py-2 text-slate-300">{row.ou}</td>
+                          <td className="px-3 py-2 text-slate-300">{row.department}</td>
                           {bulkActiveTab === "invalid" && (
                             <td className="px-3 py-2 text-red-400">
                               {row.errors?.join(", ")}

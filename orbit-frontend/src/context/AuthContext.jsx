@@ -383,7 +383,7 @@ export function AuthProvider({ children }) {
           };
         }
 
-        const { token, userId, firstName, lastName, role, email: respEmail } = response.data.data;
+        const { token, userId, firstName, lastName, role, email: respEmail, orgId, userType } = response.data.data;
         
         console.log('Token:', token);
         console.log('UserId:', userId);
@@ -402,7 +402,9 @@ export function AuthProvider({ children }) {
           email: respEmail || email,
           firstName: firstName || '',
           lastName: lastName || '',
-          role: role || 'user'
+          role: role || 'user',
+          orgId: orgId || null,
+          userType: userType || null,
         };
         console.log('Storing user data:', userData);
         

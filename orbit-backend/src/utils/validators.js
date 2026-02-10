@@ -136,6 +136,10 @@ export const validateAdminUserCreation = (data) => {
     errors.geoId = 'Geo ID is required';
   }
 
+  if (!data.departmentId || data.departmentId.trim() === '') {
+    errors.departmentId = 'Department ID is required';
+  }
+
   return {
     isValid: Object.keys(errors).length === 0,
     errors,
