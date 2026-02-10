@@ -6,13 +6,22 @@ import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { User, AlertCircle, Loader2, ArrowLeft } from '../components/icons';
 import { authAPI } from '../utils/api';
-import { sanitizeEmail, handlePaste } from '../utils/inputSanitizer';
+import { sanitizeUsername, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 export default function ForgotPassword() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  const handleUsernameKeyDown = (event) => {
+    handleRestrictedKeyDown(event);
+    if (event.defaultPrevented) return;
+
+    if (event.key.length === 1 && !/^[a-zA-Z0-9._@-]$/.test(event.key)) {
+      event.preventDefault();
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -116,8 +125,10 @@ export default function ForgotPassword() {
                     type="email"
                     placeholder="Enter your username"
                     value={email}
-                    onInput={(e) => setEmail(sanitizeEmail(e.target.value))}
-                    onPaste={(e) => handlePaste(e, sanitizeEmail)}
+                    maxLength={50}
+                    onInput={(e) => setEmail(sanitizeUsername(e.target.value.slice(0, 50)))}
+                    onPaste={(e) => handlePaste(e, sanitizeUsername)}
+                    onKeyDown={handleUsernameKeyDown}
                     style={{
                       paddingLeft: '2.5rem',
                       height: '2.75rem',

@@ -83,6 +83,21 @@ export const sanitizeEmail = (input) => {
 };
 
 /**
+ * Sanitizes username input
+ * Allows: letters, numbers, dots, hyphens, underscores, @ symbol
+ * @param {string} input - The username input to sanitize
+ * @returns {string} - Sanitized username
+ */
+export const sanitizeUsername = (input) => {
+  if (!input) return '';
+
+  let sanitized = removeAllEmoji(input);
+  sanitized = sanitized.replace(/[^a-zA-Z0-9._@-]/g, '');
+
+  return sanitized;
+};
+
+/**
  * Sanitizes password input
  * Allows all printable ASCII characters (more permissive for passwords)
  * Removes only emojis and control characters
@@ -111,6 +126,21 @@ export const sanitizeText = (input) => {
   // Keep letters, numbers, spaces, and safe punctuation
   sanitized = sanitized.replace(/[^a-zA-Z0-9\s\.\,\-\'\"\?\!]/g, '');
   
+  return sanitized;
+};
+
+/**
+ * Sanitizes security question answers
+ * Allows: letters, numbers, dash, dot
+ * @param {string} input - The answer input to sanitize
+ * @returns {string} - Sanitized answer
+ */
+export const sanitizeSecurityAnswer = (input) => {
+  if (!input) return '';
+
+  let sanitized = removeAllEmoji(input);
+  sanitized = sanitized.replace(/[^a-zA-Z0-9.-]/g, '');
+
   return sanitized;
 };
 
@@ -230,8 +260,10 @@ export const handlePaste = (event, sanitizeFn = sanitizeInput) => {
 export default {
   sanitizeInput,
   sanitizeEmail,
+  sanitizeUsername,
   sanitizePassword,
   sanitizeText,
+  sanitizeSecurityAnswer,
   sanitizeOuText,
   sanitizeOTP,
   containsEmoji,

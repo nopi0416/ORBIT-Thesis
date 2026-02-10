@@ -8,7 +8,7 @@ import { Eye, EyeOff, Lock, User, AlertCircle, Loader2, ArrowLeft } from '../com
 import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../utils/api';
 import { getDashboardRoute } from '../utils/roleRouting';
-import { sanitizeEmail, sanitizePassword, sanitizeOTP, handlePaste } from '../utils/inputSanitizer';
+import { sanitizeEmail, sanitizeUsername, sanitizePassword, sanitizeOTP, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 const carouselSlides = [
   {
@@ -108,6 +108,9 @@ export default function Login() {
   };
 
   const handleOtpKeyDown = (index, e) => {
+    handleRestrictedKeyDown(e);
+    if (e.defaultPrevented) return;
+
     if (e.key === 'Backspace' && !otp[index] && index > 0) {
       inputRefs.current[index - 1]?.focus();
     }
@@ -126,6 +129,15 @@ export default function Login() {
 
     const nextIndex = Math.min(pastedData.length, 5);
     inputRefs.current[nextIndex]?.focus();
+  };
+
+  const handleUsernameKeyDown = (event) => {
+    handleRestrictedKeyDown(event);
+    if (event.defaultPrevented) return;
+
+    if (event.key.length === 1 && !/^[a-zA-Z0-9._@-]$/.test(event.key)) {
+      event.preventDefault();
+    }
   };
 
   const handleResendOtp = async () => {
@@ -397,12 +409,10 @@ export default function Login() {
                           type="text"
                           placeholder="Enter your username"
                           value={employeeId}
-                          onInput={(e) => setEmployeeId(e.target.value)}
-                          onPaste={(e) => {
-                            e.preventDefault();
-                            const pastedText = e.clipboardData.getData('text');
-                            setEmployeeId(pastedText);
-                          }}
+                            maxLength={50}
+                            onInput={(e) => setEmployeeId(sanitizeUsername(e.target.value.slice(0, 50)))}
+                          onPaste={(e) => handlePaste(e, sanitizeUsername)}
+                          onKeyDown={handleUsernameKeyDown}
                           style={{
                             paddingLeft: '2.5rem',
                             height: '2.75rem',
@@ -437,8 +447,10 @@ export default function Login() {
                           type={showPassword ? 'text' : 'password'}
                           placeholder="Enter your password"
                           value={password}
-                          onInput={(e) => setPassword(sanitizePassword(e.target.value))}
+                            maxLength={50}
+                            onInput={(e) => setPassword(sanitizePassword(e.target.value.slice(0, 50)))}
                           onPaste={(e) => handlePaste(e, sanitizePassword)}
+                          onKeyDown={handleRestrictedKeyDown}
                           style={{
                             paddingLeft: '2.5rem',
                             paddingRight: '2.5rem',
