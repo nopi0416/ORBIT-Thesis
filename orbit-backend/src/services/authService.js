@@ -12,33 +12,6 @@ import { validatePassword } from '../utils/authValidators.js';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const BCRYPT_SALT_ROUNDS = 12; // Security: Higher rounds = slower but more secure
 
-const parsePasswordHistory = (value) => {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.filter(Boolean);
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-};
-
-const isPasswordReused = async (plainPassword, currentHash, history) => {
-  const hashes = [currentHash, ...history].filter(Boolean);
-  for (const hash of hashes) {
-    if (hash.startsWith('$2')) {
-      const match = await bcrypt.compare(plainPassword, hash);
-      if (match) return true;
-    } else if (plainPassword === hash) {
-      return true;
-    }
-  }
-  return false;
-};
-
 export class AuthService {
   /**
    * Register a new user
@@ -56,7 +29,7 @@ export class AuthService {
       // Check if user already exists
       const { data: existingUser } = await supabase
         .from('tblusers')
-        .select('user_id')
+        .select('id')
         .eq('email', email)
         .single();
 
@@ -93,10 +66,11 @@ export class AuthService {
       return {
         success: true,
         data: {
-          id: data[0].user_id,
+          id: data[0].id,
           email: data[0].email,
           firstName: data[0].first_name,
           lastName: data[0].last_name,
+          role: data[0].role,
         },
         message: 'User registered successfully',
       };
@@ -128,6 +102,19 @@ export class AuthService {
       
       if (!adminError && adminUser) {
         console.log(`[LOGIN] Found admin user: ${credential}`);
+        console.log(`[LOGIN] Admin user data:`, { email: adminUser.email, status: adminUser.status, has_status_field: 'status' in adminUser });
+        
+        // Check if account status is Active or First_Time (case-insensitive)
+        const userStatus = String(adminUser.status || '').toLowerCase().trim();
+        const validStatuses = ['active', 'first_time'];
+        console.log(`[LOGIN] Admin status validation - raw: "${adminUser.status}", lowercased: "${userStatus}", valid: ${validStatuses.includes(userStatus)}`);
+        if (!validStatuses.includes(userStatus)) {
+          console.log(`[LOGIN] Admin account status not allowed for login, status: ${adminUser.status}`);
+          return {
+            success: false,
+            error: userStatus ? `Your account is ${userStatus}. Please contact administrator.` : 'Your account is not properly configured. Please contact administrator.',
+          };
+        }
         
         // Check if account is locked
         if (adminUser.account_locked_until && new Date() < new Date(adminUser.account_locked_until)) {
@@ -253,6 +240,19 @@ export class AuthService {
       }
 
       console.log(`[LOGIN] Found regular user: ${credential}`);
+      console.log(`[LOGIN] User data:`, { email: user.email, status: user.status, has_status_field: 'status' in user });
+      
+      // Check if account status is Active or First_Time (case-insensitive)
+      const userStatus = String(user.status || '').toLowerCase().trim();
+      const validStatuses = ['active', 'first_time'];
+      console.log(`[LOGIN] User status validation - raw: "${user.status}", lowercased: "${userStatus}", valid: ${validStatuses.includes(userStatus)}`);
+      if (!validStatuses.includes(userStatus)) {
+        console.log(`[LOGIN] User account status not allowed for login, status: ${user.status}`);
+        return {
+          success: false,
+          error: userStatus ? `Your account is ${userStatus}. Please contact administrator.` : 'Your account is not properly configured. Please contact administrator.',
+        };
+      }
       
       // Check if account is locked
       if (user.account_locked_until && new Date() < new Date(user.account_locked_until)) {
@@ -464,15 +464,13 @@ export class AuthService {
             role: userRole,
             firstName: user.first_name,
             lastName: user.last_name,
-              geo_id: user.geo_id,
-              org_id: user.org_id || null,
           },
           message: 'User agreement acceptance required',
         };
       }
 
       // Generate JWT token
-      const token = this.generateToken(userId, user.email, userRole, user.org_id || null);
+      const token = this.generateToken(userId, user.email, userRole);
 
       // Update last login
       try {
@@ -494,8 +492,6 @@ export class AuthService {
           firstName: user.first_name,
           lastName: user.last_name,
           role: userRole,
-          geo_id: user.geo_id,
-            org_id: user.org_id || null,
           userType: 'user',
         },
         message: 'Login successful',
@@ -684,26 +680,6 @@ export class AuthService {
         };
       }
       
-      // Check against existing password to prevent reuse
-      const { data: existingUser, error: existingUserError } = await supabase
-        .from('tblusers')
-        .select('password_hash, password_history')
-        .eq('email', email)
-        .single();
-
-      if (existingUserError) {
-        console.error(`[RESET PASSWORD] Error loading user for ${email}:`, existingUserError);
-      } else if (existingUser?.password_hash) {
-        const history = parsePasswordHistory(existingUser.password_history);
-        const reused = await isPasswordReused(newPassword, existingUser.password_hash, history);
-        if (reused) {
-          return {
-            success: false,
-            error: 'New password must be different from your previous password',
-          };
-        }
-      }
-
       // Hash the new password after validation passes
       const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
 
@@ -711,15 +687,10 @@ export class AuthService {
 
       // Update password_hash with bcrypt-hashed password
       // Note: Only updating password_hash since other security columns may not exist yet
-      const nextHistory = existingUser?.password_hash
-        ? [...parsePasswordHistory(existingUser.password_history), existingUser.password_hash]
-        : parsePasswordHistory(existingUser?.password_history);
-
       const { data, error } = await supabase
         .from('tblusers')
         .update({
           password_hash: hashedPassword,
-          password_history: nextHistory,
         })
         .eq('email', email)
         .select();
@@ -767,19 +738,12 @@ export class AuthService {
       const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
 
       // If current password is provided, verify it
-      let user = null;
-      let currentHash = null;
-      let history = [];
       if (currentPassword) {
-        const { data } = await supabase
+        const { data: user } = await supabase
           .from('tblusers')
-          .select('password_hash, status, is_first_login, password_history')
+          .select('password_hash')
           .eq('email', email)
           .single();
-
-        user = data;
-        currentHash = data?.password_hash || null;
-        history = parsePasswordHistory(data?.password_history);
 
         if (!user) {
           return {
@@ -809,33 +773,15 @@ export class AuthService {
         }
       }
 
-      if (currentHash) {
-        const reused = await isPasswordReused(newPassword, currentHash, history);
-        if (reused) {
-          return {
-            success: false,
-            error: 'New password must be different from your previous password',
-          };
-        }
-      }
-
       // Update password_hash and mark as no longer first-time login
       // Note: Only updating password_hash since other security columns may not exist yet
-      const shouldActivate = user?.status && user.status.toLowerCase() === 'first_time';
-      const nextHistory = currentHash
-        ? [...history, currentHash]
-        : history;
-      const updatePayload = {
-        password_hash: hashedPassword,
-        password_history: nextHistory,
-        is_first_login: false, // Mark as no longer first-time user
-        updated_at: new Date().toISOString(),
-        ...(shouldActivate ? { status: 'Active' } : {}),
-      };
-
       const { data, error } = await supabase
         .from('tblusers')
-        .update(updatePayload)
+        .update({
+          password_hash: hashedPassword,
+          is_first_login: false, // Mark as no longer first-time user
+          updated_at: new Date().toISOString(),
+        })
         .eq('email', email)
         .select();
 
@@ -848,9 +794,6 @@ export class AuthService {
         };
       }
 
-      if (shouldActivate) {
-        console.log(`[PASSWORD CHANGE] User ${email} status set to Active`);
-      }
       console.log(`[PASSWORD CHANGE] User ${email} has changed password and is_first_login set to false`);
 
       return {
@@ -1192,12 +1135,11 @@ export class AuthService {
   /**
    * Generate JWT token (stub - replace with actual JWT library)
    */
-  static generateToken(userId, email, role, orgId = null) {
-      const payload = {
-        userId,
-        email,
-        role,
-        ...(orgId ? { org_id: orgId } : {}),
+  static generateToken(userId, email, role) {
+    const payload = {
+      userId,
+      email,
+      role,
     };
 
     // Sign JWT token with 24 hour expiry
@@ -1230,7 +1172,7 @@ export class AuthService {
     try {
       const { data, error } = await supabase
         .from('tblusers')
-        .select('user_id, first_name, last_name, geo_id, org_id, status, email')
+        .select('user_id, first_name, last_name, department, status, email')
         .eq('user_id', userId)
         .single();
 
@@ -1249,8 +1191,7 @@ export class AuthService {
           user_id: data.user_id,
           first_name: data.first_name,
           last_name: data.last_name,
-          geo_id: data.geo_id,
-            org_id: data.org_id,
+          department: data.department,
           status: data.status,
           email: data.email,
         },
