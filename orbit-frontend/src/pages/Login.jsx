@@ -33,6 +33,7 @@ export default function Login() {
   const { login, completeLogin } = useAuth();
   const [employeeId, setEmployeeId] = useState('');
   const [email, setEmail] = useState(''); // Store email from login response for OTP
+  const [otpEmail, setOtpEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [showPassword, setShowPassword] = useState(false);

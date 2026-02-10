@@ -11,7 +11,8 @@ export function Sidebar({ userRole: userRoleProp }) {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
-  const normalizedRole = (userRole || '').toLowerCase();
+  const resolvedRole = resolveUserRole(userRoleProp ? { role: userRoleProp } : user);
+  const normalizedRole = (resolvedRole || '').toLowerCase();
   const isAdmin = normalizedRole.includes('admin');
 
   const handleLogout = () => {
@@ -137,17 +138,7 @@ export function Sidebar({ userRole: userRoleProp }) {
             <p className="text-xs font-medium text-white/50">Signed in as</p>
             <p className="truncate text-sm font-semibold text-white">{user.name}</p>
             <p className="text-xs capitalize text-primary">
-              {isAdmin
-                ? (userRole || "Admin")
-                : userRole === "l1"
-                  ? "L1 Approver"
-                  : userRole === "l2"
-                    ? "L2 Approver"
-                    : userRole === "l3"
-                      ? "L3 Approver"
-                      : userRole === "payroll"
-                        ? "Payroll Staff"
-                        : "Requestor"}
+              {isAdmin ? (userRoleProp || "Admin") : getRoleDisplayName(resolvedRole)}
             </p>
           </div>
         )}
