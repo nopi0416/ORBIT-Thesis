@@ -201,21 +201,20 @@ export class AdminUserManagementService {
         };
       }
 
-      // Check for duplicate email
+      // Check for duplicate email and employee_id
       const emailDuplicate = await this.emailExists(email);
-      if (emailDuplicate) {
-        return {
-          success: false,
-          error: `Email "${email}" already exists in the system`,
-        };
-      }
-
-      // Check for duplicate employee_id
       const empIdDuplicate = await this.employeeIdExists(employeeId);
-      if (empIdDuplicate) {
+      if (emailDuplicate || empIdDuplicate) {
+        const errors = {};
+        if (emailDuplicate) {
+          errors.email = `Email "${email}" already exists in the system`;
+        }
+        if (empIdDuplicate) {
+          errors.employeeId = `Employee ID "${employeeId}" already exists in the system`;
+        }
         return {
           success: false,
-          error: `Employee ID "${employeeId}" already exists in the system`,
+          error: errors,
         };
       }
 
@@ -504,8 +503,7 @@ export class AdminUserManagementService {
       if (isCompanyAdmin) {
         if (!adminOrgId) {
           return {
-            success: false,
-            error: 'Company Admin is missing org context',
+            success: true,
             data: [],
           };
         }

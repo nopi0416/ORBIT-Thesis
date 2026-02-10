@@ -48,7 +48,7 @@ export class AdminUserManagementController {
       const result = await AdminUserManagementService.createAdminUser(userData, adminUUID);
 
       if (!result.success) {
-        return sendError(res, { error: result.error }, 400);
+        return sendError(res, result.error, 400);
       }
 
       // Return success with generated password visible in response
@@ -78,7 +78,7 @@ export class AdminUserManagementController {
       const result = await AdminUserManagementService.createAdminAccount(adminData, adminContext);
 
       if (!result.success) {
-        return sendError(res, { error: result.error }, 400);
+        return sendError(res, result.error, 400);
       }
 
       sendSuccess(res, result.data, result.message, 201);
@@ -112,7 +112,7 @@ export class AdminUserManagementController {
       const result = await AdminUserManagementService.getAllAdminUsers(filters, adminContext);
 
       if (!result.success) {
-        return sendError(res, { error: result.error }, 400);
+        return sendError(res, result.error, 400);
       }
 
       sendSuccess(res, result.data, 'Users fetched successfully', 200);
@@ -134,7 +134,7 @@ export class AdminUserManagementController {
       const result = await AdminUserManagementService.getAllRoles();
 
       if (!result.success) {
-        return sendError(res, { error: result.error }, 400);
+        return sendError(res, result.error, 400);
       }
 
       sendSuccess(res, result.data, 'Roles fetched successfully', 200);
@@ -156,7 +156,7 @@ export class AdminUserManagementController {
       const result = await AdminUserManagementService.getAllOrganizations();
 
       if (!result.success) {
-        return sendError(res, { error: result.error }, 400);
+        return sendError(res, result.error, 400);
       }
 
       sendSuccess(res, result.data, 'Organizations fetched successfully', 200);
@@ -178,7 +178,7 @@ export class AdminUserManagementController {
       const result = await AdminUserManagementService.getAllGeos();
 
       if (!result.success) {
-        return sendError(res, { error: result.error }, 400);
+        return sendError(res, result.error, 400);
       }
 
       sendSuccess(res, result.data, 'Geos fetched successfully', 200);

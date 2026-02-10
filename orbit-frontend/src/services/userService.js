@@ -30,12 +30,14 @@ export const createUser = async (userData, token) => {
     if (!response.ok) {
       // Handle different error response formats
       let errorMessage = 'Failed to create user';
+      let fieldErrors = null;
       
       if (data.error) {
         if (typeof data.error === 'string') {
           errorMessage = data.error;
         } else if (typeof data.error === 'object') {
           errorMessage = JSON.stringify(data.error);
+          fieldErrors = data.error;
         }
       } else if (data.message) {
         errorMessage = data.message;
@@ -44,7 +46,11 @@ export const createUser = async (userData, token) => {
       }
       
       console.error('Backend error response:', data);
-      throw new Error(errorMessage);
+      const error = new Error(errorMessage);
+      if (fieldErrors) {
+        error.fieldErrors = fieldErrors;
+      }
+      throw error;
     }
 
     return data.data;
@@ -115,7 +121,15 @@ export const getAllUsers = async (token, filters = {}) => {
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(data.error || 'Failed to fetch users');
+      let errorMessage = 'Failed to fetch users';
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = JSON.stringify(data.error);
+        }
+      }
+      throw new Error(errorMessage);
     }
 
     // Transform backend data to match frontend format

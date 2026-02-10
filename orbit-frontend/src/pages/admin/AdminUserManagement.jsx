@@ -9,99 +9,14 @@ import {
   getAvailableOrganizations,
   getAvailableGeos,
   getAllUsers,
-} from "../../services/userService"
-import { useAuth } from "../../context/AuthContext"
-
-export default function UserManagement() {
-  const { user } = useAuth()
-  const [activeTab, setActiveTab] = useState("users")
-  const [searchQuery, setSearchQuery] = useState("")
-  const [filterOU, setFilterOU] = useState("all")
-  const [filterRole, setFilterRole] = useState("all")
-  const [currentPage, setCurrentPage] = useState(1)
-  const [showAddUserModal, setShowAddUserModal] = useState(false)
-  const [addUserTab, setAddUserTab] = useState("individual")
-  const [showEditModal, setShowEditModal] = useState(false)
-  const [showConfirmModal, setShowConfirmModal] = useState(false)
-  const [confirmText, setConfirmText] = useState("")
-  const [confirmAction, setConfirmAction] = useState(null)
-  const [selectedUser, setSelectedUser] = useState(null)
-  const [showNotification, setShowNotification] = useState(false)
-  const [notificationMessage, setNotificationMessage] = useState("")
-  const [selectedUsers, setSelectedUsers] = useState([])
-  const [showPasswordResetModal, setShowPasswordResetModal] = useState(false)
-  const [passwordConfig, setPasswordConfig] = useState({
-    basePassword: "",
-    isUnique: false,
-    uniqueCount: 3,
-    uniqueType: "numeric",
-  })
-  const [individualForm, setIndividualForm] = useState({
-    employeeId: "",
-    name: "",
-    email: "",
-    role: "",
-    geoId: "",
-    ou: "",
-    departmentId: "",
-  })
-  const [accountType, setAccountType] = useState("user")
-  const [adminRole, setAdminRole] = useState("")
-  const [formErrors, setFormErrors] = useState({})
-  const [availableRoles, setAvailableRoles] = useState([])
-  const [availableOrganizations, setAvailableOrganizations] = useState([])
-  const [availableGeos, setAvailableGeos] = useState([])
-  const [isLoadingDropdowns, setIsLoadingDropdowns] = useState(false)
-  const [isSubmittingUser, setIsSubmittingUser] = useState(false)
-  const [fetchedUsers, setFetchedUsers] = useState([])
-  const [isLoadingUsers, setIsLoadingUsers] = useState(false)
-  const [bulkFileName, setBulkFileName] = useState("")
-  const [bulkFileError, setBulkFileError] = useState("")
-  const [bulkValidRows, setBulkValidRows] = useState([])
-  const [bulkInvalidRows, setBulkInvalidRows] = useState([])
-  const [bulkActiveTab, setBulkActiveTab] = useState("valid")
-  const [isProcessingBulk, setIsProcessingBulk] = useState(false)
-  const bulkFileInputRef = useRef(null)
-  const hasBulkReview =
-    addUserTab === "bulk" && (bulkValidRows.length > 0 || bulkInvalidRows.length > 0)
-
-  const normalizedAdminRole = (user?.role || "").toLowerCase()
-  const isSuperAdmin = normalizedAdminRole.includes("super admin")
-  const adminRoleOptions = [
-    { value: "Super Admin", label: "Super Admin" },
-    { value: "Company Admin", label: "Company Admin" },
-  ].filter((option) => (isSuperAdmin ? true : option.value !== "Super Admin"))
-
-  const parentOrgIds = new Set(
-    availableOrganizations
-      .filter((org) => org.parent_org_id)
-      .map((org) => org.parent_org_id)
-  )
-
-  const ouOptions = parentOrgIds.size > 0
-    ? availableOrganizations.filter((org) => parentOrgIds.has(org.organization_id))
-    : availableOrganizations.filter((org) => !org.parent_org_id)
-
-  const departmentOptions = availableOrganizations.filter(
-    (org) => org.parent_org_id && org.parent_org_id === individualForm.ou
-  )
-
-  // Load roles and organizations on mount
+  // Fetch users on mount and tab changes
   useEffect(() => {
-    const loadDropdownData = async () => {
-      setIsLoadingDropdowns(true)
-      try {
-        const token = localStorage.getItem('authToken')
-        
-        // Fetch roles and organizations from backend
-        const [roles, orgs, geos] = await Promise.all([
-          getAvailableRoles(token),
-          getAvailableOrganizations(token),
-          getAvailableGeos(token),
-        ])
-        setAvailableRoles(roles)
-        setAvailableOrganizations(orgs)
-        setAvailableGeos(geos)
+    loadUsers()
+  }, [activeTab])
+
+  const tickets = fetchedUsers.filter((item) => item.status === "Pending")
+  const locked = fetchedUsers.filter((item) => item.status === "Locked")
+  const deactivated = fetchedUsers.filter((item) => item.status === "Deactivated")
       } catch (error) {
         console.error('Error loading dropdown data:', error)
         setAvailableRoles([])
@@ -129,97 +44,14 @@ export default function UserManagement() {
     }
   }
 
-  // Fetch users on mount
+  // Fetch users on mount and tab changes
   useEffect(() => {
     loadUsers()
-  }, [])
+  }, [activeTab])
 
-  // Mock data for other tabs (tickets, locked, deactivated)
-  const tickets = [
-    {
-      id: 1,
-      employeeId: "EMP006",
-      name: "David Lee",
-      email: "david@orbit.com",
-      ou: "Marketing",
-      geo: "Asia Pacific",
-      role: "Requestor",
-      status: "Pending",
-      requestDate: "2024-01-15",
-    },
-    {
-      id: 2,
-      employeeId: "EMP007",
-      name: "Emma Davis",
-      email: "emma@orbit.com",
-      ou: "Sales",
-      geo: "Europe",
-      role: "Approver",
-      status: "Pending",
-      requestDate: "2024-01-14",
-    },
-    {
-      id: 3,
-      employeeId: "EMP008",
-      name: "Frank Miller",
-      email: "frank@orbit.com",
-      ou: "IT Department",
-      geo: "Asia Pacific",
-      role: "Admin",
-      status: "Pending",
-      requestDate: "2024-01-13",
-    },
-  ]
-
-  const locked = [
-    {
-      id: 1,
-      employeeId: "EMP009",
-      name: "Grace Taylor",
-      email: "grace@orbit.com",
-      ou: "Finance",
-      geo: "Europe",
-      role: "Budget Officer",
-      status: "Locked",
-      lockedDate: "2024-01-10",
-    },
-    {
-      id: 2,
-      employeeId: "EMP010",
-      name: "Henry Wilson",
-      email: "henry@orbit.com",
-      ou: "Operations",
-      geo: "Asia Pacific",
-      role: "Requestor",
-      status: "Locked",
-      lockedDate: "2024-01-09",
-    },
-  ]
-
-  const deactivated = [
-    {
-      id: 1,
-      employeeId: "EMP011",
-      name: "Ivy Martinez",
-      email: "ivy@orbit.com",
-      ou: "HR Department",
-      geo: "Europe",
-      role: "Approver",
-      status: "Deactivated",
-      deactivatedDate: "2024-01-05",
-    },
-    {
-      id: 2,
-      employeeId: "EMP012",
-      name: "Jack Anderson",
-      email: "jack@orbit.com",
-      ou: "Marketing",
-      geo: "Asia Pacific",
-      role: "Requestor",
-      status: "Deactivated",
-      deactivatedDate: "2024-01-03",
-    },
-  ]
+  const tickets = fetchedUsers.filter((item) => item.status === "Pending")
+  const locked = fetchedUsers.filter((item) => item.status === "Locked")
+  const deactivated = fetchedUsers.filter((item) => item.status === "Deactivated")
 
   const getCurrentData = () => {
     switch (activeTab) {
@@ -258,7 +90,7 @@ export default function UserManagement() {
   }
 
   const handlePasswordReset = () => {
-    const selectedUserData = tickets.filter((t) => selectedUsers.includes(t.id))
+    const selectedUserData = getCurrentData().filter((t) => selectedUsers.includes(t.id))
 
     // Generate passwords for selected users
     const resetResults = selectedUserData.map((user, index) => {
@@ -575,6 +407,11 @@ export default function UserManagement() {
       if (!individualForm.departmentId) newErrors.departmentId = "Department is required"
     }
 
+    if (individualForm.name && individualForm.name.length > 50) newErrors.name = "Name must be 50 characters or less"
+    if (individualForm.employeeId && individualForm.employeeId.length > 50) newErrors.employeeId = "Employee ID must be 50 characters or less"
+    if (individualForm.email && individualForm.email.length > 50) newErrors.email = "Email must be 50 characters or less"
+    if (individualForm.email && !isValidEmail(individualForm.email)) newErrors.email = "Email format is invalid"
+
     if (Object.keys(newErrors).length > 0) {
       setFormErrors(newErrors)
       return
@@ -602,6 +439,8 @@ export default function UserManagement() {
       setNotificationMessage(`✓ ${successLabel} ${individualForm.name} added successfully!`)
       setShowNotification(true)
       
+      await loadUsers()
+
       // Close modal and reset form on success
       setShowAddUserModal(false)
       setIndividualForm({
@@ -623,8 +462,10 @@ export default function UserManagement() {
       
       // Extract error message safely
       let errorMessage = "Failed to create user"
+      let fieldErrors = null
       if (error instanceof Error) {
         errorMessage = error.message
+        fieldErrors = error.fieldErrors || null
       } else if (typeof error === 'string') {
         errorMessage = error
       } else if (error && typeof error === 'object') {
@@ -641,10 +482,25 @@ export default function UserManagement() {
         }
       }
       
-      // Show error notification
-      setNotificationMessage(`✗ Error: ${errorMessage}`)
-      setShowNotification(true)
-      setTimeout(() => setShowNotification(false), 6000)
+      const updatedErrors = {}
+      if (fieldErrors && typeof fieldErrors === 'object') {
+        Object.assign(updatedErrors, fieldErrors)
+      } else {
+        if (/email/i.test(errorMessage)) updatedErrors.email = errorMessage
+        if (/employee id/i.test(errorMessage)) updatedErrors.employeeId = errorMessage
+        if (/role/i.test(errorMessage)) updatedErrors.role = errorMessage
+        if (/geo/i.test(errorMessage)) updatedErrors.geoId = errorMessage
+        if (/organization/i.test(errorMessage)) updatedErrors.ou = errorMessage
+        if (/department/i.test(errorMessage)) updatedErrors.departmentId = errorMessage
+      }
+
+      if (Object.keys(updatedErrors).length > 0) {
+        setFormErrors((prev) => ({ ...prev, ...updatedErrors }))
+      } else {
+        setNotificationMessage(`✗ Error: ${errorMessage}`)
+        setShowNotification(true)
+        setTimeout(() => setShowNotification(false), 6000)
+      }
     } finally {
       setIsSubmittingUser(false)
     }
@@ -704,6 +560,7 @@ export default function UserManagement() {
     setShowConfirmModal(false)
     setConfirmText("")
     setSelectedUsers([])
+    loadUsers()
     setTimeout(() => setShowNotification(false), 5000)
   }
 
@@ -866,53 +723,129 @@ export default function UserManagement() {
               </tr>
             </thead>
             <tbody>
-              {getCurrentData()
-                .slice((currentPage - 1) * 10, currentPage * 10)
-                .map((item) => (
-                  <tr key={item.id} className="border-b border-slate-700/50 hover:bg-slate-800/50">
-                    <td className="p-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedUsers.includes(item.id)}
-                        onChange={() => handleSelectUser(item.id)}
-                        className="w-4 h-4 rounded bg-slate-700 border-slate-600 text-fuchsia-500 focus:ring-2 focus:ring-fuchsia-500 accent-fuchsia-500"
-                      />
-                    </td>
-                    <td className="p-3 text-sm text-slate-300">{item.employeeId}</td>
-                    <td className="p-3 text-sm text-white font-medium">{item.name}</td>
-                    <td className="p-3 text-sm text-slate-300">{item.email}</td>
-                    <td className="p-3 text-sm text-slate-300">{item.ou}</td>
-                    <td className="p-3 text-sm text-slate-300">{item.department}</td>
-                    <td className="p-3 text-sm text-slate-300">{item.geo}</td>
-                    <td className="p-3 text-sm text-slate-300">{item.role}</td>
-                    <td className="p-3">
-                      <span
-                        className={`text-xs px-2 py-1 rounded ${
-                          item.status === "Active"
-                            ? "bg-emerald-500/20 text-emerald-400"
-                            : item.status === "First-Time"
-                              ? "bg-blue-500/20 text-blue-400"
-                              : item.status === "Pending"
-                                ? "bg-amber-500/20 text-amber-400"
-                                : item.status === "Locked"
-                                  ? "bg-red-500/20 text-red-400"
-                                  : "bg-slate-500/20 text-slate-400"
-                        }`}
-                      >
-                        {item.status}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        {activeTab === "users" && (
-                          <>
+              {getCurrentData().length === 0 ? (
+                <tr className="border-b border-slate-700/50">
+                  <td colSpan={10} className="p-6 text-center text-sm text-slate-400">
+                    No users found
+                  </td>
+                </tr>
+              ) : (
+                getCurrentData()
+                  .slice((currentPage - 1) * 10, currentPage * 10)
+                  .map((item) => (
+                    <tr key={item.id} className="border-b border-slate-700/50 hover:bg-slate-800/50">
+                      <td className="p-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedUsers.includes(item.id)}
+                          onChange={() => handleSelectUser(item.id)}
+                          className="w-4 h-4 rounded bg-slate-700 border-slate-600 text-fuchsia-500 focus:ring-2 focus:ring-fuchsia-500 accent-fuchsia-500"
+                        />
+                      </td>
+                      <td className="p-3 text-sm text-slate-300">{item.employeeId}</td>
+                      <td className="p-3 text-sm text-white font-medium">{item.name}</td>
+                      <td className="p-3 text-sm text-slate-300">{item.email}</td>
+                      <td className="p-3 text-sm text-slate-300">{item.ou}</td>
+                      <td className="p-3 text-sm text-slate-300">{item.department}</td>
+                      <td className="p-3 text-sm text-slate-300">{item.geo}</td>
+                      <td className="p-3 text-sm text-slate-300">{item.role}</td>
+                      <td className="p-3">
+                        <span
+                          className={`text-xs px-2 py-1 rounded ${
+                            item.status === "Active"
+                              ? "bg-emerald-500/20 text-emerald-400"
+                              : item.status === "First-Time"
+                                ? "bg-blue-500/20 text-blue-400"
+                                : item.status === "Pending"
+                                  ? "bg-amber-500/20 text-amber-400"
+                                  : item.status === "Locked"
+                                    ? "bg-red-500/20 text-red-400"
+                                    : "bg-slate-500/20 text-slate-400"
+                          }`}
+                        >
+                          {item.status}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          {activeTab === "users" && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  setSelectedUser(item)
+                                  setShowEditModal(true)
+                                }}
+                                className="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                title="Edit"
+                              >
+                                <svg
+                                  className="w-4 h-4 text-blue-400"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                                  />
+                                </svg>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setConfirmAction({ type: "lock", count: 1 })
+                                  setShowConfirmModal(true)
+                                }}
+                                className="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                title="Lock"
+                              >
+                                <svg
+                                  className="w-4 h-4 text-amber-400"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                                  />
+                                </svg>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setConfirmAction({ type: "deactivate", count: 1 })
+                                  setShowConfirmModal(true)
+                                }}
+                                className="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                title="Deactivate"
+                              >
+                                <svg
+                                  className="w-4 h-4 text-red-400"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                                  />
+                                </svg>
+                              </button>
+                            </>
+                          )}
+                          {activeTab === "tickets" && (
                             <button
                               onClick={() => {
-                                setSelectedUser(item)
-                                setShowEditModal(true)
+                                setSelectedUsers([item.id])
+                                setShowPasswordResetModal(true)
                               }}
                               className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                              title="Edit"
+                              title="Reset Password"
                             >
                               <svg
                                 className="w-4 h-4 text-blue-400"
@@ -924,20 +857,22 @@ export default function UserManagement() {
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
                                   strokeWidth={2}
-                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
                                 />
                               </svg>
                             </button>
+                          )}
+                          {activeTab === "locked" && (
                             <button
                               onClick={() => {
-                                setConfirmAction({ type: "lock", count: 1 })
+                                setConfirmAction({ type: "unlock", count: 1 })
                                 setShowConfirmModal(true)
                               }}
                               className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                              title="Lock"
+                              title="Unlock"
                             >
                               <svg
-                                className="w-4 h-4 text-amber-400"
+                                className="w-4 h-4 text-emerald-400"
                                 fill="none"
                                 stroke="currentColor"
                                 viewBox="0 0 24 24"
@@ -946,20 +881,22 @@ export default function UserManagement() {
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
                                   strokeWidth={2}
-                                  d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
                                 />
                               </svg>
                             </button>
+                          )}
+                          {activeTab === "deactivated" && (
                             <button
                               onClick={() => {
-                                setConfirmAction({ type: "deactivate", count: 1 })
+                                setConfirmAction({ type: "reactivate", count: 1 })
                                 setShowConfirmModal(true)
                               }}
                               className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                              title="Deactivate"
+                              title="Reactivate"
                             >
                               <svg
-                                className="w-4 h-4 text-red-400"
+                                className="w-4 h-4 text-emerald-400"
                                 fill="none"
                                 stroke="currentColor"
                                 viewBox="0 0 24 24"
@@ -968,88 +905,16 @@ export default function UserManagement() {
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
                                   strokeWidth={2}
-                                  d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
                                 />
                               </svg>
                             </button>
-                          </>
-                        )}
-                        {activeTab === "tickets" && (
-                          <button
-                            onClick={() => {
-                              setSelectedUsers([item.id])
-                              setShowPasswordResetModal(true)
-                            }}
-                            className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                            title="Reset Password"
-                          >
-                            <svg
-                              className="w-4 h-4 text-blue-400"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                              />
-                            </svg>
-                          </button>
-                        )}
-                        {activeTab === "locked" && (
-                          <button
-                            onClick={() => {
-                              setConfirmAction({ type: "unlock", count: 1 })
-                              setShowConfirmModal(true)
-                            }}
-                            className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                            title="Unlock"
-                          >
-                            <svg
-                              className="w-4 h-4 text-emerald-400"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                              />
-                            </svg>
-                          </button>
-                        )}
-                        {activeTab === "deactivated" && (
-                          <button
-                            onClick={() => {
-                              setConfirmAction({ type: "reactivate", count: 1 })
-                              setShowConfirmModal(true)
-                            }}
-                            className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                            title="Reactivate"
-                          >
-                            <svg
-                              className="w-4 h-4 text-emerald-400"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                              />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+              )}
             </tbody>
           </table>
         </div>
@@ -1321,7 +1186,6 @@ export default function UserManagement() {
                               departmentId: "",
                             })
                           }
-                          if (formErrors.accountType) setFormErrors({ ...formErrors, accountType: "" })
                         }}
                         className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
                       >
@@ -1337,10 +1201,11 @@ export default function UserManagement() {
                           type="text"
                           value={individualForm.employeeId}
                           onChange={(e) => {
-                            setIndividualForm({ ...individualForm, employeeId: e.target.value })
-                            if (formErrors.employeeId) setFormErrors({ ...formErrors, employeeId: "" })
+                            const sanitized = sanitizeAscii(e.target.value).slice(0, 50)
+                            setIndividualForm({ ...individualForm, employeeId: sanitized })
                           }}
                           placeholder="Enter employee ID"
+                          maxLength={50}
                           className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
                             formErrors.employeeId
                               ? "border-red-500 focus:ring-red-500"
@@ -1357,10 +1222,11 @@ export default function UserManagement() {
                         type="text"
                         value={individualForm.name}
                         onChange={(e) => {
-                          setIndividualForm({ ...individualForm, name: e.target.value })
-                          if (formErrors.name) setFormErrors({ ...formErrors, name: "" })
+                          const sanitized = sanitizeAscii(e.target.value).slice(0, 50)
+                          setIndividualForm({ ...individualForm, name: sanitized })
                         }}
                         placeholder="Enter full name"
+                        maxLength={50}
                         className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
                           formErrors.name
                             ? "border-red-500 focus:ring-red-500"
@@ -1376,10 +1242,11 @@ export default function UserManagement() {
                         type="email"
                         value={individualForm.email}
                         onChange={(e) => {
-                          setIndividualForm({ ...individualForm, email: e.target.value })
-                          if (formErrors.email) setFormErrors({ ...formErrors, email: "" })
+                          const sanitized = normalizeEmail(e.target.value).slice(0, 50)
+                          setIndividualForm({ ...individualForm, email: sanitized })
                         }}
                         placeholder="Enter email address"
+                        maxLength={50}
                         className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
                           formErrors.email
                             ? "border-red-500 focus:ring-red-500"
@@ -1404,7 +1271,6 @@ export default function UserManagement() {
                                 departmentId: "",
                               })
                             }
-                            if (formErrors.adminRole) setFormErrors({ ...formErrors, adminRole: "" })
                           }}
                           className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
                             formErrors.adminRole
@@ -1429,7 +1295,6 @@ export default function UserManagement() {
                             value={individualForm.role}
                             onChange={(e) => {
                               setIndividualForm({ ...individualForm, role: e.target.value })
-                              if (formErrors.role) setFormErrors({ ...formErrors, role: "" })
                             }}
                             disabled={isLoadingDropdowns || availableRoles.length === 0}
                             className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
@@ -1454,7 +1319,6 @@ export default function UserManagement() {
                             value={individualForm.geoId}
                             onChange={(e) => {
                               setIndividualForm({ ...individualForm, geoId: e.target.value })
-                              if (formErrors.geoId) setFormErrors({ ...formErrors, geoId: "" })
                             }}
                             disabled={isLoadingDropdowns || availableGeos.length === 0}
                             className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
@@ -1484,7 +1348,6 @@ export default function UserManagement() {
                           value={individualForm.ou}
                           onChange={(e) => {
                             setIndividualForm({ ...individualForm, ou: e.target.value, departmentId: "" })
-                            if (formErrors.ou) setFormErrors({ ...formErrors, ou: "" })
                           }}
                           disabled={isLoadingDropdowns || ouOptions.length === 0}
                           className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
@@ -1510,7 +1373,6 @@ export default function UserManagement() {
                             value={individualForm.departmentId}
                             onChange={(e) => {
                               setIndividualForm({ ...individualForm, departmentId: e.target.value })
-                              if (formErrors.departmentId) setFormErrors({ ...formErrors, departmentId: "" })
                             }}
                             disabled={!individualForm.ou || departmentOptions.length === 0}
                             className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
