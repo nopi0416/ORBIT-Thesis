@@ -8,11 +8,31 @@ import { Eye, EyeOff, Lock, User, AlertCircle, Loader2, ArrowLeft } from '../com
 import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../utils/api';
 import { getDashboardRoute } from '../utils/roleRouting';
+import { sanitizeEmail, sanitizePassword, sanitizeOTP, handlePaste } from '../utils/inputSanitizer';
+
+const carouselSlides = [
+  {
+    image: '/carousel-1.png',
+    title: 'Enterprise Security',
+    description: 'Bank-level encryption for your sensitive data',
+  },
+  {
+    image: '/carousel-2.png',
+    title: 'Financial Intelligence',
+    description: 'Real-time insights for better decision making',
+  },
+  {
+    image: '/carousel-3.png',
+    title: 'Team Collaboration',
+    description: 'Work together seamlessly across your organization',
+  },
+];
 
 export default function Login() {
   const navigate = useNavigate();
-  const { login, completeLogin, debugLoginAsAdmin } = useAuth();
-  const [email, setEmail] = useState('');
+  const { login, completeLogin } = useAuth();
+  const [employeeId, setEmployeeId] = useState('');
+  const [email, setEmail] = useState(''); // Store email from login response for OTP
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [showPassword, setShowPassword] = useState(false);
@@ -22,6 +42,7 @@ export default function Login() {
   const [requiresOTP, setRequiresOTP] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(180); // 3 minutes
+  const [currentCarouselIndex, setCurrentCarouselIndex] = useState(0);
   const inputRefs = useRef([]);
 
   // Timer for OTP expiration
@@ -41,12 +62,14 @@ export default function Login() {
     return () => clearInterval(interval);
   }, [requiresOTP, timeRemaining]);
 
-  // Initialize resend cooldown when OTP page is shown
+  // Auto-rotate carousel
   useEffect(() => {
-    if (requiresOTP) {
-      setResendCooldown(120); // 2 minutes cooldown since OTP was just sent
-    }
-  }, [requiresOTP]);
+    const carouselInterval = setInterval(() => {
+      setCurrentCarouselIndex((prev) => (prev + 1) % carouselSlides.length);
+    }, 5000); // Change image every 5 seconds
+
+    return () => clearInterval(carouselInterval);
+  }, []);
 
   // Timer for resend cooldown
   useEffect(() => {
@@ -135,11 +158,11 @@ export default function Login() {
         errors.otp = 'Please enter the complete 6-digit code';
       }
     } else {
-      // Email validation
-      if (!email) {
-        errors.email = 'Username is required';
-      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        errors.email = 'Please enter a valid username';
+      // Username validation
+      if (!employeeId) {
+        errors.employeeId = 'Username is required';
+      } else if (employeeId.trim().length === 0) {
+        errors.employeeId = 'Please enter a valid username';
       }
 
       // Password validation
@@ -200,15 +223,17 @@ export default function Login() {
           setError(result.error || 'OTP verification failed. Please try again.');
         }
       } else {
-        // Step 1: Submit email and password
-        console.log('[LOGIN FORM] Submitting credentials for:', email);
-        const result = await login({ email, password });
+        // Step 1: Submit employee ID and password
+        console.log('[LOGIN FORM] Submitting credentials for:', employeeId);
+        const result = await login({ employeeId, password });
         
         console.log('[LOGIN FORM] Login result:', result);
 
         if (result.success) {
           console.log('[LOGIN FORM] Login success, requiresOTP:', result.requiresOTP);
           if (result.requiresOTP) {
+            // Store email from response for OTP verification
+            setEmail(result.email);
             // OTP required - show OTP entry form
             console.log('[LOGIN FORM] Showing OTP page');
             setRequiresOTP(true);
@@ -223,7 +248,7 @@ export default function Login() {
           }
         } else {
           console.log('[LOGIN FORM] Login failed:', result.error);
-          setError(result.error || 'Login failed. Please try again.');
+          setError('Invalid Username or Password');
         }
       }
     } catch (_error) {
@@ -269,13 +294,14 @@ export default function Login() {
 
       <div className="relative z-10 w-full max-w-4xl">
         <div className="rounded-2xl shadow-2xl overflow-hidden grid md:grid-cols-2 min-h-[650px]" style={{ backgroundColor: 'oklch(0.18 0.05 280)' }}>
-          {/* Left side - Image carousel (simplified branding section) */}
-          <div className="hidden md:flex md:flex-col md:justify-between p-10 relative overflow-hidden"
+          {/* Left side - Image carousel */}
+          <div className="hidden md:flex md:flex-col md:justify-between p-8 relative overflow-hidden"
             style={{
-              background: 'linear-gradient(135deg, oklch(0.15 0.08 250) 0%, oklch(0.12 0.06 260) 100%)',
+              background: 'linear-gradient(to bottom right, rgb(10, 61, 74), rgb(15, 85, 99), rgb(26, 107, 122))',
             }}>
+            
             {/* Logo and branding */}
-            <div className="flex items-center gap-3 z-10">
+            <div className="flex items-center gap-3 z-20 relative">
               <div className="w-10 h-10 rounded-lg flex items-center justify-center border border-white/20"
                 style={{
                   background: 'rgba(255, 255, 255, 0.1)',
@@ -285,23 +311,56 @@ export default function Login() {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-white">ORBIT</h1>
-                <p className="text-xs text-white/80">Budget Intelligence Tool</p>
+                <p className="text-xs text-white/80">Financial Intelligence Tool</p>
               </div>
             </div>
 
-            {/* Content overlay */}
-            <div className="space-y-4 max-w-md z-10">
-              <h2 className="text-3xl font-bold text-white">Enterprise Security</h2>
-              <p className="text-lg text-white/90">Bank-level encryption for your sensitive data</p>
+            {/* Carousel Images */}
+            <div className="absolute inset-0">
+              {carouselSlides.map((slide, index) => (
+                <div
+                  key={index}
+                  className={`absolute inset-0 transition-opacity duration-1000 ${
+                    index === currentCarouselIndex ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
+                  <img
+                    src={slide.image}
+                    alt={slide.title}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-0" style={{
+                    background: 'linear-gradient(to top, rgba(10, 61, 74, 0.9), rgba(10, 61, 74, 0.4), transparent)'
+                  }}></div>
+                </div>
+              ))}
             </div>
 
-            {/* Decorative gradient */}
-            <div
-              className="absolute bottom-0 left-0 right-0 h-32 pointer-events-none"
-              style={{
-                background: 'linear-gradient(to top, oklch(0.1 0.04 260) 0%, transparent 100%)',
-              }}
-            />
+            {/* Content overlay */}
+            <div className="space-y-3 max-w-md z-20 relative mt-auto">
+              <h2 className="text-3xl font-bold text-white">
+                {carouselSlides[currentCarouselIndex].title}
+              </h2>
+              <p className="text-lg text-white/90">
+                {carouselSlides[currentCarouselIndex].description}
+              </p>
+
+              {/* Carousel indicators */}
+              <div className="flex gap-2 mt-6 justify-center">
+                {carouselSlides.map((_, index) => (
+                  <button
+                    key={index}
+                    onClick={() => setCurrentCarouselIndex(index)}
+                    className={`rounded-full transition-all ${
+                      index === currentCarouselIndex
+                        ? 'w-8 h-1 bg-white'
+                        : 'w-4 h-1 bg-white/40'
+                    }`}
+                    aria-label={`Go to slide ${index + 1}`}
+                  />
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* Right side - Login form */}
@@ -326,37 +385,42 @@ export default function Login() {
 
                 {!requiresOTP ? (
                   <>
-                    {/* Email field */}
+                    {/* Username field */}
                     <div className="space-y-2">
-                      <Label htmlFor="email" className="text-sm font-medium">
+                      <Label htmlFor="username" className="text-sm font-medium">
                         Username
                       </Label>
                       <div className="relative">
                         <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5" style={{ color: 'oklch(0.65 0.03 280)' }} />
                         <Input
-                          id="email"
-                          type="email"
+                          id="username"
+                          type="text"
                           placeholder="Enter your username"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
+                          value={employeeId}
+                          onInput={(e) => setEmployeeId(e.target.value)}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const pastedText = e.clipboardData.getData('text');
+                            setEmployeeId(pastedText);
+                          }}
                           style={{
                             paddingLeft: '2.5rem',
                             height: '2.75rem',
                             backgroundColor: 'oklch(0.18 0.05 280)',
-                            borderColor: fieldErrors.email ? 'oklch(0.55 0.22 25)' : 'oklch(0.3 0.05 280)',
+                            borderColor: fieldErrors.employeeId ? 'oklch(0.55 0.22 25)' : 'oklch(0.3 0.05 280)',
                             color: 'oklch(0.95 0.02 280)',
                           }}
                           className="border rounded-md transition-colors"
                           disabled={isLoading}
-                          autoComplete="email"
+                          autoComplete="off"
                           autoFocus
-                          aria-invalid={!!fieldErrors.email}
-                          aria-describedby={fieldErrors.email ? 'email-error' : undefined}
+                          aria-invalid={!!fieldErrors.employeeId}
+                          aria-describedby={fieldErrors.employeeId ? 'username-error' : undefined}
                         />
                       </div>
-                      {fieldErrors.email && (
-                        <p id="email-error" className="text-sm animate-in fade-in slide-in-from-top-1" style={{ color: 'oklch(0.55 0.22 25)' }}>
-                          {fieldErrors.email}
+                      {fieldErrors.employeeId && (
+                        <p id="username-error" className="text-sm animate-in fade-in slide-in-from-top-1" style={{ color: 'oklch(0.55 0.22 25)' }}>
+                          {fieldErrors.employeeId}
                         </p>
                       )}
                     </div>
@@ -373,7 +437,8 @@ export default function Login() {
                           type={showPassword ? 'text' : 'password'}
                           placeholder="Enter your password"
                           value={password}
-                          onChange={(e) => setPassword(e.target.value)}
+                          onInput={(e) => setPassword(sanitizePassword(e.target.value))}
+                          onPaste={(e) => handlePaste(e, sanitizePassword)}
                           style={{
                             paddingLeft: '2.5rem',
                             paddingRight: '2.5rem',
@@ -445,9 +510,9 @@ export default function Login() {
                             inputMode="numeric"
                             maxLength={1}
                             value={digit}
-                            onChange={(e) => handleOtpChange(index, e.target.value)}
-                            onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                            onInput={(e) => handleOtpChange(index, sanitizeOTP(e.target.value))}
                             onPaste={handleOtpPaste}
+                            onKeyDown={(e) => handleOtpKeyDown(index, e)}
                             autoFocus={index === 0}
                             style={{
                               width: '3rem',

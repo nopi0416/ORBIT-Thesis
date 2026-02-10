@@ -9,6 +9,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { AlertCircle, Loader2, ArrowLeft } from '../components/icons';
 import { getDashboardRoute } from '../utils/roleRouting';
+import { sanitizeText, handlePaste } from '../utils/inputSanitizer';
 
 const SECURITY_QUESTIONS = [
   'What was the name of your first pet?',
@@ -244,7 +245,8 @@ export default function SecurityQuestions() {
                   type="text"
                   placeholder="Your answer"
                   value={answer1}
-                  onChange={(e) => setAnswer1(e.target.value)}
+                  onInput={(e) => setAnswer1(sanitizeText(e.target.value))}
+                  onPaste={(e) => handlePaste(e, sanitizeText)}
                   className="h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}
@@ -274,7 +276,8 @@ export default function SecurityQuestions() {
                   type="text"
                   placeholder="Your answer"
                   value={answer2}
-                  onChange={(e) => setAnswer2(e.target.value)}
+                  onInput={(e) => setAnswer2(sanitizeText(e.target.value))}
+                  onPaste={(e) => handlePaste(e, sanitizeText)}
                   className="h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}
@@ -303,7 +306,8 @@ export default function SecurityQuestions() {
                   type="text"
                   placeholder="Your answer"
                   value={answer3}
-                  onChange={(e) => setAnswer3(e.target.value)}
+                  onInput={(e) => setAnswer3(sanitizeText(e.target.value))}
+                  onPaste={(e) => handlePaste(e, sanitizeText)}
                   className="h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}

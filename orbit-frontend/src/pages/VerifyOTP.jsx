@@ -5,6 +5,7 @@ import { Input } from '../components/ui/input';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { AlertCircle, Loader2, ArrowLeft } from '../components/icons';
 import { authAPI } from '../utils/api';
+import { sanitizeOTP, handlePaste } from '../utils/inputSanitizer';
 
 export default function VerifyOTP() {
   const navigate = useNavigate();
@@ -25,11 +26,6 @@ export default function VerifyOTP() {
       navigate('/login');
     }
   }, [email, navigate]);
-
-  // Initialize resend cooldown on page load
-  useEffect(() => {
-    setResendCooldown(120); // 2 minutes cooldown since OTP was just sent
-  }, []);
 
   // Timer for resend cooldown
   useEffect(() => {
@@ -240,9 +236,9 @@ export default function VerifyOTP() {
                       inputMode="numeric"
                       maxLength={1}
                       value={digit}
-                      onChange={(e) => handleChange(index, e.target.value)}
-                      onKeyDown={(e) => handleKeyDown(index, e)}
+                      onInput={(e) => handleChange(index, sanitizeOTP(e.target.value))}
                       onPaste={handlePaste}
+                      onKeyDown={(e) => handleKeyDown(index, e)}
                       autoFocus={index === 0}
                       style={{
                         width: '3rem',
