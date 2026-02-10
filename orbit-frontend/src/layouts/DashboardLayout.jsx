@@ -1,12 +1,21 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { AuthGuard } from '../components/AuthGuard';
 import { useAuth } from '../context/AuthContext';
 import { Sidebar } from '../components/Sidebar';
-import { DemoUserSwitcher } from '../components/DemoUserSwitcher';
 
 export default function DashboardLayout({ children }) {
   const { user } = useAuth();
-  const isAdminUser = user?.role === "admin";
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!user) return;
+    const isAdminRole = user.role?.toLowerCase().includes('admin');
+    if (isAdminRole && location.pathname === '/dashboard') {
+      navigate('/admin/dashboard', { replace: true });
+    }
+  }, [user, location.pathname, navigate]);
 
   return (
     <AuthGuard requireAuth>
@@ -18,9 +27,6 @@ export default function DashboardLayout({ children }) {
 
         {/* Main content area */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
-          <div className="fixed top-4 right-4 z-30">
-            <DemoUserSwitcher />
-          </div>
           {/* Base gradient background */}
           <div
             className="fixed inset-0 z-0 pointer-events-none"

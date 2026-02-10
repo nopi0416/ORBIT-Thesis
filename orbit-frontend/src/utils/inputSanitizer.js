@@ -115,6 +115,69 @@ export const sanitizeText = (input) => {
 };
 
 /**
+ * Sanitizes OU management text input (names, codes, descriptions)
+ * Allows: letters, numbers, spaces, and limited punctuation
+ * @param {string} input - The OU input to sanitize
+ * @param {boolean} allowNewlines - Whether to allow newlines
+ * @returns {string} - Sanitized input
+ */
+export const sanitizeOuText = (input, allowNewlines = false) => {
+  if (!input) return '';
+
+  let sanitized = removeAllEmoji(input);
+  const whitespacePattern = allowNewlines ? '\\s' : ' ';
+  const allowedPattern = new RegExp(`[^a-zA-Z0-9${whitespacePattern}\.,\-_'()/]`, 'g');
+  sanitized = sanitized.replace(allowedPattern, '');
+
+  return sanitized;
+};
+
+/**
+ * Restricts shortcuts to common edit/copy keys only
+ * Allows: Ctrl/Cmd+C,V,A,X,Z and navigation keys
+ * @param {KeyboardEvent} event - The keydown event
+ * @param {Object} options - Options to allow enter
+ */
+export const handleRestrictedKeyDown = (event, options = {}) => {
+  const { allowEnter = false } = options;
+  const key = event.key;
+  const isMeta = event.ctrlKey || event.metaKey;
+
+  if (event.altKey) {
+    event.preventDefault();
+    return;
+  }
+
+  if (isMeta) {
+    const allowed = ['c', 'v', 'a', 'x', 'z'];
+    if (!allowed.includes(String(key).toLowerCase())) {
+      event.preventDefault();
+    }
+    return;
+  }
+
+  const allowedKeys = [
+    'Backspace',
+    'Delete',
+    'ArrowLeft',
+    'ArrowRight',
+    'ArrowUp',
+    'ArrowDown',
+    'Home',
+    'End',
+    'Tab',
+  ];
+
+  if (allowEnter) {
+    allowedKeys.push('Enter');
+  }
+
+  if (allowedKeys.includes(key)) {
+    return;
+  }
+};
+
+/**
  * Sanitizes OTP input (numbers only)
  * @param {string} input - The OTP input to sanitize
  * @returns {string} - Sanitized OTP (numbers only)
@@ -145,17 +208,20 @@ export const containsEmoji = (input) => {
 export const handlePaste = (event, sanitizeFn = sanitizeInput) => {
   event.preventDefault();
   const pastedText = event.clipboardData.getData('text/plain');
+  const target = event.target;
   const sanitized = sanitizeFn(pastedText);
+  const maxLength = typeof target.maxLength === 'number' ? target.maxLength : -1;
   
   // Insert sanitized text at cursor position
-  const target = event.target;
   const start = target.selectionStart;
   const end = target.selectionEnd;
   const text = target.value;
-  const newText = text.substring(0, start) + sanitized + text.substring(end);
+  const availableSpace = maxLength > 0 ? maxLength - (text.length - (end - start)) : sanitized.length;
+  const clipped = maxLength > 0 ? sanitized.slice(0, Math.max(0, availableSpace)) : sanitized;
+  const newText = text.substring(0, start) + clipped + text.substring(end);
   
   target.value = newText;
-  target.selectionStart = target.selectionEnd = start + sanitized.length;
+  target.selectionStart = target.selectionEnd = start + clipped.length;
   
   // Trigger change event
   target.dispatchEvent(new Event('input', { bubbles: true }));
@@ -166,8 +232,10 @@ export default {
   sanitizeEmail,
   sanitizePassword,
   sanitizeText,
+  sanitizeOuText,
   sanitizeOTP,
   containsEmoji,
   handlePaste,
+  handleRestrictedKeyDown,
   removeAllEmoji,
 };

@@ -6,6 +6,7 @@ const Button = React.forwardRef(({
   variant = "default", 
   size = "default", 
   asChild = false, 
+  type = "button",
   children,
   ...props 
 }, ref) => {
@@ -46,6 +47,7 @@ const Button = React.forwardRef(({
     <button
       className={classes}
       ref={ref}
+      type={type}
       {...props}
     >
       {children}

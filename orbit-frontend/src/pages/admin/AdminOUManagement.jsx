@@ -5,12 +5,21 @@ import { SystemAdminDashboard } from '../../components/admin-ou/SystemAdminDashb
 
 export default function AdminOUManagement() {
   const { user } = useAuth();
+  const normalizedRole = user?.role?.toLowerCase().trim() || '';
+  const normalizedKey = normalizedRole.replace(/\s+/g, '_');
+  const isSystemAdmin =
+    ['admin', 'super_admin', 'system_admin'].includes(normalizedKey)
+    || normalizedRole.includes('system')
+    || normalizedRole.includes('super');
+  const isCompanyAdmin =
+    ['company_admin'].includes(normalizedKey)
+    || normalizedRole.includes('company admin');
 
   if (!user) {
     return null;
   }
 
-  if (user.role === 'system_admin') {
+  if (isSystemAdmin) {
     return (
       <AdminOUManagementShell
         roleLabel="System Administrator"
@@ -20,7 +29,7 @@ export default function AdminOUManagement() {
     );
   }
 
-  if (user.role === 'company_admin') {
+  if (isCompanyAdmin) {
     return (
       <AdminOUManagementShell
         roleLabel="Company Administrator"

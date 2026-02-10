@@ -1000,10 +1000,34 @@ export class BudgetConfigService {
    */
   static async deleteOrganization(orgId) {
     try {
+      const { data: childOrgs, error: childError } = await supabase
+        .from('tblorganization')
+        .select('org_id')
+        .eq('parent_org_id', orgId);
+
+      if (childError) throw childError;
+
+      const childOrgIds = (childOrgs || []).map((org) => org.org_id);
+      const orgIds = [orgId, ...childOrgIds];
+
+      const { error: clientError } = await supabase
+        .from('tblclient_organization')
+        .delete()
+        .in('parent_org_id', orgIds);
+
+      if (clientError) throw clientError;
+
+      const { error: geoLinkError } = await supabase
+        .from('tblorganization_to_geo_location')
+        .delete()
+        .in('org_id', orgIds);
+
+      if (geoLinkError) throw geoLinkError;
+
       const { error } = await supabase
         .from('tblorganization')
         .delete()
-        .eq('org_id', orgId);
+        .in('org_id', orgIds);
 
       if (error) throw error;
 
@@ -1052,6 +1076,7 @@ export class BudgetConfigService {
   static async createGeo(payload) {
     try {
       const { geo_code, geo_name, created_by } = payload;
+      const resolvedCreatedBy = getUserUUID(created_by) || getUserUUID('john-smith');
       const now = new Date().toISOString();
       const { data, error } = await supabase
         .from('tblgeo')
@@ -1059,9 +1084,9 @@ export class BudgetConfigService {
           {
             geo_code,
             geo_name,
-            created_by: created_by || null,
+            created_by: resolvedCreatedBy,
             created_at: now,
-            updated_by: created_by || null,
+            updated_by: resolvedCreatedBy,
             updated_at: now,
           },
         ])
@@ -1089,12 +1114,13 @@ export class BudgetConfigService {
   static async updateGeo(geoId, payload) {
     try {
       const { geo_code, geo_name, updated_by } = payload;
+      const resolvedUpdatedBy = getUserUUID(updated_by) || getUserUUID('john-smith');
       const { data, error } = await supabase
         .from('tblgeo')
         .update({
           ...(geo_code !== undefined && { geo_code }),
           ...(geo_name !== undefined && { geo_name }),
-          ...(updated_by !== undefined && { updated_by }),
+          ...(updated_by !== undefined && { updated_by: resolvedUpdatedBy }),
           updated_at: new Date().toISOString(),
         })
         .eq('geo_id', geoId)
@@ -1179,6 +1205,7 @@ export class BudgetConfigService {
   static async createLocation(payload) {
     try {
       const { geo_id, location_code, location_name, created_by } = payload;
+      const resolvedCreatedBy = getUserUUID(created_by) || getUserUUID('john-smith');
       const now = new Date().toISOString();
       const { data, error } = await supabase
         .from('tbllocation')
@@ -1187,9 +1214,9 @@ export class BudgetConfigService {
             geo_id,
             location_code,
             location_name,
-            created_by: created_by || null,
+            created_by: resolvedCreatedBy,
             created_at: now,
-            updated_by: created_by || null,
+            updated_by: resolvedCreatedBy,
             updated_at: now,
           },
         ])
@@ -1250,6 +1277,13 @@ export class BudgetConfigService {
    */
   static async deleteLocation(locationId) {
     try {
+      const { error: mappingError } = await supabase
+        .from('tblorganization_to_geo_location')
+        .delete()
+        .eq('location_id', locationId);
+
+      if (mappingError) throw mappingError;
+
       const { error } = await supabase
         .from('tbllocation')
         .delete()
@@ -1412,6 +1446,8 @@ export class BudgetConfigService {
         created_by,
       } = payload;
 
+      const resolvedCreatedBy = getUserUUID(created_by) || getUserUUID('john-smith');
+
       const now = new Date().toISOString();
       const { data, error } = await supabase
         .from('tblclient_organization')
@@ -1421,12 +1457,12 @@ export class BudgetConfigService {
             client_code,
             client_name,
             client_description: client_description || null,
-            client_status: client_status || 'active',
+            client_status: client_status || 'ACTIVE',
             contract_start_date: contract_start_date || now,
             contract_end_date: contract_end_date || null,
-            created_by: created_by || null,
+            created_by: resolvedCreatedBy,
             created_at: now,
-            updated_by: created_by || null,
+            updated_by: resolvedCreatedBy,
             updated_at: now,
           },
         ])

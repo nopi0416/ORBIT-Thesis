@@ -11,9 +11,11 @@ import {
   DialogTrigger,
   Input,
   Label,
+  Textarea,
 } from '../ui';
-import { Plus, Edit3, Trash2, Users } from 'lucide-react';
+import { Plus, Edit3, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { handlePaste, handleRestrictedKeyDown, sanitizeOuText } from '../../utils/inputSanitizer';
 import {
   createOrganization,
   deleteOrganization,
@@ -25,22 +27,34 @@ export function CompanyAdminDashboard() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('departments');
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeFilter, setActiveFilter] = useState('all');
   const [selectedDept, setSelectedDept] = useState(null);
+  const [selectedDeptIds, setSelectedDeptIds] = useState(new Set());
   const [selectedCompany, setSelectedCompany] = useState(null);
   const [editingDept, setEditingDept] = useState(null);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [showManageMembersDialog, setShowManageMembersDialog] = useState(false);
+  const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+  const [showAddDeptDialog, setShowAddDeptDialog] = useState(false);
+  const [isDeletingDept, setIsDeletingDept] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isCreatingDept, setIsCreatingDept] = useState(false);
+  const [isUpdatingDept, setIsUpdatingDept] = useState(false);
+  const [bulkDeleteConfirmText, setBulkDeleteConfirmText] = useState('');
   const [newDeptName, setNewDeptName] = useState('');
   const [newDeptDesc, setNewDeptDesc] = useState('');
+  const [newCompanyCode, setNewCompanyCode] = useState('');
   const [newCompanyName, setNewCompanyName] = useState('');
   const [newCompanyDesc, setNewCompanyDesc] = useState('');
   const [organizations, setOrganizations] = useState([]);
   const [companyScopeId, setCompanyScopeId] = useState(null);
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [notificationVariant, setNotificationVariant] = useState('success');
 
   const token = localStorage.getItem('authToken');
-  const updatedBy = user?.id || user?.email || user?.name || 'system';
+  const isUuid = (value) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value || '');
+  const updatedBy = isUuid(user?.id) ? user.id : null;
 
   const resolveCompanyScope = (orgs) => {
     if (user?.org_id) return user.org_id;
@@ -94,6 +108,10 @@ export function CompanyAdminDashboard() {
     }
   }, [companies, selectedCompany]);
 
+  useEffect(() => {
+    setSelectedDeptIds(new Set());
+  }, [selectedCompany, activeTab]);
+
   const departments = useMemo(() => {
     if (!selectedCompany?.id) return [];
     return organizations
@@ -101,21 +119,40 @@ export function CompanyAdminDashboard() {
       .map((org) => ({
         id: org.org_id,
         name: org.org_name,
-        users: 0,
-        status: 'active',
         description: org.org_description,
-        members: [],
       }));
   }, [organizations, selectedCompany]);
 
   useEffect(() => {
-    if (selectedDept && !departments.find((dept) => dept.id === selectedDept.id)) {
+    if (!selectedDept) return;
+
+    const match = departments.find((dept) => dept.id === selectedDept.id);
+    if (!match) {
       setSelectedDept(null);
+      return;
+    }
+
+    const shouldUpdate =
+      match.name !== selectedDept.name ||
+      match.description !== selectedDept.description;
+
+    if (shouldUpdate) {
+      setSelectedDept(match);
     }
   }, [departments, selectedDept]);
 
+  useEffect(() => {
+    setSelectedDeptIds((prev) => {
+      const next = new Set([...prev].filter((id) => departments.some((dept) => dept.id === id)));
+      return next;
+    });
+  }, [departments]);
+
   const handleAddDepartment = async (name, description) => {
     if (!name.trim() || !selectedCompany?.id) return;
+
+    if (isCreatingDept) return;
+    setIsCreatingDept(true);
 
     try {
       await createOrganization(
@@ -129,9 +166,14 @@ export function CompanyAdminDashboard() {
       );
       setNewDeptName('');
       setNewDeptDesc('');
+      setShowAddDeptDialog(false);
       await fetchOrganizations();
+      notify('Department created successfully.');
     } catch (error) {
       console.error('Failed to create department:', error);
+      notify('Failed to create department.', 'error');
+    } finally {
+      setIsCreatingDept(false);
     }
   };
 
@@ -139,24 +181,41 @@ export function CompanyAdminDashboard() {
     if (!newCompanyName.trim()) return;
 
     try {
-      await createOrganization(
+      const createdCompany = await createOrganization(
         {
           org_name: newCompanyName.trim(),
+          company_code: newCompanyCode.trim() || null,
           org_description: newCompanyDesc,
           created_by: updatedBy,
         },
         token
       );
+      setNewCompanyCode('');
       setNewCompanyName('');
       setNewCompanyDesc('');
       await fetchOrganizations();
+      if (createdCompany?.org_id) {
+        setCompanyScopeId(createdCompany.org_id);
+        setSelectedCompany({
+          id: createdCompany.org_id,
+          name: createdCompany.org_name,
+          description: createdCompany.org_description,
+          created_at: createdCompany.created_at,
+          departments_count: 0,
+        });
+      }
+      notify('Company created successfully.');
     } catch (error) {
       console.error('Failed to create company:', error);
+      notify('Failed to create company.', 'error');
     }
   };
 
   const handleEditDept = async (name, description) => {
     if (!editingDept || !name.trim()) return;
+
+    if (isUpdatingDept) return;
+    setIsUpdatingDept(true);
 
     try {
       await updateOrganization(
@@ -171,33 +230,139 @@ export function CompanyAdminDashboard() {
       setShowEditDialog(false);
       setEditingDept(null);
       await fetchOrganizations();
+      notify('Department updated successfully.');
     } catch (error) {
       console.error('Failed to update department:', error);
+      notify('Failed to update department.', 'error');
+    } finally {
+      setIsUpdatingDept(false);
     }
   };
 
   const handleDeleteDept = async () => {
     if (!selectedDept) return;
 
+    if (isDeletingDept) return;
+    setIsDeletingDept(true);
+
     try {
       await deleteOrganization(selectedDept.id, token);
+      setSelectedDeptIds((prev) => {
+        const next = new Set(prev);
+        next.delete(selectedDept.id);
+        return next;
+      });
       setSelectedDept(null);
       setShowDeleteDialog(false);
       await fetchOrganizations();
+      notify('Department deleted successfully.');
     } catch (error) {
       console.error('Failed to delete department:', error);
+      notify('Failed to delete department.', 'error');
+    } finally {
+      setIsDeletingDept(false);
+    }
+  };
+
+  const toggleDeptSelection = (deptId) => {
+    setSelectedDeptIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(deptId)) {
+        next.delete(deptId);
+      } else {
+        next.add(deptId);
+      }
+      return next;
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    const ids = Array.from(selectedDeptIds);
+    if (ids.length === 0) return;
+
+    if (isBulkDeleting) return;
+    setIsBulkDeleting(true);
+
+    try {
+      await Promise.all(ids.map((id) => deleteOrganization(id, token)));
+      setSelectedDeptIds(new Set());
+      setShowBulkDeleteDialog(false);
+      setBulkDeleteConfirmText('');
+      setSelectedDept(null);
+      await fetchOrganizations();
+      notify(`${ids.length} department${ids.length === 1 ? '' : 's'} deleted successfully.`);
+    } catch (error) {
+      console.error('Failed to delete selected departments:', error);
+      notify('Failed to delete selected departments.', 'error');
+    } finally {
+      setIsBulkDeleting(false);
     }
   };
 
   const filteredDepts = departments.filter((dept) => {
     const matchesSearch = dept.name.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = activeFilter === 'all' || dept.status === activeFilter;
-    return matchesSearch && matchesFilter;
+    return matchesSearch;
   });
+
+  const notify = (message, variant = 'success') => {
+    setNotificationMessage(message);
+    setNotificationVariant(variant);
+    setShowNotification(true);
+    setTimeout(() => setShowNotification(false), 4000);
+  };
+
+  const handleOuInputChange = (setter, allowNewlines = false, transform = null) => (event) => {
+    const sanitized = sanitizeOuText(event.target.value, allowNewlines);
+    setter(transform ? transform(sanitized) : sanitized);
+  };
+
+  const handleOuPaste = (allowNewlines = false, transform = null) => (event) => {
+    handlePaste(event, (value) => {
+      const sanitized = sanitizeOuText(value, allowNewlines);
+      return transform ? transform(sanitized) : sanitized;
+    });
+  };
+
+  const handleOuKeyDown = (allowEnter = false) => (event) => {
+    handleRestrictedKeyDown(event, { allowEnter });
+  };
 
 
   return (
     <div>
+      {showNotification && (
+        <div className="fixed top-4 right-4 z-50 w-full max-w-md">
+          {notificationVariant === 'error' ? (
+            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-emerald-500/45 border border-emerald-400/80 rounded-lg p-4 backdrop-blur-sm shadow-2xl ring-1 ring-emerald-300/60">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div className="lg:col-span-2">
           <Card
@@ -223,78 +388,72 @@ export function CompanyAdminDashboard() {
                   {activeTab === 'departments' ? 'Organization Units' : 'Organizational Entities'}
                 </p>
               </div>
-              <Dialog>
-                <DialogTrigger asChild>
-                  <Button size="sm" className="gap-1 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
-                    <Plus className="h-3 w-3" />
-                    New
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>{activeTab === 'departments' ? 'Add Department' : 'Add Company'}</DialogTitle>
-                  </DialogHeader>
-                  {activeTab === 'departments' ? (
+              {activeTab === 'departments' && (
+                <Dialog
+                  open={showAddDeptDialog}
+                  onOpenChange={(open) => {
+                    if (isCreatingDept) return;
+                    setShowAddDeptDialog(open);
+                  }}
+                >
+                  <DialogTrigger asChild>
+                    <Button size="sm" className="gap-1 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
+                      <Plus className="h-3 w-3" />
+                      New
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>Add Department</DialogTitle>
+                    </DialogHeader>
                     <div className="space-y-3">
                       <div>
                         <Label className="text-sm">Name</Label>
                         <Input
                           placeholder="Department name"
                           value={newDeptName}
-                          onChange={(event) => setNewDeptName(event.target.value)}
+                          onChange={handleOuInputChange(setNewDeptName)}
+                          onPaste={handleOuPaste()}
+                          onKeyDown={handleOuKeyDown()}
+                          maxLength={50}
                           className="text-sm"
                         />
                       </div>
                       <div>
                         <Label className="text-sm">Description</Label>
-                        <Input
+                        <Textarea
                           placeholder="Optional"
                           value={newDeptDesc}
-                          onChange={(event) => setNewDeptDesc(event.target.value)}
-                          className="text-sm"
+                          onChange={handleOuInputChange(setNewDeptDesc, true)}
+                          onPaste={handleOuPaste(true)}
+                          onKeyDown={handleOuKeyDown(true)}
+                          maxLength={255}
+                          className="text-sm min-h-[128px]"
                         />
                       </div>
                       <div className="flex gap-2 justify-end pt-2 border-t">
-                        <Button size="sm" variant="outline" className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                          onClick={() => setShowAddDeptDialog(false)}
+                          disabled={isCreatingDept}
+                        >
                           Cancel
                         </Button>
-                        <Button size="sm" className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={() => handleAddDepartment(newDeptName, newDeptDesc)}>
+                        <Button
+                          size="sm"
+                          className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                          onClick={() => handleAddDepartment(newDeptName, newDeptDesc)}
+                          disabled={isCreatingDept}
+                        >
                           Add
                         </Button>
                       </div>
                     </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div>
-                        <Label className="text-sm">Company Name</Label>
-                        <Input
-                          placeholder="Company name"
-                          value={newCompanyName}
-                          onChange={(event) => setNewCompanyName(event.target.value)}
-                          className="text-sm"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-sm">Description</Label>
-                        <Input
-                          placeholder="Optional"
-                          value={newCompanyDesc}
-                          onChange={(event) => setNewCompanyDesc(event.target.value)}
-                          className="text-sm"
-                        />
-                      </div>
-                      <div className="flex gap-2 justify-end pt-2 border-t">
-                        <Button size="sm" variant="outline" className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
-                          Cancel
-                        </Button>
-                        <Button size="sm" className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={handleAddCompany}>
-                          Add
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </DialogContent>
-              </Dialog>
+                  </DialogContent>
+                </Dialog>
+              )}
             </div>
 
             <div className="flex gap-2 mb-2 border-b border-slate-700">
@@ -323,27 +482,12 @@ export function CompanyAdminDashboard() {
             <Input
               placeholder="Search..."
               value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
+              onChange={handleOuInputChange(setSearchTerm)}
+              onPaste={handleOuPaste()}
+              onKeyDown={handleOuKeyDown()}
+              maxLength={50}
               className="h-8 mb-2 text-sm"
             />
-
-            <div className="flex gap-1 mb-2">
-              {['all', 'active', 'inactive'].map((filter) => (
-                <Button
-                  key={filter}
-                  size="sm"
-                  variant={activeFilter === filter ? 'default' : 'outline'}
-                  onClick={() => setActiveFilter(filter)}
-                  className={`text-xs border-slate-600 ${
-                    activeFilter === filter
-                      ? 'bg-fuchsia-600 hover:bg-fuchsia-700 text-white'
-                      : 'bg-slate-700/40 hover:bg-slate-600/60 text-slate-100'
-                  }`}
-                >
-                  {filter === 'all' ? 'All' : filter === 'active' ? 'Active' : 'Inactive'}
-                </Button>
-              ))}
-            </div>
 
             {activeTab === 'departments' ? (
               <div
@@ -359,22 +503,31 @@ export function CompanyAdminDashboard() {
                     className={`p-2 cursor-pointer transition-colors ${
                       selectedDept?.id === dept.id ? 'bg-accent border-primary' : 'hover:bg-accent'
                     }`}
-                    onClick={() => setSelectedDept(dept)}
+                    onClick={() => {
+                      setSelectedDeptIds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(dept.id)) {
+                          next.delete(dept.id);
+                          if (selectedDept?.id === dept.id) {
+                            setSelectedDept(null);
+                          }
+                        } else {
+                          next.add(dept.id);
+                          setSelectedDept(dept);
+                        }
+                        return next;
+                      });
+                    }}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <Checkbox
+                          checked={selectedDeptIds.has(dept.id)}
+                          onCheckedChange={() => toggleDeptSelection(dept.id)}
+                          onClick={(event) => event.stopPropagation()}
+                        />
                         <p className="font-semibold text-sm truncate">{dept.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{dept.users} users</p>
                       </div>
-                      <span
-                        className={`text-xs px-2 py-1 rounded ${
-                          dept.status === 'active'
-                            ? 'bg-emerald-500/20 text-emerald-400'
-                            : 'bg-slate-500/20 text-slate-400'
-                        }`}
-                      >
-                        {dept.status}
-                      </span>
                     </div>
                   </Card>
                 ))}
@@ -415,6 +568,22 @@ export function CompanyAdminDashboard() {
                 )}
               </div>
             )}
+
+            {activeTab === 'departments' && selectedDeptIds.size > 1 && (
+              <div className="flex items-center justify-between mt-2">
+                <p className="text-xs text-slate-400">
+                  {selectedDeptIds.size} selected
+                </p>
+                <Button
+                  size="sm"
+                  className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+                  onClick={() => setShowBulkDeleteDialog(true)}
+                  disabled={isBulkDeleting}
+                >
+                  Delete Selected
+                </Button>
+              </div>
+            )}
           </Card>
         </div>
 
@@ -433,30 +602,21 @@ export function CompanyAdminDashboard() {
                     <p className="text-sm text-foreground">{selectedDept.description}</p>
                   </div>
                 )}
-                <div>
-                  <p className="text-xs text-muted-foreground mb-0.5">Users</p>
-                  <p className="text-sm font-medium text-foreground">{selectedDept.users}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-0.5">Status</p>
-                  <span
-                    className={`text-xs px-2 py-1 rounded ${
-                      selectedDept.status === 'active'
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-slate-500/20 text-slate-400'
-                    }`}
-                  >
-                    {selectedDept.status}
-                  </span>
-                </div>
               </div>
 
               <div className="space-y-1 pt-2 border-t border-border">
-                <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+                <Dialog
+                  open={showEditDialog}
+                  onOpenChange={(open) => {
+                    if (isUpdatingDept) return;
+                    setShowEditDialog(open);
+                  }}
+                >
                   <DialogTrigger asChild>
                     <Button
                       onClick={() => setEditingDept(selectedDept)}
                       className="w-full bg-blue-500/80 hover:bg-blue-500 text-white gap-2 text-sm"
+                      disabled={isUpdatingDept}
                     >
                       <Edit3 className="w-4 h-4" />
                       Edit Department
@@ -471,32 +631,19 @@ export function CompanyAdminDashboard() {
                         ou={editingDept}
                         onEditOU={handleEditDept}
                         onCancel={() => setShowEditDialog(false)}
+                        isSaving={isUpdatingDept}
                       />
                     )}
                   </DialogContent>
                 </Dialog>
 
-                <Dialog open={showManageMembersDialog} onOpenChange={setShowManageMembersDialog}>
-                  <DialogTrigger asChild>
-                    <Button className="w-full !bg-indigo-500/80 hover:!bg-indigo-500 !text-white gap-2 text-sm">
-                      <Users className="w-4 h-4" />
-                      Manage Members
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="bg-slate-800 border-slate-700 max-w-2xl">
-                    <DialogHeader>
-                      <DialogTitle className="text-white">Manage Department Members</DialogTitle>
-                    </DialogHeader>
-                    {selectedDept && (
-                      <ManageMembersDialog
-                        dept={selectedDept}
-                        onClose={() => setShowManageMembersDialog(false)}
-                      />
-                    )}
-                  </DialogContent>
-                </Dialog>
-
-                <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+                <Dialog
+                  open={showDeleteDialog}
+                  onOpenChange={(open) => {
+                    if (isDeletingDept) return;
+                    setShowDeleteDialog(open);
+                  }}
+                >
                   <DialogTrigger asChild>
                     <Button
                       className="w-full !bg-red-500/80 hover:!bg-red-500 !text-white gap-2 text-sm"
@@ -522,12 +669,14 @@ export function CompanyAdminDashboard() {
                           variant="outline"
                           onClick={() => setShowDeleteDialog(false)}
                           className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+                          disabled={isDeletingDept}
                         >
                           Cancel
                         </Button>
                         <Button
                           onClick={handleDeleteDept}
-                          className="bg-red-500/80 hover:bg-red-500 text-white text-sm"
+                          className="!bg-red-500/80 hover:!bg-red-500 !text-white text-sm"
+                          disabled={isDeletingDept}
                         >
                           Delete
                         </Button>
@@ -570,11 +719,71 @@ export function CompanyAdminDashboard() {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={showBulkDeleteDialog}
+        onOpenChange={(open) => {
+          if (isBulkDeleting) return;
+          setShowBulkDeleteDialog(open);
+          if (!open) {
+            setBulkDeleteConfirmText('');
+          }
+        }}
+      >
+        <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Delete Selected Departments</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-white text-sm">
+              You are about to delete {selectedDeptIds.size} department{selectedDeptIds.size === 1 ? '' : 's'}. This action cannot be undone.
+            </p>
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+              <p className="text-sm text-red-300">Warning: This will permanently delete the selected departments.</p>
+            </div>
+            <div>
+              <Label className="text-xs text-slate-400">Type CONFIRM to continue</Label>
+              <Input
+                value={bulkDeleteConfirmText}
+                onChange={handleOuInputChange(setBulkDeleteConfirmText, false, (value) => value.toUpperCase())}
+                onPaste={handleOuPaste(false, (value) => value.toUpperCase())}
+                onKeyDown={(event) => {
+                  handleRestrictedKeyDown(event);
+                  if (event.key === 'Enter' && bulkDeleteConfirmText === 'CONFIRM' && !isBulkDeleting) {
+                    event.preventDefault();
+                    handleDeleteSelected();
+                  }
+                }}
+                maxLength={7}
+                placeholder="CONFIRM"
+                className="mt-1"
+              />
+            </div>
+            <div className="flex gap-2 justify-end pt-4 border-t border-border">
+              <Button
+                variant="outline"
+                onClick={() => setShowBulkDeleteDialog(false)}
+                className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+                disabled={isBulkDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleDeleteSelected}
+                className="!bg-red-500/80 hover:!bg-red-500 !text-white text-sm"
+                disabled={bulkDeleteConfirmText !== 'CONFIRM' || isBulkDeleting}
+              >
+                Delete Selected
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function EditDepartmentDialog({ ou, onEditOU, onCancel }) {
+function EditDepartmentDialog({ ou, onEditOU, onCancel, isSaving }) {
   const [name, setName] = useState(ou.name);
   const [description, setDescription] = useState(ou.description || '');
 
@@ -591,18 +800,24 @@ function EditDepartmentDialog({ ou, onEditOU, onCancel }) {
         <Input
           placeholder="Enter department name"
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => setName(sanitizeOuText(event.target.value))}
+          onPaste={(event) => handlePaste(event, sanitizeOuText)}
+          onKeyDown={(event) => handleRestrictedKeyDown(event)}
+          maxLength={50}
           className="bg-input border-border text-foreground text-sm"
         />
       </div>
 
       <div className="space-y-2">
         <Label className="text-foreground text-sm">Description</Label>
-        <Input
+        <Textarea
           placeholder="Enter description"
           value={description}
-          onChange={(event) => setDescription(event.target.value)}
-          className="bg-input border-border text-foreground text-sm"
+          onChange={(event) => setDescription(sanitizeOuText(event.target.value, true))}
+          onPaste={(event) => handlePaste(event, (value) => sanitizeOuText(value, true))}
+          onKeyDown={(event) => handleRestrictedKeyDown(event, { allowEnter: true })}
+          maxLength={255}
+          className="bg-input border-border text-foreground text-sm min-h-[128px]"
         />
       </div>
 
@@ -611,171 +826,17 @@ function EditDepartmentDialog({ ou, onEditOU, onCancel }) {
           variant="outline"
           onClick={onCancel}
           className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+          disabled={isSaving}
         >
           Cancel
         </Button>
-        <Button onClick={handleSave} className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-sm">
+        <Button
+          onClick={handleSave}
+          className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-sm"
+          disabled={isSaving}
+        >
           Save Changes
         </Button>
-      </div>
-    </div>
-  );
-}
-
-function ManageMembersDialog({ dept, onClose }) {
-  const [newMemberName, setNewMemberName] = useState('');
-  const [newMemberEmail, setNewMemberEmail] = useState('');
-  const [selectedMembers, setSelectedMembers] = useState(new Set());
-  const [activeTab, setActiveTab] = useState('current');
-
-  const members = dept.members || [];
-
-  const handleAddMember = () => {
-    if (newMemberName.trim() && newMemberEmail.trim()) {
-      setNewMemberName('');
-      setNewMemberEmail('');
-    }
-  };
-
-  const handleRemoveMember = () => {};
-
-  const toggleMemberSelection = (memberId) => {
-    const newSelected = new Set(selectedMembers);
-    if (newSelected.has(memberId)) {
-      newSelected.delete(memberId);
-    } else {
-      newSelected.add(memberId);
-    }
-    setSelectedMembers(newSelected);
-  };
-
-  return (
-    <div className="space-y-3">
-      <div className="bg-slate-700/50 p-3 rounded-lg border border-slate-600">
-        <p className="text-xs text-slate-400 mb-1">Department</p>
-        <p className="text-sm font-semibold text-white">{dept.name}</p>
-        <p className="text-xs text-slate-400 mt-2">{members.length} member(s)</p>
-      </div>
-
-      <div className="flex gap-2 border-b border-border">
-        <button
-          onClick={() => setActiveTab('current')}
-          className={`px-3 py-2 text-sm font-medium transition-colors ${
-            activeTab === 'current'
-              ? 'text-primary border-b-2 border-primary -mb-0.5'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          Current Members ({members.length})
-        </button>
-        <button
-          onClick={() => setActiveTab('add')}
-          className={`px-3 py-2 text-sm font-medium transition-colors ${
-            activeTab === 'add'
-              ? 'text-primary border-b-2 border-primary -mb-0.5'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          Add New Member
-        </button>
-      </div>
-
-      {activeTab === 'current' ? (
-        <div className="space-y-2 max-h-80 overflow-y-auto">
-          {members.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-4 text-center">No members in this department</p>
-          ) : (
-            <div className="space-y-2">
-              {members.map((member) => (
-                <div
-                  key={member.id}
-                  className="flex items-center gap-3 p-3 bg-card border border-border rounded-lg hover:bg-muted/30 transition-colors"
-                >
-                  <Checkbox
-                    checked={selectedMembers.has(member.id)}
-                    onCheckedChange={() => toggleMemberSelection(member.id)}
-                    className="border-primary"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground">{member.name}</p>
-                    <p className="text-xs text-muted-foreground">{member.email}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <Badge
-                        variant="outline"
-                        className={
-                          member.role === 'manager'
-                            ? 'bg-primary/20 text-primary border-primary/30'
-                            : 'bg-secondary/20 text-secondary border-secondary/30'
-                        }
-                      >
-                        {member.role === 'manager' ? 'Manager' : 'Member'}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">Joined {member.joinedDate}</span>
-                    </div>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleRemoveMember(member.id)}
-                    className="text-destructive hover:bg-destructive/10"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div>
-            <Label className="text-sm text-white">Member Name</Label>
-            <Input
-              placeholder="Enter member name"
-              value={newMemberName}
-              onChange={(event) => setNewMemberName(event.target.value)}
-              className="bg-slate-700 border-slate-600 text-white mt-1 text-sm"
-            />
-          </div>
-          <div>
-            <Label className="text-sm text-white">Email Address</Label>
-            <Input
-              placeholder="Enter email address"
-              type="email"
-              value={newMemberEmail}
-              onChange={(event) => setNewMemberEmail(event.target.value)}
-              className="bg-slate-700 border-slate-600 text-white mt-1 text-sm"
-            />
-          </div>
-          <Button
-            onClick={handleAddMember}
-            className="w-full bg-fuchsia-600 hover:bg-fuchsia-700 text-white gap-2 text-sm"
-          >
-            <Plus className="w-4 h-4" />
-            Add Member
-          </Button>
-        </div>
-      )}
-
-      <div className="flex gap-2 justify-end pt-3 border-t border-border">
-        <Button
-          variant="outline"
-          onClick={onClose}
-          className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
-        >
-          Close
-        </Button>
-        {activeTab === 'current' && selectedMembers.size > 0 && (
-          <Button
-            variant="ghost"
-            className="text-red-300 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-sm"
-            onClick={() => {
-              setSelectedMembers(new Set());
-            }}
-          >
-            Remove Selected ({selectedMembers.size})
-          </Button>
-        )}
       </div>
     </div>
   );

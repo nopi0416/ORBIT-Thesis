@@ -11,11 +11,13 @@ import {
   Input,
   Label,
 } from '../ui';
-import { Plus, Edit3, Power } from 'lucide-react';
+import { Plus, Edit3 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { handlePaste, handleRestrictedKeyDown, sanitizeOuText } from '../../utils/inputSanitizer';
 import {
   createGeo,
   createLocation,
+  deleteLocation,
   getGeoList,
   getLocations,
   updateGeo,
@@ -26,7 +28,6 @@ const buildGeoTree = (geoRows = [], locationRows = []) => {
   geoRows.forEach((geo) => {
     geoMap[geo.geo_id] = {
       ...geo,
-      status: 'active',
       locations: [],
       locations_count: 0,
     };
@@ -37,7 +38,6 @@ const buildGeoTree = (geoRows = [], locationRows = []) => {
     if (geo) {
       geo.locations.push({
         ...location,
-        status: 'active',
       });
     }
   });
@@ -57,12 +57,22 @@ export function GeographyManagement() {
   const [showAddGeoDialog, setShowAddGeoDialog] = useState(false);
   const [showEditGeoDialog, setShowEditGeoDialog] = useState(false);
   const [showAddLocationDialog, setShowAddLocationDialog] = useState(false);
+  const [showDeleteLocationDialog, setShowDeleteLocationDialog] = useState(false);
+  const [isDeletingLocation, setIsDeletingLocation] = useState(false);
+  const [isCreatingGeo, setIsCreatingGeo] = useState(false);
+  const [isCreatingLocation, setIsCreatingLocation] = useState(false);
+  const [isUpdatingGeo, setIsUpdatingGeo] = useState(false);
   const [newGeoCode, setNewGeoCode] = useState('');
   const [newGeoName, setNewGeoName] = useState('');
   const [newLocationCode, setNewLocationCode] = useState('');
   const [newLocationName, setNewLocationName] = useState('');
   const [editGeoCode, setEditGeoCode] = useState('');
   const [editGeoName, setEditGeoName] = useState('');
+  const [selectedLocation, setSelectedLocation] = useState(null);
+  const [deleteLocationConfirmText, setDeleteLocationConfirmText] = useState('');
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [notificationVariant, setNotificationVariant] = useState('success');
 
   const token = localStorage.getItem('authToken');
   const updatedBy = user?.id || user?.email || user?.name || 'system';
@@ -86,25 +96,87 @@ export function GeographyManagement() {
   }, []);
 
   useEffect(() => {
-    if (selectedGeo) {
-      const match = geos.find((geo) => geo.geo_id === selectedGeo.geo_id);
-      if (!match) {
-        setSelectedGeo(null);
-      } else if (match !== selectedGeo) {
-        setSelectedGeo(match);
-      }
+    if (!selectedGeo) return;
+
+    const match = geos.find((geo) => geo.geo_id === selectedGeo.geo_id);
+    if (!match) {
+      setSelectedGeo(null);
+      return;
+    }
+
+    const shouldUpdate =
+      match.geo_name !== selectedGeo.geo_name ||
+      match.geo_code !== selectedGeo.geo_code ||
+      match.created_at !== selectedGeo.created_at ||
+      match.locations_count !== selectedGeo.locations_count;
+
+    if (shouldUpdate) {
+      setSelectedGeo(match);
     }
   }, [geos, selectedGeo]);
+
+  useEffect(() => {
+    if (!selectedGeo) {
+      setSelectedLocation(null);
+      return;
+    }
+
+    if (!selectedLocation) return;
+
+    const match = selectedGeo.locations?.find(
+      (location) => location.location_id === selectedLocation.location_id
+    );
+
+    if (!match) {
+      setSelectedLocation(null);
+      return;
+    }
+
+    const shouldUpdate =
+      match.location_name !== selectedLocation.location_name ||
+      match.location_code !== selectedLocation.location_code ||
+      match.created_at !== selectedLocation.created_at;
+
+    if (shouldUpdate) {
+      setSelectedLocation(match);
+    }
+  }, [selectedGeo, selectedLocation]);
 
   const filteredGeos = geos.filter((geo) =>
     geo.geo_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     geo.geo_code.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const notify = (message, variant = 'success') => {
+    setNotificationMessage(message);
+    setNotificationVariant(variant);
+    setShowNotification(true);
+    setTimeout(() => setShowNotification(false), 4000);
+  };
+
+  const handleOuInputChange = (setter, allowNewlines = false, transform = null) => (event) => {
+    const sanitized = sanitizeOuText(event.target.value, allowNewlines);
+    setter(transform ? transform(sanitized) : sanitized);
+  };
+
+  const handleOuPaste = (allowNewlines = false, transform = null) => (event) => {
+    handlePaste(event, (value) => {
+      const sanitized = sanitizeOuText(value, allowNewlines);
+      return transform ? transform(sanitized) : sanitized;
+    });
+  };
+
+  const handleOuKeyDown = (allowEnter = false) => (event) => {
+    handleRestrictedKeyDown(event, { allowEnter });
+  };
+
   const handleAddGeo = async () => {
     if (!newGeoCode.trim() || !newGeoName.trim() || !newLocationCode.trim() || !newLocationName.trim()) {
       return;
     }
+
+    if (isCreatingGeo) return;
+    setIsCreatingGeo(true);
 
     try {
       const geo = await createGeo(
@@ -134,13 +206,20 @@ export function GeographyManagement() {
       setNewLocationCode('');
       setNewLocationName('');
       await fetchGeography();
+      notify('Geo created successfully.');
     } catch (error) {
       console.error('Failed to create geo:', error);
+      notify('Failed to create geo.', 'error');
+    } finally {
+      setIsCreatingGeo(false);
     }
   };
 
   const handleAddLocation = async () => {
     if (!selectedGeo || !newLocationCode.trim() || !newLocationName.trim()) return;
+
+    if (isCreatingLocation) return;
+    setIsCreatingLocation(true);
 
     try {
       await createLocation(
@@ -156,13 +235,41 @@ export function GeographyManagement() {
       setNewLocationCode('');
       setNewLocationName('');
       await fetchGeography();
+      notify('Location added successfully.');
     } catch (error) {
       console.error('Failed to create location:', error);
+      notify('Failed to create location.', 'error');
+    } finally {
+      setIsCreatingLocation(false);
+    }
+  };
+
+  const handleDeleteLocation = async () => {
+    if (!selectedLocation) return;
+
+    if (isDeletingLocation) return;
+    setIsDeletingLocation(true);
+
+    try {
+      await deleteLocation(selectedLocation.location_id, token);
+      setShowDeleteLocationDialog(false);
+      setDeleteLocationConfirmText('');
+      setSelectedLocation(null);
+      await fetchGeography();
+      notify('Location deleted successfully.');
+    } catch (error) {
+      console.error('Failed to delete location:', error);
+      notify('Failed to delete location.', 'error');
+    } finally {
+      setIsDeletingLocation(false);
     }
   };
 
   const handleEditGeo = async () => {
     if (!selectedGeo || !editGeoCode.trim() || !editGeoName.trim()) return;
+
+    if (isUpdatingGeo) return;
+    setIsUpdatingGeo(true);
 
     try {
       await updateGeo(
@@ -172,12 +279,14 @@ export function GeographyManagement() {
       );
       setShowEditGeoDialog(false);
       await fetchGeography();
+      notify('Geo updated successfully.');
     } catch (error) {
       console.error('Failed to update geo:', error);
+      notify('Failed to update geo.', 'error');
+    } finally {
+      setIsUpdatingGeo(false);
     }
   };
-
-  const handleToggleGeoStatus = () => {};
 
   const openEditGeoDialog = () => {
     if (selectedGeo) {
@@ -189,6 +298,39 @@ export function GeographyManagement() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      {showNotification && (
+        <div className="fixed top-4 right-4 z-50 w-full max-w-md">
+          {notificationVariant === 'error' ? (
+            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-emerald-500/45 border border-emerald-400/80 rounded-lg p-4 backdrop-blur-sm shadow-2xl ring-1 ring-emerald-300/60">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="lg:col-span-2">
         <Card
           className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white"
@@ -199,7 +341,13 @@ export function GeographyManagement() {
               <h3 className="font-semibold text-base">Geography</h3>
               <p className="text-xs text-muted-foreground">Regions and Locations</p>
             </div>
-            <Dialog open={showAddGeoDialog} onOpenChange={setShowAddGeoDialog}>
+            <Dialog
+              open={showAddGeoDialog}
+              onOpenChange={(open) => {
+                if (isCreatingGeo) return;
+                setShowAddGeoDialog(open);
+              }}
+            >
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
                   <Plus className="h-3 w-3" />
@@ -218,7 +366,10 @@ export function GeographyManagement() {
                       id="geoCode"
                       placeholder="e.g., APAC"
                       value={newGeoCode}
-                      onChange={(event) => setNewGeoCode(event.target.value)}
+                      onChange={handleOuInputChange(setNewGeoCode)}
+                      onPaste={handleOuPaste()}
+                      onKeyDown={handleOuKeyDown()}
+                      maxLength={10}
                     />
                   </div>
                   <div>
@@ -227,7 +378,10 @@ export function GeographyManagement() {
                       id="geoName"
                       placeholder="e.g., Asia Pacific"
                       value={newGeoName}
-                      onChange={(event) => setNewGeoName(event.target.value)}
+                      onChange={handleOuInputChange(setNewGeoName)}
+                      onPaste={handleOuPaste()}
+                      onKeyDown={handleOuKeyDown()}
+                      maxLength={50}
                     />
                   </div>
                   <div className="pt-2 border-t">
@@ -239,7 +393,10 @@ export function GeographyManagement() {
                           id="locCode"
                           placeholder="e.g., SG"
                           value={newLocationCode}
-                          onChange={(event) => setNewLocationCode(event.target.value)}
+                          onChange={handleOuInputChange(setNewLocationCode)}
+                          onPaste={handleOuPaste()}
+                          onKeyDown={handleOuKeyDown()}
+                          maxLength={10}
                           size={6}
                         />
                       </div>
@@ -249,16 +406,30 @@ export function GeographyManagement() {
                           id="locName"
                           placeholder="e.g., Singapore"
                           value={newLocationName}
-                          onChange={(event) => setNewLocationName(event.target.value)}
+                          onChange={handleOuInputChange(setNewLocationName)}
+                          onPaste={handleOuPaste()}
+                          onKeyDown={handleOuKeyDown()}
+                          maxLength={50}
                         />
                       </div>
                     </div>
                   </div>
                   <div className="flex gap-2 justify-end">
-                    <Button size="sm" variant="outline" onClick={() => setShowAddGeoDialog(false)} className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowAddGeoDialog(false)}
+                      className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                      disabled={isCreatingGeo}
+                    >
                       Cancel
                     </Button>
-                    <Button size="sm" className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={handleAddGeo}>
+                    <Button
+                      size="sm"
+                      className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                      onClick={handleAddGeo}
+                      disabled={isCreatingGeo}
+                    >
                       Create
                     </Button>
                   </div>
@@ -270,7 +441,10 @@ export function GeographyManagement() {
           <Input
             placeholder="Search..."
             value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
+            onChange={handleOuInputChange(setSearchTerm)}
+            onPaste={handleOuPaste()}
+            onKeyDown={handleOuKeyDown()}
+            maxLength={50}
             className="h-8 mb-2 text-sm"
           />
 
@@ -296,15 +470,6 @@ export function GeographyManagement() {
                   </div>
                   <div className="flex items-center gap-1">
                     <Badge variant="outline" className="text-xs">{geo.locations_count}</Badge>
-                    <span
-                      className={`text-xs px-2 py-1 rounded ${
-                        geo.status === 'active'
-                          ? 'bg-emerald-500/20 text-emerald-400'
-                          : 'bg-slate-500/20 text-slate-400'
-                      }`}
-                    >
-                      {geo.status}
-                    </span>
                   </div>
                 </div>
               </Card>
@@ -326,15 +491,6 @@ export function GeographyManagement() {
                   <h3 className="font-semibold text-base truncate">{selectedGeo.geo_name}</h3>
                   <p className="text-xs text-slate-400 truncate">{selectedGeo.geo_code}</p>
                 </div>
-                <span
-                  className={`text-xs px-2 py-1 rounded ${
-                    selectedGeo.status === 'active'
-                      ? 'bg-emerald-500/20 text-emerald-400'
-                      : 'bg-slate-500/20 text-slate-400'
-                  }`}
-                >
-                  {selectedGeo.status}
-                </span>
               </div>
 
               <div className="space-y-2 text-sm">
@@ -354,21 +510,24 @@ export function GeographyManagement() {
               >
                 {selectedGeo.locations && selectedGeo.locations.length > 0 ? (
                   selectedGeo.locations.map((location) => (
-                    <div key={location.location_id} className="p-2 bg-muted rounded border border-border/50">
+                    <div
+                      key={location.location_id}
+                      className={`p-2 rounded border cursor-pointer transition-colors ${
+                        selectedLocation?.location_id === location.location_id
+                          ? 'bg-slate-700/60 border-fuchsia-500/60'
+                          : 'bg-muted border-border/50 hover:bg-slate-700/40'
+                      }`}
+                      onClick={() => {
+                        setSelectedLocation((prev) =>
+                          prev?.location_id === location.location_id ? null : location
+                        );
+                      }}
+                    >
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <p className="font-medium text-xs truncate">{location.location_name}</p>
                           <p className="text-xs text-slate-400 truncate">{location.location_code}</p>
                         </div>
-                        <span
-                          className={`text-xs px-2 py-1 rounded ${
-                            location.status === 'active'
-                              ? 'bg-emerald-500/20 text-emerald-400'
-                              : 'bg-slate-500/20 text-slate-400'
-                          }`}
-                        >
-                          {location.status}
-                        </span>
                       </div>
                     </div>
                   ))
@@ -377,7 +536,96 @@ export function GeographyManagement() {
                 )}
               </div>
 
-              <Dialog open={showAddLocationDialog} onOpenChange={setShowAddLocationDialog}>
+              {selectedLocation && (
+                <div className="border-t pt-3 space-y-2">
+                  <div>
+                    <Label className="text-xs text-slate-400">Location Name</Label>
+                    <p className="text-sm text-white">{selectedLocation.location_name}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-400">Location Code</Label>
+                    <p className="text-sm text-white">{selectedLocation.location_code}</p>
+                  </div>
+                  {selectedLocation.created_at && (
+                    <div>
+                      <Label className="text-xs text-slate-400">Created</Label>
+                      <p className="text-sm text-white">{selectedLocation.created_at}</p>
+                    </div>
+                  )}
+
+                  <Dialog
+                    open={showDeleteLocationDialog}
+                    onOpenChange={(open) => {
+                      if (isDeletingLocation) return;
+                      setShowDeleteLocationDialog(open);
+                      if (!open) {
+                        setDeleteLocationConfirmText('');
+                      }
+                    }}
+                  >
+                    <DialogTrigger asChild>
+                      <Button size="sm" className="w-full !bg-red-500/80 hover:!bg-red-500 !text-white text-xs">
+                        Delete Location
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="bg-slate-800 border-slate-700">
+                      <DialogHeader>
+                        <DialogTitle className="text-destructive">Delete Location</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4">
+                        <p className="text-sm text-white">
+                          Delete <span className="font-semibold">{selectedLocation.location_name}</span>? This action cannot be undone.
+                        </p>
+                        <div>
+                          <Label className="text-xs text-slate-400">Type CONFIRM to continue</Label>
+                          <Input
+                            value={deleteLocationConfirmText}
+                            onChange={handleOuInputChange(setDeleteLocationConfirmText, false, (value) => value.toUpperCase())}
+                            onPaste={handleOuPaste(false, (value) => value.toUpperCase())}
+                            onKeyDown={(event) => {
+                              handleRestrictedKeyDown(event);
+                              if (event.key === 'Enter' && deleteLocationConfirmText === 'CONFIRM' && !isDeletingLocation) {
+                                event.preventDefault();
+                                handleDeleteLocation();
+                              }
+                            }}
+                            maxLength={7}
+                            placeholder="CONFIRM"
+                            className="mt-1"
+                          />
+                        </div>
+                        <div className="flex gap-2 justify-end pt-2 border-t border-border">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setShowDeleteLocationDialog(false)}
+                            className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                            disabled={isDeletingLocation}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="sm"
+                            className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+                            onClick={handleDeleteLocation}
+                            disabled={deleteLocationConfirmText !== 'CONFIRM' || isDeletingLocation}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+              )}
+
+              <Dialog
+                open={showAddLocationDialog}
+                onOpenChange={(open) => {
+                  if (isCreatingLocation) return;
+                  setShowAddLocationDialog(open);
+                }}
+              >
                 <DialogTrigger asChild>
                   <Button size="sm" className="gap-1 w-full text-xs !bg-violet-500/80 hover:!bg-violet-500 !text-white">
                     <Plus className="h-3 w-3" />
@@ -395,7 +643,10 @@ export function GeographyManagement() {
                         id="newLocCode"
                         placeholder="e.g., JP"
                         value={newLocationCode}
-                        onChange={(event) => setNewLocationCode(event.target.value)}
+                        onChange={handleOuInputChange(setNewLocationCode)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={10}
                       />
                     </div>
                     <div>
@@ -404,14 +655,28 @@ export function GeographyManagement() {
                         id="newLocName"
                         placeholder="e.g., Japan"
                         value={newLocationName}
-                        onChange={(event) => setNewLocationName(event.target.value)}
+                        onChange={handleOuInputChange(setNewLocationName)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={50}
                       />
                     </div>
                     <div className="flex gap-2 justify-end">
-                      <Button size="sm" variant="outline" onClick={() => setShowAddLocationDialog(false)} className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setShowAddLocationDialog(false)}
+                        className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                        disabled={isCreatingLocation}
+                      >
                         Cancel
                       </Button>
-                      <Button size="sm" className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={handleAddLocation}>
+                      <Button
+                        size="sm"
+                        className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                        onClick={handleAddLocation}
+                        disabled={isCreatingLocation}
+                      >
                         Add
                       </Button>
                     </div>
@@ -424,20 +689,6 @@ export function GeographyManagement() {
                   <Edit3 className="h-3 w-3" />
                   Edit
                 </Button>
-                <Button
-                  size="sm"
-                  onClick={handleToggleGeoStatus}
-                  variant={selectedGeo.status === 'active' ? 'destructive' : 'outline'}
-                  disabled
-                  className={`gap-1 w-full text-xs ${
-                    selectedGeo.status === 'active'
-                      ? 'bg-red-500/80 hover:bg-red-500 text-white'
-                      : 'bg-emerald-500/80 hover:bg-emerald-500 text-white'
-                  } opacity-60 cursor-not-allowed`}
-                >
-                  <Power className="h-3 w-3" />
-                  {selectedGeo.status === 'active' ? 'Deactivate' : 'Reactivate'}
-                </Button>
               </div>
             </div>
           ) : (
@@ -449,7 +700,13 @@ export function GeographyManagement() {
       </div>
 
       {showEditGeoDialog && selectedGeo && (
-        <Dialog open={showEditGeoDialog} onOpenChange={setShowEditGeoDialog}>
+        <Dialog
+          open={showEditGeoDialog}
+          onOpenChange={(open) => {
+            if (isUpdatingGeo) return;
+            setShowEditGeoDialog(open);
+          }}
+        >
           <DialogContent className="bg-slate-800 border-slate-700">
             <DialogHeader>
               <DialogTitle className="text-white">Edit Geo</DialogTitle>
@@ -457,17 +714,42 @@ export function GeographyManagement() {
             <div className="space-y-3">
               <div>
                 <Label htmlFor="editGeoCode">Code</Label>
-                <Input id="editGeoCode" value={editGeoCode} onChange={(event) => setEditGeoCode(event.target.value)} />
+                <Input
+                  id="editGeoCode"
+                  value={editGeoCode}
+                  onChange={handleOuInputChange(setEditGeoCode)}
+                  onPaste={handleOuPaste()}
+                  onKeyDown={handleOuKeyDown()}
+                  maxLength={10}
+                />
               </div>
               <div>
                 <Label htmlFor="editGeoName">Name</Label>
-                <Input id="editGeoName" value={editGeoName} onChange={(event) => setEditGeoName(event.target.value)} />
+                <Input
+                  id="editGeoName"
+                  value={editGeoName}
+                  onChange={handleOuInputChange(setEditGeoName)}
+                  onPaste={handleOuPaste()}
+                  onKeyDown={handleOuKeyDown()}
+                  maxLength={50}
+                />
               </div>
               <div className="flex gap-2 justify-end">
-                <Button size="sm" variant="outline" onClick={() => setShowEditGeoDialog(false)} className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowEditGeoDialog(false)}
+                  className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                  disabled={isUpdatingGeo}
+                >
                   Cancel
                 </Button>
-                <Button size="sm" className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={handleEditGeo}>
+                <Button
+                  size="sm"
+                  className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                  onClick={handleEditGeo}
+                  disabled={isUpdatingGeo}
+                >
                   Save
                 </Button>
               </div>

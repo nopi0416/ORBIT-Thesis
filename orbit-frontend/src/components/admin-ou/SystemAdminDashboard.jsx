@@ -3,6 +3,7 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogHeader,
@@ -14,9 +15,11 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  Textarea,
 } from '../ui';
 import { ChevronDown, ChevronRight, Plus, Edit3, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { handlePaste, handleRestrictedKeyDown, sanitizeOuText } from '../../utils/inputSanitizer';
 import {
   createOrganization,
   deleteOrganization,
@@ -29,8 +32,6 @@ const buildOrgTree = (orgs = []) => {
   orgs.forEach((org) => {
     orgMap[org.org_id] = {
       ...org,
-      status: 'active',
-      users: 0,
       type: org.parent_org_id ? 'department' : 'company',
       children: [],
     };
@@ -62,25 +63,47 @@ const findOrgById = (nodes, orgId) => {
 export function SystemAdminDashboard() {
   const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeFilter, setActiveFilter] = useState('all');
   const [activeTab, setActiveTab] = useState('organizations');
   const [selectedOrg, setSelectedOrg] = useState(null);
+  const [selectedOrgIds, setSelectedOrgIds] = useState(new Set());
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [editingOrg, setEditingOrg] = useState(null);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+  const [isDeletingOrg, setIsDeletingOrg] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+  const [isCreatingDept, setIsCreatingDept] = useState(false);
+  const [isBulkAddingDept, setIsBulkAddingDept] = useState(false);
+  const [isUpdatingOrg, setIsUpdatingOrg] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [bulkDeleteConfirmText, setBulkDeleteConfirmText] = useState('');
   const [showAddOrgDialog, setShowAddOrgDialog] = useState(false);
   const [showAddDeptDialog, setShowAddDeptDialog] = useState(false);
+  const [showConfirmAddDept, setShowConfirmAddDept] = useState(false);
+  const [confirmDeptLabel, setConfirmDeptLabel] = useState('');
+  const [pendingDeptAction, setPendingDeptAction] = useState(null);
   const [organizationData, setOrganizationData] = useState([]);
+  const [newOrgCode, setNewOrgCode] = useState('');
   const [newOrgName, setNewOrgName] = useState('');
   const [newOrgDesc, setNewOrgDesc] = useState('');
   const [newDeptName, setNewDeptName] = useState('');
   const [newDeptDesc, setNewDeptDesc] = useState('');
+  const [newDeptParentId, setNewDeptParentId] = useState('');
+  const [bulkDepartments, setBulkDepartments] = useState([]);
+  const [bulkFileName, setBulkFileName] = useState('');
+  const [bulkFileError, setBulkFileError] = useState('');
   const [editOrgName, setEditOrgName] = useState('');
   const [editOrgDesc, setEditOrgDesc] = useState('');
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [notificationVariant, setNotificationVariant] = useState('success');
 
   const token = localStorage.getItem('authToken');
-  const createdBy = user?.id || user?.email || user?.name || 'system';
+  const isUuid = (value) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value || '');
+  const createdBy = isUuid(user?.id) ? user.id : null;
 
   const fetchOrganizations = async () => {
     try {
@@ -92,15 +115,92 @@ export function SystemAdminDashboard() {
     }
   };
 
+  const notify = (message, variant = 'success') => {
+    setNotificationMessage(message);
+    setNotificationVariant(variant);
+    setShowNotification(true);
+    setTimeout(() => setShowNotification(false), 4000);
+  };
+
+  const handleOuInputChange = (setter, allowNewlines = false, transform = null) => (event) => {
+    const sanitized = sanitizeOuText(event.target.value, allowNewlines);
+    setter(transform ? transform(sanitized) : sanitized);
+  };
+
+  const handleOuPaste = (allowNewlines = false, transform = null) => (event) => {
+    handlePaste(event, (value) => {
+      const sanitized = sanitizeOuText(value, allowNewlines);
+      return transform ? transform(sanitized) : sanitized;
+    });
+  };
+
+  const handleOuKeyDown = (allowEnter = false) => (event) => {
+    handleRestrictedKeyDown(event, { allowEnter });
+  };
+
+  const getParentCompanyId = () => {
+    if (!selectedOrg) return null;
+    return selectedOrg.type === 'company' ? selectedOrg.org_id : selectedOrg.parent_org_id;
+  };
+
+  const openConfirmAddDept = (label, action) => {
+    setConfirmDeptLabel(label);
+    setPendingDeptAction(() => action);
+    setShowConfirmAddDept(true);
+  };
+
+  const handleConfirmAddDept = async () => {
+    if (!pendingDeptAction) return;
+    if (isCreatingDept || isBulkAddingDept) return;
+    await pendingDeptAction();
+    setShowConfirmAddDept(false);
+    setPendingDeptAction(null);
+  };
+
   useEffect(() => {
     fetchOrganizations();
   }, []);
 
   useEffect(() => {
-    if (selectedOrg && !findOrgById(organizationData, selectedOrg.org_id)) {
+    if (!selectedOrg) return;
+
+    const match = findOrgById(organizationData, selectedOrg.org_id);
+    if (!match) {
       setSelectedOrg(null);
+      return;
+    }
+
+    const shouldUpdate =
+      match.org_name !== selectedOrg.org_name ||
+      match.org_description !== selectedOrg.org_description ||
+      match.company_code !== selectedOrg.company_code ||
+      match.parent_org_id !== selectedOrg.parent_org_id ||
+      match.type !== selectedOrg.type ||
+      match.created_at !== selectedOrg.created_at;
+
+    if (shouldUpdate) {
+      setSelectedOrg(match);
     }
   }, [organizationData, selectedOrg]);
+
+  useEffect(() => {
+    if (selectedOrgIds.size > 0) {
+      const existing = new Set();
+      const collectIds = (nodes) => {
+        nodes.forEach((node) => {
+          existing.add(node.org_id);
+          if (node.children?.length) {
+            collectIds(node.children);
+          }
+        });
+      };
+      collectIds(organizationData);
+      const filtered = new Set([...selectedOrgIds].filter((id) => existing.has(id)));
+      if (filtered.size !== selectedOrgIds.size) {
+        setSelectedOrgIds(filtered);
+      }
+    }
+  }, [organizationData, selectedOrgIds]);
 
   const toggleExpand = (id) => {
     const newExpanded = new Set(expandedIds);
@@ -117,10 +217,9 @@ export function SystemAdminDashboard() {
       .map((node) => {
         const children = getFilteredOUs(node.children);
         const nodeMatches = node.org_name.toLowerCase().includes(searchTerm.toLowerCase());
-        const statusMatches = activeFilter === 'all' || node.status === activeFilter;
         const childHasMatch = children.length > 0;
 
-        if (nodeMatches && statusMatches) {
+        if (nodeMatches) {
           return { ...node, children };
         }
 
@@ -137,45 +236,95 @@ export function SystemAdminDashboard() {
   const handleDeleteOrg = async () => {
     if (!selectedOrg) return;
 
+    if (isDeletingOrg) return;
+    setIsDeletingOrg(true);
+
     try {
       await deleteOrganization(selectedOrg.org_id, token);
       await fetchOrganizations();
       setSelectedOrg(null);
+      setSelectedOrgIds((prev) => {
+        const next = new Set(prev);
+        next.delete(selectedOrg.org_id);
+        return next;
+      });
       setShowDeleteDialog(false);
+      setDeleteConfirmText('');
+      notify('Organization deleted successfully.');
     } catch (error) {
       console.error('Failed to delete organization:', error);
+      notify('Failed to delete organization.', 'error');
+    } finally {
+      setIsDeletingOrg(false);
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedOrgIds.size === 0) return;
+
+    if (isBulkDeleting) return;
+    setIsBulkDeleting(true);
+
+    try {
+      for (const orgId of selectedOrgIds) {
+        await deleteOrganization(orgId, token);
+      }
+      setSelectedOrgIds(new Set());
+      setShowBulkDeleteDialog(false);
+      setBulkDeleteConfirmText('');
+      await fetchOrganizations();
+      notify('Selected organizations deleted successfully.');
+    } catch (error) {
+      console.error('Failed to delete selected organizations:', error);
+      notify('Failed to delete selected organizations.', 'error');
+    } finally {
+      setIsBulkDeleting(false);
     }
   };
 
   const handleCreateOrg = async () => {
     if (!newOrgName.trim()) return;
 
+    if (isCreatingOrg) return;
+    setIsCreatingOrg(true);
+
     try {
       await createOrganization(
         {
           org_name: newOrgName.trim(),
+          company_code: newOrgCode.trim() || null,
           org_description: newOrgDesc.trim(),
           created_by: createdBy,
         },
         token
       );
+      setNewOrgCode('');
       setNewOrgName('');
       setNewOrgDesc('');
       setShowAddOrgDialog(false);
       await fetchOrganizations();
+      notify('Company added successfully.');
     } catch (error) {
       console.error('Failed to create organization:', error);
+    } finally {
+      setIsCreatingOrg(false);
     }
   };
 
   const handleCreateDept = async () => {
     if (!selectedOrg || !newDeptName.trim()) return;
 
-    const parentOrgId = selectedOrg.type === 'company'
-      ? selectedOrg.org_id
-      : selectedOrg.parent_org_id;
+    const parentOrgId = getParentCompanyId();
+    const parentCompanyCode = selectedOrg.type === 'company'
+      ? selectedOrg.company_code
+      : selectedOrg.parent_org_id
+        ? organizationData.find((org) => org.org_id === selectedOrg.parent_org_id)?.company_code
+        : null;
 
     if (!parentOrgId) return;
+
+    if (isCreatingDept) return;
+    setIsCreatingDept(true);
 
     try {
       await createOrganization(
@@ -183,21 +332,161 @@ export function SystemAdminDashboard() {
           org_name: newDeptName.trim(),
           org_description: newDeptDesc.trim(),
           parent_org_id: parentOrgId,
+          company_code: parentCompanyCode || null,
           created_by: createdBy,
         },
         token
       );
       setNewDeptName('');
       setNewDeptDesc('');
+      setShowAddOrgDialog(false);
       setShowAddDeptDialog(false);
       await fetchOrganizations();
+      notify('Department added successfully.');
     } catch (error) {
       console.error('Failed to create department:', error);
+    } finally {
+      setIsCreatingDept(false);
     }
+  };
+
+  const handleCreateDeptFromTab = async () => {
+    if (!newDeptParentId || !newDeptName.trim() || !newDeptDesc.trim()) return;
+
+    const parentCompany = findOrgById(organizationData, newDeptParentId);
+    if (!parentCompany || parentCompany.type !== 'company') return;
+
+    if (isCreatingDept) return;
+    setIsCreatingDept(true);
+
+    try {
+      await createOrganization(
+        {
+          org_name: newDeptName.trim(),
+          org_description: newDeptDesc.trim(),
+          parent_org_id: parentCompany.org_id,
+          company_code: parentCompany.company_code || null,
+          created_by: createdBy,
+        },
+        token
+      );
+      setNewDeptName('');
+      setNewDeptDesc('');
+      setNewDeptParentId('');
+      setShowAddOrgDialog(false);
+      await fetchOrganizations();
+      notify('Department added successfully.');
+    } catch (error) {
+      console.error('Failed to create department:', error);
+    } finally {
+      setIsCreatingDept(false);
+    }
+  };
+
+  const handleBulkFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const rows = lines.map((line) => line.split(',')).filter((parts) => parts.length > 0);
+
+      const hasHeader = rows[0]?.[0]?.toLowerCase().includes('department');
+      const dataRows = hasHeader ? rows.slice(1) : rows;
+
+      const parsed = dataRows
+        .map((parts) => ({
+          name: (parts[0] || '').trim(),
+          description: parts.slice(1).join(',').trim(),
+        }))
+        .filter((item) => item.name);
+
+      setBulkDepartments(parsed);
+      setBulkFileName(file.name);
+      setBulkFileError(parsed.length ? '' : 'No valid departments found in file.');
+    } catch (error) {
+      console.error('Failed to parse bulk file:', error);
+      setBulkFileError('Failed to parse file. Please upload a CSV.');
+      setBulkDepartments([]);
+      setBulkFileName('');
+    }
+  };
+
+  const handleDownloadTemplate = () => {
+    const header = 'department_name,description\n';
+    const blob = new Blob([header], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'department_template.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleBulkAddDepartments = async () => {
+    if (!bulkDepartments.length) return;
+    const parentOrgId = getParentCompanyId();
+    const parentCompanyCode = selectedOrg?.type === 'company'
+      ? selectedOrg.company_code
+      : selectedOrg?.parent_org_id
+        ? organizationData.find((org) => org.org_id === selectedOrg.parent_org_id)?.company_code
+        : null;
+    if (!parentOrgId) return;
+
+    if (isBulkAddingDept) return;
+    setIsBulkAddingDept(true);
+
+    try {
+      for (const dept of bulkDepartments) {
+        await createOrganization(
+          {
+            org_name: dept.name,
+            org_description: dept.description,
+            parent_org_id: parentOrgId,
+            company_code: parentCompanyCode || null,
+            created_by: createdBy,
+          },
+          token
+        );
+      }
+      setBulkDepartments([]);
+      setBulkFileName('');
+      setBulkFileError('');
+      await fetchOrganizations();
+      notify(`Added ${bulkDepartments.length} departments successfully.`);
+    } catch (error) {
+      console.error('Failed to bulk add departments:', error);
+    } finally {
+      setIsBulkAddingDept(false);
+    }
+  };
+
+  const companyCodeForDetails = selectedOrg?.type === 'company'
+    ? selectedOrg.company_code
+    : selectedOrg?.parent_org_id
+      ? organizationData.find((org) => org.org_id === selectedOrg.parent_org_id)?.company_code
+      : null;
+
+  const toggleOrgSelection = (orgId) => {
+    setSelectedOrgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(orgId)) {
+        next.delete(orgId);
+      } else {
+        next.add(orgId);
+      }
+      return next;
+    });
   };
 
   const handleEditOrg = async () => {
     if (!editingOrg || !editOrgName.trim()) return;
+
+    if (isUpdatingOrg) return;
+    setIsUpdatingOrg(true);
 
     try {
       await updateOrganization(
@@ -212,13 +501,28 @@ export function SystemAdminDashboard() {
       setShowEditDialog(false);
       setEditingOrg(null);
       await fetchOrganizations();
+      notify('Organization updated successfully.');
     } catch (error) {
       console.error('Failed to update organization:', error);
+    } finally {
+      setIsUpdatingOrg(false);
     }
   };
 
   const handleSelectOrg = (org) => {
-    setSelectedOrg(org);
+    setSelectedOrgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(org.org_id)) {
+        next.delete(org.org_id);
+        if (selectedOrg?.org_id === org.org_id) {
+          setSelectedOrg(null);
+        }
+      } else {
+        next.add(org.org_id);
+        setSelectedOrg(org);
+      }
+      return next;
+    });
   };
 
   const getAllDepartments = (nodes) => {
@@ -242,6 +546,7 @@ export function SystemAdminDashboard() {
     return nodes.map((node) => {
       const isExpanded = expandedIds.has(node.org_id);
       const hasChildren = node.children.length > 0;
+      const isSelected = selectedOrgIds.has(node.org_id);
 
       return (
         <div key={node.org_id} className="space-y-0">
@@ -249,10 +554,13 @@ export function SystemAdminDashboard() {
             className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${
               selectedOrg?.org_id === node.org_id
                 ? 'bg-primary/20 border border-primary'
-                : 'hover:bg-card/50 border border-transparent'
+                : 'hover:bg-card/50 hover:border-slate-500/60 border border-transparent'
             }`}
             onClick={() => handleSelectOrg(node)}
           >
+            <div onClick={(event) => event.stopPropagation()}>
+              <Checkbox checked={isSelected} onCheckedChange={() => toggleOrgSelection(node.org_id)} />
+            </div>
             {hasChildren && (
               <button
                 onClick={(event) => {
@@ -284,24 +592,15 @@ export function SystemAdminDashboard() {
                   {node.type === 'company' ? 'Company' : 'Department'}
                 </Badge>
               </div>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                {node.users} users • {node.status}
-              </div>
             </div>
-
-            <span
-              className={`text-xs px-2 py-1 rounded ${
-                node.status === 'active'
-                  ? 'bg-emerald-500/20 text-emerald-400'
-                  : 'bg-slate-500/20 text-slate-400'
-              }`}
-            >
-              {node.status === 'active' ? 'Active' : 'Inactive'}
-            </span>
           </div>
 
           {hasChildren && isExpanded && (
-            <div className="ml-4 pl-3 border-l border-border space-y-0">
+            <div
+              className={`ml-4 pl-3 border-l border-border space-y-0 ${
+                node.type === 'company' ? 'max-h-[480px] overflow-y-auto pr-1' : ''
+              }`}
+            >
               {renderOrgTree(node.children)}
             </div>
           )}
@@ -312,6 +611,39 @@ export function SystemAdminDashboard() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      {showNotification && (
+        <div className="fixed top-4 right-4 z-50 w-full max-w-md">
+          {notificationVariant === 'error' ? (
+            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-emerald-500/45 border border-emerald-400/80 rounded-lg p-4 backdrop-blur-sm shadow-2xl ring-1 ring-emerald-300/60">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="lg:col-span-2">
         <Card
           className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white"
@@ -336,7 +668,16 @@ export function SystemAdminDashboard() {
                 {activeTab === 'organizations' ? 'Companies' : 'Organizational Units'}
               </p>
             </div>
-            <Dialog open={showAddOrgDialog} onOpenChange={setShowAddOrgDialog}>
+            <Dialog
+              open={showAddOrgDialog}
+              onOpenChange={(open) => {
+                if (activeTab === 'organizations' ? isCreatingOrg : isCreatingDept) return;
+                setShowAddOrgDialog(open);
+                if (open && activeTab === 'departments') {
+                  setNewDeptParentId('');
+                }
+              }}
+            >
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
                   <Plus className="h-3 w-3" />
@@ -350,28 +691,54 @@ export function SystemAdminDashboard() {
                 {activeTab === 'organizations' ? (
                   <div className="space-y-4">
                     <div className="space-y-2">
+                      <Label className="text-foreground">Company Code</Label>
+                      <Input
+                        placeholder="Enter company code"
+                        value={newOrgCode}
+                        onChange={handleOuInputChange(setNewOrgCode)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={10}
+                        className="bg-input border-border text-foreground"
+                      />
+                    </div>
+                    <div className="space-y-2">
                       <Label className="text-foreground">Company Name</Label>
                       <Input
                         placeholder="Enter company name"
                         value={newOrgName}
-                        onChange={(event) => setNewOrgName(event.target.value)}
+                        onChange={handleOuInputChange(setNewOrgName)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={50}
                         className="bg-input border-border text-foreground"
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-foreground">Description</Label>
-                      <Input
+                      <Textarea
                         placeholder="Enter description"
                         value={newOrgDesc}
-                        onChange={(event) => setNewOrgDesc(event.target.value)}
-                        className="bg-input border-border text-foreground"
+                        onChange={handleOuInputChange(setNewOrgDesc, true)}
+                        onPaste={handleOuPaste(true)}
+                        onKeyDown={handleOuKeyDown(true)}
+                        maxLength={255}
+                        className="bg-input border-border text-foreground min-h-[128px]"
                       />
                     </div>
                     <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                      <Button variant="outline" className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                      <Button
+                        variant="outline"
+                        className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                        disabled={isCreatingOrg}
+                      >
                         Cancel
                       </Button>
-                      <Button className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={handleCreateOrg}>
+                      <Button
+                        className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                        onClick={handleCreateOrg}
+                        disabled={isCreatingOrg}
+                      >
                         Add Company
                       </Button>
                     </div>
@@ -379,28 +746,57 @@ export function SystemAdminDashboard() {
                 ) : (
                   <div className="space-y-4">
                     <div className="space-y-2">
+                      <Label className="text-foreground">Parent Company</Label>
+                      <select
+                        value={newDeptParentId}
+                        onChange={(event) => setNewDeptParentId(event.target.value)}
+                        className="w-full rounded-md border border-slate-600 bg-slate-700/60 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-fuchsia-500/50"
+                      >
+                        <option value="">Select a company</option>
+                        {getCompanies(organizationData).map((company) => (
+                          <option key={company.org_id} value={company.org_id}>
+                            {company.org_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
                       <Label className="text-foreground">Department Name</Label>
                       <Input
                         placeholder="Enter department name"
                         value={newDeptName}
-                        onChange={(event) => setNewDeptName(event.target.value)}
+                        onChange={handleOuInputChange(setNewDeptName)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={50}
                         className="bg-input border-border text-foreground"
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-foreground">Description</Label>
-                      <Input
+                      <Textarea
                         placeholder="Enter description"
                         value={newDeptDesc}
-                        onChange={(event) => setNewDeptDesc(event.target.value)}
-                        className="bg-input border-border text-foreground"
+                        onChange={handleOuInputChange(setNewDeptDesc, true)}
+                        onPaste={handleOuPaste(true)}
+                        onKeyDown={handleOuKeyDown(true)}
+                        maxLength={255}
+                        className="bg-input border-border text-foreground min-h-[128px]"
                       />
                     </div>
                     <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                      <Button variant="outline" className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                      <Button
+                        variant="outline"
+                        className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                        disabled={isCreatingDept}
+                      >
                         Cancel
                       </Button>
-                      <Button className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={handleCreateDept}>
+                      <Button
+                        className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                        onClick={handleCreateDeptFromTab}
+                        disabled={isCreatingDept || !newDeptParentId || !newDeptName.trim() || !newDeptDesc.trim()}
+                      >
                         Add Department
                       </Button>
                     </div>
@@ -436,27 +832,12 @@ export function SystemAdminDashboard() {
           <Input
             placeholder="Search..."
             value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
+            onChange={handleOuInputChange(setSearchTerm)}
+            onPaste={handleOuPaste()}
+            onKeyDown={handleOuKeyDown()}
+            maxLength={50}
             className="h-8 mb-2 text-sm"
           />
-
-          <div className="flex gap-1 mb-2">
-            {['all', 'active', 'inactive'].map((filter) => (
-              <Button
-                key={filter}
-                size="sm"
-                variant={activeFilter === filter ? 'default' : 'outline'}
-                onClick={() => setActiveFilter(filter)}
-                className={`text-xs border-slate-600 ${
-                  activeFilter === filter
-                    ? 'bg-fuchsia-600 hover:bg-fuchsia-700 text-white'
-                    : 'bg-slate-700/40 hover:bg-slate-600/60 text-slate-100'
-                }`}
-              >
-                {filter === 'all' ? 'All' : filter === 'active' ? 'Active' : 'Inactive'}
-              </Button>
-            ))}
-          </div>
 
           {activeTab === 'organizations' ? (
             <div
@@ -475,16 +856,28 @@ export function SystemAdminDashboard() {
           ) : (
             <div
               className={`space-y-0 ${
-                getAllDepartments(getFilteredOUs(organizationData)).length > 7 ? 'overflow-y-auto pr-2' : 'overflow-visible'
+                getAllDepartments(getFilteredOUs(organizationData)).length > 12
+                  ? 'overflow-y-auto pr-2 max-h-[480px]'
+                  : 'overflow-visible'
               }`}
-              style={{
-                height:
-                  getAllDepartments(getFilteredOUs(organizationData)).length > 7
-                    ? Math.min(getAllDepartments(getFilteredOUs(organizationData)).length, 7) * 56
-                    : 'auto',
-              }}
             >
               {renderOrgTree(getAllDepartments(getFilteredOUs(organizationData)))}
+            </div>
+          )}
+
+          {selectedOrgIds.size > 1 && (
+            <div className="flex items-center justify-between mt-2">
+              <p className="text-xs text-slate-400">
+                {selectedOrgIds.size} selected
+              </p>
+              <Button
+                size="sm"
+                className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+                onClick={() => setShowBulkDeleteDialog(true)}
+                disabled={isBulkDeleting}
+              >
+                Delete Selected
+              </Button>
             </div>
           )}
         </Card>
@@ -497,31 +890,15 @@ export function SystemAdminDashboard() {
 
             <div className="space-y-2 text-sm mb-3">
               <div>
-                <p className="text-xs text-slate-400 mb-1">Organization Name</p>
+                <p className="text-xs text-slate-400 mb-1">
+                  {selectedOrg?.type === 'department' ? 'Department Name' : 'Organization Name'}
+                </p>
                 <p className="text-white font-medium">{selectedOrg.org_name}</p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400 mb-1">Organization ID</p>
-                <p className="text-white font-mono text-xs">{selectedOrg.org_id}</p>
-              </div>
-
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Users in Organization</p>
-                <p className="text-white">{selectedOrg.users || 0} users</p>
-              </div>
-
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Status</p>
-                <span
-                  className={`text-xs px-2 py-1 rounded ${
-                    selectedOrg.status === 'active'
-                      ? 'bg-emerald-500/20 text-emerald-400'
-                      : 'bg-slate-500/20 text-slate-400'
-                  }`}
-                >
-                  {selectedOrg.status === 'active' ? 'Active' : 'Inactive'}
-                </span>
+                <p className="text-xs text-slate-400 mb-1">Company Code</p>
+                <p className="text-white font-mono text-xs">{companyCodeForDetails || '—'}</p>
               </div>
 
               {selectedOrg.org_description && (
@@ -538,7 +915,13 @@ export function SystemAdminDashboard() {
             </div>
 
             <div className="space-y-2 pt-2 border-t border-border">
-              <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+              <Dialog
+                open={showEditDialog}
+                onOpenChange={(open) => {
+                  if (isUpdatingOrg) return;
+                  setShowEditDialog(open);
+                }}
+              >
                 <DialogTrigger asChild>
                   <Button
                     onClick={() => {
@@ -554,35 +937,53 @@ export function SystemAdminDashboard() {
                 </DialogTrigger>
                 <DialogContent className="bg-slate-800 border-slate-700">
                   <DialogHeader>
-                    <DialogTitle className="text-white">Edit Organization</DialogTitle>
+                    <DialogTitle className="text-white">
+                      {selectedOrg?.type === 'department' ? 'Edit Department' : 'Edit Organization'}
+                    </DialogTitle>
                   </DialogHeader>
                   {editingOrg && (
                     <div className="space-y-4">
                       <div className="space-y-2">
-                        <Label className="text-white">Organization Name</Label>
+                        <Label className="text-white">
+                          {selectedOrg?.type === 'department' ? 'Department Name' : 'Organization Name'}
+                        </Label>
                         <Input
                           placeholder="Enter name"
                           value={editOrgName}
-                          onChange={(event) => setEditOrgName(event.target.value)}
+                          onChange={handleOuInputChange(setEditOrgName)}
+                          onPaste={handleOuPaste()}
+                          onKeyDown={handleOuKeyDown()}
+                          maxLength={50}
                           className="bg-slate-700 border-slate-600 text-white"
                         />
                       </div>
 
                       <div className="space-y-2">
                         <Label className="text-white">Description</Label>
-                        <Input
+                        <Textarea
                           placeholder="Enter description"
                           value={editOrgDesc}
-                          onChange={(event) => setEditOrgDesc(event.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white"
+                          onChange={handleOuInputChange(setEditOrgDesc, true)}
+                          onPaste={handleOuPaste(true)}
+                          onKeyDown={handleOuKeyDown(true)}
+                          maxLength={255}
+                          className="bg-slate-700 border-slate-600 text-white min-h-[128px]"
                         />
                       </div>
 
                       <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                        <Button variant="outline" className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                        <Button
+                          variant="outline"
+                          className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                          disabled={isUpdatingOrg}
+                        >
                           Cancel
                         </Button>
-                        <Button className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white" onClick={handleEditOrg}>
+                        <Button
+                          className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                          onClick={handleEditOrg}
+                          disabled={isUpdatingOrg}
+                        >
                           Save Changes
                         </Button>
                       </div>
@@ -592,9 +993,15 @@ export function SystemAdminDashboard() {
               </Dialog>
 
               {selectedOrg.type === 'company' && (
-                <Dialog open={showAddDeptDialog} onOpenChange={setShowAddDeptDialog}>
+                <Dialog
+                  open={showAddDeptDialog}
+                  onOpenChange={(open) => {
+                    if (isCreatingDept || isBulkAddingDept) return;
+                    setShowAddDeptDialog(open);
+                  }}
+                >
                   <DialogTrigger asChild>
-                    <Button className="w-full bg-fuchsia-600 hover:bg-fuchsia-700 text-white gap-2">
+                    <Button className="w-full !bg-fuchsia-700 hover:!bg-fuchsia-600 !text-white gap-2">
                       <Plus className="w-4 h-4" />
                       Add Department
                     </Button>
@@ -611,10 +1018,16 @@ export function SystemAdminDashboard() {
 
                       <Tabs defaultValue="individual" className="w-full">
                         <TabsList className="grid w-full grid-cols-2 bg-slate-700/60">
-                          <TabsTrigger value="individual" className="text-xs">
+                          <TabsTrigger
+                            value="individual"
+                            className="text-xs border border-transparent data-[state=active]:border-fuchsia-500 data-[state=active]:text-white data-[state=active]:bg-fuchsia-600/30"
+                          >
                             Individual Add
                           </TabsTrigger>
-                          <TabsTrigger value="bulk" className="text-xs">
+                          <TabsTrigger
+                            value="bulk"
+                            className="text-xs border border-transparent data-[state=active]:border-fuchsia-500 data-[state=active]:text-white data-[state=active]:bg-fuchsia-600/30"
+                          >
                             Bulk Import
                           </TabsTrigger>
                         </TabsList>
@@ -624,19 +1037,26 @@ export function SystemAdminDashboard() {
                             <Label className="text-white text-sm">Department Name</Label>
                             <Input
                               placeholder="Enter department name"
-                              className="bg-slate-700 border-slate-600 text-white text-sm"
+                              className="bg-slate-700 border-slate-600 text-white text-sm min-h-[128px]"
                               value={newDeptName}
-                              onChange={(event) => setNewDeptName(event.target.value)}
+                              onChange={handleOuInputChange(setNewDeptName)}
+                              onPaste={handleOuPaste()}
+                              onKeyDown={handleOuKeyDown()}
+                              maxLength={50}
                             />
                           </div>
 
                           <div className="space-y-2">
                             <Label className="text-white text-sm">Description</Label>
-                            <Input
+                            <Textarea
                               placeholder="Enter description"
                               className="bg-slate-700 border-slate-600 text-white text-sm"
                               value={newDeptDesc}
-                              onChange={(event) => setNewDeptDesc(event.target.value)}
+                              onChange={handleOuInputChange(setNewDeptDesc, true)}
+                              onPaste={handleOuPaste(true)}
+                              onKeyDown={handleOuKeyDown(true)}
+                              maxLength={255}
+                              rows={6}
                             />
                           </div>
 
@@ -644,10 +1064,16 @@ export function SystemAdminDashboard() {
                             <Button
                               variant="outline"
                               className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+                              onClick={() => setShowAddDeptDialog(false)}
+                              disabled={isCreatingDept}
                             >
                               Cancel
                             </Button>
-                            <Button className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-sm" onClick={handleCreateDept}>
+                            <Button
+                              className="!bg-fuchsia-700 hover:!bg-fuchsia-600 !text-white text-sm"
+                              onClick={() => openConfirmAddDept('Add department', handleCreateDept)}
+                              disabled={isCreatingDept}
+                            >
                               Add Department
                             </Button>
                           </div>
@@ -661,20 +1087,49 @@ export function SystemAdminDashboard() {
                                 variant="outline"
                                 size="sm"
                                 className="border-slate-600 text-white bg-slate-700/60 text-xs hover:bg-slate-600"
+                                onClick={handleDownloadTemplate}
                               >
-                                Download Template
+                                Generate Template
                               </Button>
                             </div>
                             <div className="border-2 border-dashed border-slate-600 rounded-lg p-6 text-center hover:border-fuchsia-500/50 transition-colors cursor-pointer bg-slate-700/30">
                               <Upload className="w-6 h-6 mx-auto mb-2 text-slate-400" />
                               <p className="text-xs text-slate-400 mb-2">Drag and drop your file here</p>
-                              <input type="file" accept=".txt,.csv" className="hidden" id="bulk-file-input" />
-                              <button className="text-xs text-fuchsia-300 hover:underline">Browse files</button>
+                              <input
+                                type="file"
+                                accept=".csv"
+                                className="hidden"
+                                id="bulk-file-input"
+                                onChange={handleBulkFileChange}
+                              />
+                              <label htmlFor="bulk-file-input" className="text-xs text-fuchsia-300 hover:underline cursor-pointer">
+                                Browse files
+                              </label>
                             </div>
+                            {bulkFileName && (
+                              <div className="flex items-center justify-between gap-2 border border-slate-600 rounded-lg px-3 py-2 bg-slate-800/60">
+                                <p className="text-xs text-slate-300">Selected file: {bulkFileName}</p>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-slate-300 hover:text-red-300 hover:bg-red-500/20"
+                                  onClick={() => {
+                                    setBulkDepartments([]);
+                                    setBulkFileName('');
+                                    setBulkFileError('');
+                                  }}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            )}
+                            {bulkFileError && (
+                              <p className="text-xs text-red-300">{bulkFileError}</p>
+                            )}
                           </div>
 
                           <div className="space-y-2">
-                            <p className="text-sm font-medium text-white">Preview (0 departments)</p>
+                            <p className="text-sm font-medium text-white">Preview ({bulkDepartments.length} departments)</p>
                             <div className="border border-slate-600 rounded-lg overflow-hidden bg-slate-800 max-h-64 overflow-y-auto">
                               <table className="w-full text-sm">
                                 <thead className="bg-slate-700/60 sticky top-0 border-b border-slate-600">
@@ -683,7 +1138,21 @@ export function SystemAdminDashboard() {
                                     <th className="text-left px-4 py-2 text-xs font-medium text-slate-300">Department Name</th>
                                   </tr>
                                 </thead>
-                                <tbody>{/* Departments will be listed here */}</tbody>
+                                <tbody>
+                                  {bulkDepartments.map((dept, index) => (
+                                    <tr key={`${dept.name}-${index}`} className="border-b border-slate-700/60">
+                                      <td className="px-4 py-2 text-xs text-slate-300">{index + 1}</td>
+                                      <td className="px-4 py-2 text-xs text-white">{dept.name}</td>
+                                    </tr>
+                                  ))}
+                                  {bulkDepartments.length === 0 && (
+                                    <tr>
+                                      <td colSpan={2} className="px-4 py-3 text-xs text-slate-400">
+                                        No departments loaded
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
                               </table>
                             </div>
                           </div>
@@ -692,14 +1161,17 @@ export function SystemAdminDashboard() {
                             <Button
                               variant="outline"
                               className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+                              onClick={() => setShowAddDeptDialog(false)}
+                              disabled={isBulkAddingDept}
                             >
                               Cancel
                             </Button>
                             <Button
-                              disabled
+                              disabled={bulkDepartments.length === 0 || isBulkAddingDept}
                               className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-sm disabled:opacity-50"
+                              onClick={() => openConfirmAddDept('Add all departments', handleBulkAddDepartments)}
                             >
-                              Add All (0) Departments
+                              Add All ({bulkDepartments.length}) Departments
                             </Button>
                           </div>
                         </TabsContent>
@@ -709,32 +1181,71 @@ export function SystemAdminDashboard() {
                 </Dialog>
               )}
 
-              <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+              <Dialog
+                open={showDeleteDialog}
+                onOpenChange={(open) => {
+                  if (isDeletingOrg) return;
+                  setShowDeleteDialog(open);
+                  if (!open) {
+                    setDeleteConfirmText('');
+                  }
+                }}
+              >
                 <DialogTrigger asChild>
-                  <Button variant="ghost" className="w-full text-destructive hover:bg-destructive/10 gap-2">
+                  <Button className="w-full !bg-red-500/80 hover:!bg-red-500 !text-white gap-2">
                     <Trash2 className="w-4 h-4" />
                     Delete
                   </Button>
                 </DialogTrigger>
                 <DialogContent className="bg-slate-800 border-slate-700">
                   <DialogHeader>
-                    <DialogTitle className="text-destructive">Delete Organization</DialogTitle>
+                    <DialogTitle className="text-destructive">
+                      {selectedOrg?.type === 'department' ? 'Delete Department' : 'Delete Organization'}
+                    </DialogTitle>
                   </DialogHeader>
                   <div className="space-y-4">
                     <p className="text-white">
                       Are you sure you want to delete <span className="font-bold">{selectedOrg.org_name}</span>? This action
                       cannot be undone.
                     </p>
+                    <div>
+                      <Label className="text-xs text-slate-400">Type CONFIRM to continue</Label>
+                      <Input
+                        value={deleteConfirmText}
+                        onChange={handleOuInputChange(setDeleteConfirmText, false, (value) => value.toUpperCase())}
+                        onPaste={handleOuPaste(false, (value) => value.toUpperCase())}
+                        onKeyDown={(event) => {
+                          handleRestrictedKeyDown(event);
+                          if (event.key === 'Enter' && deleteConfirmText === 'CONFIRM' && !isDeletingOrg) {
+                            event.preventDefault();
+                            handleDeleteOrg();
+                          }
+                        }}
+                        maxLength={7}
+                        placeholder="CONFIRM"
+                        className="mt-1"
+                      />
+                    </div>
                     <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
                       <p className="text-sm text-red-300">
-                        Warning: This will permanently delete this organization and all its departments.
+                        {selectedOrg?.type === 'department'
+                          ? 'Warning: This will permanently delete this department.'
+                          : 'Warning: This will permanently delete this organization and all its departments.'}
                       </p>
                     </div>
                     <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                      <Button variant="outline" className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600">
+                      <Button
+                        variant="outline"
+                        className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                        disabled={isDeletingOrg}
+                      >
                         Cancel
                       </Button>
-                      <Button onClick={handleDeleteOrg} className="bg-red-500/80 hover:bg-red-500 text-white">
+                      <Button
+                        onClick={handleDeleteOrg}
+                        className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+                        disabled={deleteConfirmText !== 'CONFIRM' || isDeletingOrg}
+                      >
                         Delete
                       </Button>
                     </div>
@@ -749,6 +1260,95 @@ export function SystemAdminDashboard() {
           </Card>
         )}
       </div>
+
+      <Dialog
+        open={showConfirmAddDept}
+        onOpenChange={(open) => {
+          if (isCreatingDept || isBulkAddingDept) return;
+          setShowConfirmAddDept(open);
+        }}
+      >
+        <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Confirm {confirmDeptLabel}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-300">
+            Are you sure you want to {confirmDeptLabel.toLowerCase()}?
+          </p>
+          <div className="flex gap-2 justify-end pt-2 border-t border-border">
+            <Button
+              variant="outline"
+              className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+              onClick={() => setShowConfirmAddDept(false)}
+              disabled={isCreatingDept || isBulkAddingDept}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+              onClick={handleConfirmAddDept}
+              disabled={isCreatingDept || isBulkAddingDept}
+            >
+              Confirm
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showBulkDeleteDialog}
+        onOpenChange={(open) => {
+          if (isBulkDeleting) return;
+          setShowBulkDeleteDialog(open);
+          if (!open) {
+            setBulkDeleteConfirmText('');
+          }
+        }}
+      >
+        <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Delete Selected Organizations</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-300">
+            Delete {selectedOrgIds.size} selected item(s)? This action cannot be undone.
+          </p>
+          <div>
+            <Label className="text-xs text-slate-400">Type CONFIRM to continue</Label>
+            <Input
+              value={bulkDeleteConfirmText}
+              onChange={handleOuInputChange(setBulkDeleteConfirmText, false, (value) => value.toUpperCase())}
+              onPaste={handleOuPaste(false, (value) => value.toUpperCase())}
+              onKeyDown={(event) => {
+                handleRestrictedKeyDown(event);
+                if (event.key === 'Enter' && bulkDeleteConfirmText === 'CONFIRM' && !isBulkDeleting) {
+                  event.preventDefault();
+                  handleDeleteSelected();
+                }
+              }}
+              maxLength={7}
+              placeholder="CONFIRM"
+              className="mt-1"
+            />
+          </div>
+          <div className="flex gap-2 justify-end pt-2 border-t border-border">
+            <Button
+              variant="outline"
+              className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+              onClick={() => setShowBulkDeleteDialog(false)}
+              disabled={isBulkDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+              onClick={handleDeleteSelected}
+              disabled={bulkDeleteConfirmText !== 'CONFIRM' || isBulkDeleting}
+            >
+              Delete
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
