@@ -23,7 +23,8 @@
  *   email: "user@example.com",
  *   first_name: "John",
  *   last_name: "Doe",
- *   department: "Engineering",
+ *   geo_id: "GEO001",
+ *   org_id: "ORG001",
  *   status: "active",
  *   role: "L1"
  * }
@@ -65,7 +66,8 @@ export function AuthProvider({ children }) {
    *   email: string
    *   first_name: string
    *   last_name: string
-   *   department: string
+  *   geo_id: string
+  *   org_id: string
    *   status: string ('active', 'inactive', 'suspended')
    *   role: string ('L1', 'L2', 'L3', 'Requestor', 'Admin', 'Payroll')
    * }
@@ -113,7 +115,8 @@ export function AuthProvider({ children }) {
    *   email: "user@example.com",
    *   first_name: "John",
    *   last_name: "Doe",
-   *   department: "Engineering",
+  *   geo_id: "GEO001",
+  *   org_id: "ORG001",
    *   status: "active",
    *   role: "L1"
    * });
@@ -164,7 +167,7 @@ export function AuthProvider({ children }) {
    * 5. If token is invalid/expired, clears all auth data
    * 6. Sets loading = false once complete
    * 
-   * CLEARS OLD KEYS: auth_token, auth_user, demoUser, auth_session, session_cache
+  * CLEARS OLD KEYS: auth_token, auth_user, auth_session, session_cache
    * KEEPS ONLY: authToken, authUser (when logged in and token is valid)
    * 
    * FLOW:
@@ -174,7 +177,7 @@ export function AuthProvider({ children }) {
     const checkAuth = async () => {
       try {
         // Clean up all old/unused localStorage keys
-        const keysToRemove = ['auth_token', 'auth_user', 'demoUser', 'auth_session', 'session_cache'];
+        const keysToRemove = ['auth_token', 'auth_user', 'auth_session', 'session_cache'];
         keysToRemove.forEach(key => {
           if (localStorage.getItem(key)) {
             console.log(`[AUTH] Removing old localStorage key: ${key}`);
@@ -227,31 +230,31 @@ export function AuthProvider({ children }) {
   }, []);
 
   /**
-   * LOGIN - Initiates login with email and password
+  * LOGIN - Initiates login with employee ID and password
    * 
    * ENDPOINT: POST /api/auth/login
    * 
    * WHAT IT DOES:
-   * 1. Sends email and password to backend
+  * 1. Sends employee ID and password to backend
    * 2. Backend verifies credentials and generates OTP
    * 3. Stores JWT token in localStorage.authToken
    * 4. Returns OTP requirement status
    * 
    * RETURN VALUES:
-   * - OTP required: { success: true, requiresOTP: true, email: "user@example.com" }
+  * - OTP required: { success: true, requiresOTP: true, email: "user@example.com" }
    * - Direct login: { success: true }
    * - Error: { success: false, error: "Error message" }
    * 
    * NORMAL FLOW:
    * Login Page → POST /api/auth/login → VerifyOTP Page
    * 
-   * @param {Object} credentials - { email, password }
+  * @param {Object} credentials - { employee_id, password }
    * @returns {Promise<Object>} Login result
    * 
    * @example
    * const { login } = useAuth();
    * const result = await login({
-   *   email: "user@example.com",
+  *   employee_id: "EMP001",
    *   password: "password123"
    * });
    * 
@@ -279,7 +282,7 @@ export function AuthProvider({ children }) {
         }
         
         // Direct login (fallback, in case backend doesn't require OTP)
-        const { token, userId, email, employeeId, firstName, lastName, role } = response.data.data;
+        const { token, userId, email, firstName, lastName, role, geo_id, geoId, org_id, orgId } = response.data.data;
         
         localStorage.setItem('authToken', token);
         const userData = { 
@@ -289,7 +292,9 @@ export function AuthProvider({ children }) {
           employeeId,
           firstName,
           lastName,
-          role 
+          role,
+          geo_id: geo_id ?? geoId ?? null,
+          org_id: org_id ?? orgId ?? null,
         };
         
         // Use setUserWithStorage to save user and create auth_session + session_cache
@@ -368,7 +373,8 @@ export function AuthProvider({ children }) {
             email: response.data.data?.email,
             firstName: response.data.data?.firstName,
             lastName: response.data.data?.lastName,
-            role: response.data.data?.role
+            role: response.data.data?.role,
+            geo_id: response.data.data?.geo_id ?? response.data.data?.geoId ?? null,
           };
         }
 
@@ -383,7 +389,7 @@ export function AuthProvider({ children }) {
           };
         }
 
-        const { token, userId, firstName, lastName, role, email: respEmail, orgId, userType } = response.data.data;
+        const { token, userId, firstName, lastName, role, email: respEmail, geo_id, geoId, org_id, orgId } = response.data.data;
         
         console.log('Token:', token);
         console.log('UserId:', userId);
@@ -403,8 +409,8 @@ export function AuthProvider({ children }) {
           firstName: firstName || '',
           lastName: lastName || '',
           role: role || 'user',
-          orgId: orgId || null,
-          userType: userType || null,
+          geo_id: geo_id ?? geoId ?? null,
+          org_id: org_id ?? orgId ?? null,
         };
         console.log('Storing user data:', userData);
         

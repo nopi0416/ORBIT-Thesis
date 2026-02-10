@@ -1,4 +1,6 @@
 import supabase, { supabaseSecondary } from '../config/database.js';
+import { getUserDetailsFromUUID } from '../utils/userMapping.js';
+import { sendApprovalNotificationEmail } from '../config/email.js';
 
 /**
  * Approval Request Service
@@ -8,6 +10,257 @@ import supabase, { supabaseSecondary } from '../config/database.js';
 
 export class ApprovalRequestService {
   static defaultCompanyId = 'caaa0000-0000-0000-0000-000000000001';
+
+  static async getUserNameMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblusers')
+      .select('user_id, first_name, last_name')
+      .in('user_id', uniqueIds);
+
+    if (error) throw error;
+
+    return new Map(
+      (data || []).map((user) => [
+        user.user_id,
+        `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+      ])
+    );
+  }
+
+  static async getUserEmailMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data, error } = await supabase
+      .from('tblusers')
+      .select('user_id, first_name, last_name, email')
+      .in('user_id', uniqueIds);
+
+    if (error) throw error;
+
+    return new Map(
+      (data || []).map((user) => [
+        user.user_id,
+        {
+          email: user.email,
+          name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+        },
+      ])
+    );
+  }
+
+  static formatCurrency(value) {
+    return `₱${Number(value || 0).toLocaleString()}`;
+  }
+
+  static async sendApprovalNotification({ recipients = [], subject, html, text }) {
+    if (!recipients.length) return;
+    await sendApprovalNotificationEmail({
+      to: recipients,
+      subject,
+      html,
+      text,
+    });
+  }
+
+  static async sendSubmissionNotifications(requestId) {
+    try {
+      const { data: request, error } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('request_id, request_number, budget_id, description, total_request_amount, submitted_by')
+        .eq('request_id', requestId)
+        .single();
+
+      if (error) throw error;
+
+      const { data: approvals, error: approvalsError } = await supabase
+        .from('tblbudgetapprovalrequests_approvals')
+        .select('approval_level, assigned_to_primary, assigned_to_backup')
+        .eq('request_id', requestId)
+        .eq('approval_level', 1)
+        .maybeSingle();
+
+      if (approvalsError) throw approvalsError;
+
+      const approverIds = [approvals?.assigned_to_primary, approvals?.assigned_to_backup].filter(Boolean);
+      const emailMap = await this.getUserEmailMap(approverIds);
+      const recipients = approverIds
+        .map((id) => emailMap.get(id)?.email)
+        .filter(Boolean);
+
+      if (!recipients.length) return;
+
+      const subject = `ORBIT Approval Request ${request.request_number} awaiting L1 review`;
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #111827;">New Approval Request</h2>
+          <p>A new approval request is awaiting L1 review.</p>
+          <p><strong>Request #:</strong> ${request.request_number}</p>
+          <p><strong>Amount:</strong> ${this.formatCurrency(request.total_request_amount)}</p>
+          <p><strong>Description:</strong> ${request.description || '—'}</p>
+        </div>
+      `;
+
+      await this.sendApprovalNotification({ recipients, subject, html });
+
+      const notifications = recipients.map((email, index) => ({
+        request_id: requestId,
+        notification_type: 'submission',
+        title: 'New Approval Request',
+        message: `Request ${request.request_number} is awaiting L1 review.`,
+        recipient_id: approverIds[index] || approverIds[0],
+        recipient_email: email,
+        is_sent: true,
+        sent_date: new Date().toISOString(),
+        related_approval_level: 1,
+      }));
+
+      if (notifications.length) {
+        await supabase.from('tblbudgetapprovalrequests_notifications').insert(notifications);
+      }
+    } catch (error) {
+      console.warn('[email] Failed to send submission notifications:', error?.message || error);
+    }
+  }
+
+  static async sendApprovalStepNotifications({ requestId, approvalLevel, payrollCycle, payrollCycleDate }) {
+    try {
+      const { data: request, error } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('request_id, request_number, description, total_request_amount, submitted_by')
+        .eq('request_id', requestId)
+        .single();
+
+      if (error) throw error;
+
+      const requestorMap = await this.getUserEmailMap([request.submitted_by]);
+      const requestor = requestorMap.get(request.submitted_by);
+      const requestorEmail = requestor?.email ? [requestor.email] : [];
+
+      const nextLevel = Number(approvalLevel) + 1;
+      let nextApproverRecipients = [];
+      if (nextLevel <= 4) {
+        const { data: nextApproval, error: nextError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('assigned_to_primary, assigned_to_backup')
+          .eq('request_id', requestId)
+          .eq('approval_level', nextLevel)
+          .maybeSingle();
+
+        if (!nextError && nextApproval) {
+          const nextApproverIds = [nextApproval.assigned_to_primary, nextApproval.assigned_to_backup].filter(Boolean);
+          const nextMap = await this.getUserEmailMap(nextApproverIds);
+          nextApproverRecipients = nextApproverIds
+            .map((id) => nextMap.get(id)?.email)
+            .filter(Boolean);
+        }
+      }
+
+      const subject = `ORBIT Approval Update: ${request.request_number}`;
+      const payrollLine = payrollCycle
+        ? `<p><strong>Payroll Cycle:</strong> ${payrollCycle} (${payrollCycleDate || '—'})</p>`
+        : '';
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #111827;">Approval Update</h2>
+          <p>Your approval request has advanced to the next step.</p>
+          <p><strong>Request #:</strong> ${request.request_number}</p>
+          <p><strong>Amount:</strong> ${this.formatCurrency(request.total_request_amount)}</p>
+          ${payrollLine}
+          <p><strong>Description:</strong> ${request.description || '—'}</p>
+        </div>
+      `;
+
+      await Promise.allSettled([
+        this.sendApprovalNotification({ recipients: requestorEmail, subject, html }),
+        this.sendApprovalNotification({ recipients: nextApproverRecipients, subject, html }),
+      ]);
+
+      const notificationRows = [];
+      if (requestorEmail.length && request.submitted_by) {
+        notificationRows.push({
+          request_id: requestId,
+          notification_type: 'approval_step',
+          title: 'Approval Update',
+          message: `Request ${request.request_number} advanced to the next step.`,
+          recipient_id: request.submitted_by,
+          recipient_email: requestorEmail[0],
+          is_sent: true,
+          sent_date: new Date().toISOString(),
+          related_approval_level: Number(approvalLevel),
+        });
+      }
+
+      if (nextApproverRecipients.length) {
+        nextApproverRecipients.forEach((email) => {
+          notificationRows.push({
+            request_id: requestId,
+            notification_type: 'approval_step',
+            title: 'Approval Needed',
+            message: `Request ${request.request_number} is ready for your review.`,
+            recipient_id: null,
+            recipient_email: email,
+            is_sent: true,
+            sent_date: new Date().toISOString(),
+            related_approval_level: nextLevel,
+          });
+        });
+      }
+
+      if (notificationRows.length) {
+        await supabase.from('tblbudgetapprovalrequests_notifications').insert(notificationRows);
+      }
+    } catch (error) {
+      console.warn('[email] Failed to send approval step notifications:', error?.message || error);
+    }
+  }
+
+  static computeLineItemCounts(lineItems = []) {
+    const lineItemsCount = Array.isArray(lineItems) ? lineItems.length : 0;
+    const deductionCount = Array.isArray(lineItems)
+      ? lineItems.filter((item) => Boolean(item?.is_deduction)).length
+      : 0;
+    const toBePaidCount = Math.max(0, lineItemsCount - deductionCount);
+
+    return { lineItemsCount, deductionCount, toBePaidCount };
+  }
+
+  static computeApprovalStageStatus(approvals = [], overallStatus = '') {
+    const normalizedOverall = String(overallStatus || '').toLowerCase();
+
+    if (normalizedOverall === 'rejected' || normalizedOverall === 'completed') {
+      return normalizedOverall;
+    }
+
+    const rejected = (approvals || []).find(
+      (approval) => String(approval?.status || '').toLowerCase() === 'rejected'
+    );
+    if (rejected) return 'rejected';
+
+    const statusByLevel = new Map(
+      (approvals || []).map((approval) => [
+        Number(approval?.approval_level),
+        String(approval?.status || '').toLowerCase(),
+      ])
+    );
+
+    const l1Approved = statusByLevel.get(1) === 'approved';
+    const l2Approved = statusByLevel.get(2) === 'approved';
+    const l3Approved = statusByLevel.get(3) === 'approved';
+    const payrollStatus = statusByLevel.get(4);
+    const payrollApproved = payrollStatus === 'approved' || payrollStatus === 'completed';
+
+    if (payrollStatus === 'completed') return 'completed';
+
+    if (payrollApproved) return 'pending_payment_completion';
+    if (l1Approved && l2Approved && l3Approved) return 'pending_payroll_approval';
+    if (normalizedOverall === 'draft') return 'draft';
+
+    return 'ongoing_approval';
+  }
 
   /**
    * Get employee details by EID and company ID
@@ -22,27 +275,130 @@ export class ApprovalRequestService {
       }
       const company = companyId || this.defaultCompanyId;
 
-      const { data, error } = await supabaseSecondary
+      // Fetch employee data
+      const { data: employeeData, error: employeeError } = await supabaseSecondary
         .from('tblemployee')
         .select('*')
         .eq('company_id', company)
         .eq('eid', eid)
         .maybeSingle();
 
-      if (error) throw error;
-      if (!data) {
+      if (employeeError) throw employeeError;
+      if (!employeeData) {
         return {
           success: false,
           error: 'Employee not found',
         };
       }
 
+      // Fetch company data separately
+      const { data: companyData, error: companyError } = await supabaseSecondary
+        .from('tblcompany')
+        .select('company_name, company_code')
+        .eq('company_id', employeeData.company_id)
+        .maybeSingle();
+
+      if (companyError) {
+        console.warn('Error fetching company data:', companyError);
+      }
+
+      // Merge company data into employee object
+      const enrichedData = {
+        ...employeeData,
+        company_name: companyData?.company_name || '',
+        company_code: companyData?.company_code || '',
+      };
+
       return {
         success: true,
-        data,
+        data: enrichedData,
       };
     } catch (error) {
       console.error('Error fetching employee by EID:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Get multiple employees by EIDs in batch (optimized for bulk uploads)
+   * @param {Array<string>} eids - Array of employee IDs
+   * @param {string} companyId - Company UUID
+   * @returns {Object} { success: true, data: { found: [...], notFound: [...] } }
+   */
+  static async getEmployeesBatch(eids, companyId) {
+    try {
+      if (!supabaseSecondary) {
+        return {
+          success: false,
+          error: 'Employee warehouse connection is not configured (SUPABASE_URL2/KEY2).',
+        };
+      }
+
+      if (!eids || !Array.isArray(eids) || eids.length === 0) {
+        return {
+          success: false,
+          error: 'Employee IDs array is required',
+        };
+      }
+
+      const company = companyId || this.defaultCompanyId;
+
+      // Fetch all employees in one query
+      const { data: employeesData, error: employeesError } = await supabaseSecondary
+        .from('tblemployee')
+        .select('*')
+        .eq('company_id', company)
+        .in('eid', eids);
+
+      if (employeesError) throw employeesError;
+
+      // Get unique company IDs from found employees
+      const companyIds = [...new Set(employeesData?.map(emp => emp.company_id).filter(Boolean) || [])];
+
+      // Fetch company data for all found companies
+      let companyDataMap = {};
+      if (companyIds.length > 0) {
+        const { data: companiesData, error: companiesError } = await supabaseSecondary
+          .from('tblcompany')
+          .select('company_id, company_name, company_code')
+          .in('company_id', companyIds);
+
+        if (companiesError) {
+          console.warn('Error fetching company data:', companiesError);
+        } else if (companiesData) {
+          companyDataMap = companiesData.reduce((acc, company) => {
+            acc[company.company_id] = company;
+            return acc;
+          }, {});
+        }
+      }
+
+      // Enrich employees with company data
+      const foundEmployees = (employeesData || []).map(emp => {
+        const companyInfo = companyDataMap[emp.company_id] || {};
+        return {
+          ...emp,
+          company_name: companyInfo.company_name || '',
+          company_code: companyInfo.company_code || '',
+        };
+      });
+
+      // Identify not found employee IDs
+      const foundEids = foundEmployees.map(emp => emp.eid);
+      const notFoundEids = eids.filter(eid => !foundEids.includes(eid));
+
+      return {
+        success: true,
+        data: {
+          found: foundEmployees,
+          notFound: notFoundEids,
+        },
+      };
+    } catch (error) {
+      console.error('Error fetching employees in batch:', error);
       return {
         success: false,
         error: error.message,
@@ -72,16 +428,20 @@ export class ApprovalRequestService {
    */
   static async createApprovalRequest(requestData) {
     try {
+      console.log('[createApprovalRequest] Creating new request:', requestData);
+      
       const {
         budget_id,
         description,
         total_request_amount,
         submitted_by,
         created_by,
+        client_sponsored,
       } = requestData;
 
       // Generate request number
       const requestNumber = await this.generateRequestNumber();
+      console.log('[createApprovalRequest] Generated request number:', requestNumber);
 
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
@@ -93,13 +453,19 @@ export class ApprovalRequestService {
             total_request_amount: parseFloat(total_request_amount),
             submitted_by,
             created_by,
+            is_client_sponsored: client_sponsored ?? false,
             overall_status: 'draft',
             created_at: new Date().toISOString(),
           },
         ])
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[createApprovalRequest] Database error:', error);
+        throw error;
+      }
+
+      console.log('[createApprovalRequest] Request created successfully:', data[0]?.request_id);
 
       return {
         success: true,
@@ -107,7 +473,8 @@ export class ApprovalRequestService {
         message: 'Approval request created successfully',
       };
     } catch (error) {
-      console.error('Error creating approval request:', error);
+      console.error('[createApprovalRequest] Error creating approval request:', error);
+      console.error('[createApprovalRequest] Error stack:', error.stack);
       return {
         success: false,
         error: error.message,
@@ -152,21 +519,51 @@ export class ApprovalRequestService {
       if (error) throw error;
 
       // Fetch related data in parallel
-      const [lineItems, approvals, attachments, activityLog] = await Promise.all([
+      const [lineItems, approvals, attachments, activityLog, budgetConfig] = await Promise.all([
         this.getLineItemsByRequestId(requestId),
         this.getApprovalsByRequestId(requestId),
         this.getAttachmentsByRequestId(requestId),
         this.getActivityLogByRequestId(requestId),
+        data?.budget_id
+          ? supabase
+              .from('tblbudgetconfiguration')
+              .select('budget_id, budget_name, budget_description')
+              .eq('budget_id', data.budget_id)
+              .single()
+          : Promise.resolve({ data: null }),
       ]);
+
+      const lineItemsData = lineItems.data || [];
+      const approvalsData = approvals.data || [];
+      const { lineItemsCount, deductionCount, toBePaidCount } = this.computeLineItemCounts(lineItemsData);
+      const approvalStageStatus = this.computeApprovalStageStatus(approvalsData, data?.overall_status);
+
+      let submitterName = null;
+      try {
+        const userMap = await this.getUserNameMap([data?.submitted_by || data?.created_by]);
+        submitterName = userMap.get(data?.submitted_by || data?.created_by) || null;
+      } catch (lookupError) {
+        console.warn('[getApprovalRequestById] User lookup failed:', lookupError?.message || lookupError);
+      }
+      const submitterDetails = submitterName
+        ? { name: submitterName }
+        : getUserDetailsFromUUID(data?.submitted_by || data?.created_by);
 
       return {
         success: true,
         data: {
           ...data,
-          line_items: lineItems.data || [],
-          approvals: approvals.data || [],
+          budget_name: budgetConfig?.data?.budget_name || data?.budget_name || null,
+          budget_description: budgetConfig?.data?.budget_description || data?.budget_description || null,
+          line_items: lineItemsData,
+          approvals: approvalsData,
           attachments: attachments.data || [],
           activity_log: activityLog.data || [],
+          line_items_count: lineItemsCount,
+          deduction_count: deductionCount,
+          to_be_paid_count: toBePaidCount,
+          approval_stage_status: approvalStageStatus,
+          submitted_by_name: submitterDetails?.name || data?.submitted_by,
         },
       };
     } catch (error) {
@@ -183,11 +580,17 @@ export class ApprovalRequestService {
    */
   static async getAllApprovalRequests(filters = {}) {
     try {
-      let query = supabase.from('tblbudgetapprovalrequests').select('*');
+      let query = supabase
+        .from('tblbudgetapprovalrequests')
+        .select('*');
 
       // Apply filters
       if (filters.budget_id) {
         query = query.eq('budget_id', filters.budget_id);
+      }
+
+      if (filters.budget_ids && Array.isArray(filters.budget_ids)) {
+        query = query.in('budget_id', filters.budget_ids);
       }
 
       if (filters.status) {
@@ -210,15 +613,317 @@ export class ApprovalRequestService {
 
       if (error) throw error;
 
+      // Get unique budget IDs from the requests
+      const budgetIds = [...new Set((data || []).map(req => req.budget_id).filter(Boolean))];
+      
+      // Fetch budget configurations separately
+      let budgetConfigMap = {};
+      if (budgetIds.length > 0) {
+        const { data: budgetConfigs, error: budgetError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name, budget_description')
+          .in('budget_id', budgetIds);
+        
+        if (!budgetError && budgetConfigs) {
+          budgetConfigMap = budgetConfigs.reduce((acc, config) => {
+            acc[config.budget_id] = config;
+            return acc;
+          }, {});
+        }
+      }
+
+      const requestIds = (data || []).map((request) => request.request_id).filter(Boolean);
+      const countsMap = new Map();
+      const approvalsMap = new Map();
+
+      if (requestIds.length > 0) {
+        const { data: lineItemRows, error: lineItemError } = await supabase
+          .from('tblbudgetapprovalrequests_line_items')
+          .select('request_id, is_deduction')
+          .in('request_id', requestIds);
+
+        if (lineItemError) throw lineItemError;
+
+        (lineItemRows || []).forEach((row) => {
+          const current = countsMap.get(row.request_id) || { line_items_count: 0, deduction_count: 0 };
+          current.line_items_count += 1;
+          if (row.is_deduction) current.deduction_count += 1;
+          countsMap.set(row.request_id, current);
+        });
+
+        const { data: approvalRows, error: approvalError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, is_self_request, assigned_to_primary, assigned_to_backup, approved_by, approver_name')
+          .in('request_id', requestIds);
+
+        if (approvalError) throw approvalError;
+
+        (approvalRows || []).forEach((row) => {
+          const existing = approvalsMap.get(row.request_id) || [];
+          existing.push(row);
+          approvalsMap.set(row.request_id, existing);
+        });
+      }
+
+      // Merge budget config data with requests
+      const userIds = (data || []).flatMap((request) => [request?.submitted_by, request?.created_by]).filter(Boolean);
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap(userIds);
+      } catch (lookupError) {
+        console.warn('[getAllApprovalRequests] User lookup failed:', lookupError?.message || lookupError);
+      }
+
+      const normalizedData = (data || []).map((request) => {
+        const counts = countsMap.get(request.request_id) || { line_items_count: 0, deduction_count: 0 };
+        const toBePaidCount = Math.max(0, counts.line_items_count - counts.deduction_count);
+        const approvalsForRequest = approvalsMap.get(request.request_id) || [];
+        const approvalStageStatus = this.computeApprovalStageStatus(approvalsForRequest, request?.overall_status);
+        const submitterId = request?.submitted_by || request?.created_by;
+        const submitterName = userNameMap.get(submitterId) || null;
+        const submitterDetails = submitterName ? { name: submitterName } : getUserDetailsFromUUID(submitterId);
+
+        return {
+          ...request,
+          budget_name: budgetConfigMap[request.budget_id]?.budget_name || null,
+          budget_description: budgetConfigMap[request.budget_id]?.budget_description || null,
+          line_items_count: counts.line_items_count,
+          deduction_count: counts.deduction_count,
+          to_be_paid_count: toBePaidCount,
+          approval_stage_status: approvalStageStatus,
+          approvals: approvalsForRequest,
+          submitted_by_name: submitterDetails?.name || request?.submitted_by,
+        };
+      });
+
+      const stageFilterRaw = String(filters.approval_stage_status || '').toLowerCase();
+      const stageFilterList = stageFilterRaw
+        ? stageFilterRaw.split(',').map((value) => value.trim()).filter(Boolean)
+        : [];
+      const filteredByStage = stageFilterList.length && !stageFilterList.includes('all')
+        ? normalizedData.filter((request) =>
+            stageFilterList.includes(String(request.approval_stage_status || '').toLowerCase())
+          )
+        : normalizedData;
+
       return {
         success: true,
-        data,
+        data: filteredByStage,
       };
     } catch (error) {
       console.error('Error fetching approval requests:', error);
       return {
         success: false,
         error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Get notifications for requestor/approver dashboards
+   */
+  static async getUserNotifications({ userId, role = 'requestor', allowedBudgetIds = null }) {
+    try {
+      const { data: notificationRows, error: notificationError } = await supabase
+        .from('tblbudgetapprovalrequests_notifications')
+        .select('*')
+        .eq('recipient_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (notificationError) throw notificationError;
+      if (Array.isArray(notificationRows) && notificationRows.length) {
+        return { success: true, data: notificationRows };
+      }
+
+      const normalizedRole = String(role || 'requestor').toLowerCase();
+      const isApprover = normalizedRole.includes('l1') || normalizedRole.includes('l2') || normalizedRole.includes('l3');
+      const isRequestor = normalizedRole.includes('requestor');
+
+      const requestMap = new Map();
+      const contextMap = new Map();
+      const addContext = (requestId, label) => {
+        if (!requestId || !label) return;
+        const existing = contextMap.get(requestId) || new Set();
+        existing.add(label);
+        contextMap.set(requestId, existing);
+      };
+
+      let createdBudgetIds = [];
+
+      if (isRequestor) {
+        const { data: createdBudgets, error: createdBudgetError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id')
+          .eq('created_by', userId);
+
+        if (createdBudgetError) throw createdBudgetError;
+
+        createdBudgetIds = (createdBudgets || []).map((row) => row.budget_id).filter(Boolean);
+
+        const { data: submittedRequests, error: submittedError } = await supabase
+          .from('tblbudgetapprovalrequests')
+          .select('*')
+          .or(`submitted_by.eq.${userId},created_by.eq.${userId}`)
+          .order('created_at', { ascending: false });
+
+        if (submittedError) throw submittedError;
+
+        (submittedRequests || []).forEach((request) => {
+          requestMap.set(request.request_id, request);
+          addContext(request.request_id, 'Your submission');
+        });
+
+        if (createdBudgetIds.length > 0) {
+          const { data: configRequests, error: configError } = await supabase
+            .from('tblbudgetapprovalrequests')
+            .select('*')
+            .in('budget_id', createdBudgetIds)
+            .order('created_at', { ascending: false });
+
+          if (configError) throw configError;
+
+          (configRequests || []).forEach((request) => {
+            requestMap.set(request.request_id, request);
+            addContext(request.request_id, 'Your configuration');
+          });
+        }
+      }
+
+      if (isApprover) {
+        const { data: assignedRows, error: assignedError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, assigned_to_primary, assigned_to_backup, approved_by, updated_at, approval_date')
+          .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId}`)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false });
+
+        if (assignedError) throw assignedError;
+
+        const { data: approvedRows, error: approvedError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, assigned_to_primary, assigned_to_backup, approved_by, updated_at, approval_date')
+          .eq('approved_by', userId)
+          .eq('status', 'approved')
+          .order('updated_at', { ascending: false });
+
+        if (approvedError) throw approvedError;
+
+        [...(assignedRows || []), ...(approvedRows || [])].forEach((row) => {
+          if (!row.request_id) return;
+          addContext(row.request_id, row.status === 'pending' ? 'Assigned to you' : 'Approved by you');
+        });
+
+        const requestIds = Array.from(new Set([...(assignedRows || []), ...(approvedRows || [])].map((row) => row.request_id).filter(Boolean)));
+
+        if (requestIds.length > 0) {
+          const { data: approverRequests, error: approverRequestsError } = await supabase
+            .from('tblbudgetapprovalrequests')
+            .select('*')
+            .in('request_id', requestIds)
+            .order('created_at', { ascending: false });
+
+          if (approverRequestsError) throw approverRequestsError;
+
+          (approverRequests || []).forEach((request) => {
+            requestMap.set(request.request_id, request);
+          });
+        }
+      }
+
+      let requests = Array.from(requestMap.values());
+
+      if (Array.isArray(allowedBudgetIds)) {
+        if (!allowedBudgetIds.length) {
+          return { success: true, data: [] };
+        }
+        requests = requests.filter((request) => allowedBudgetIds.includes(request.budget_id));
+      }
+
+      const requestIds = requests.map((request) => request.request_id).filter(Boolean);
+      const approvalsMap = new Map();
+
+      if (requestIds.length > 0) {
+        const { data: approvalRows, error: approvalsError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('request_id, approval_level, status, approval_date, approver_name, approved_by, updated_at')
+          .in('request_id', requestIds);
+
+        if (approvalsError) throw approvalsError;
+
+        (approvalRows || []).forEach((row) => {
+          const existing = approvalsMap.get(row.request_id) || [];
+          existing.push(row);
+          approvalsMap.set(row.request_id, existing);
+        });
+      }
+
+      const budgetIds = [...new Set(requests.map((request) => request.budget_id).filter(Boolean))];
+      let budgetConfigMap = {};
+      if (budgetIds.length > 0) {
+        const { data: budgetConfigs, error: budgetError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name, budget_description')
+          .in('budget_id', budgetIds);
+
+        if (budgetError) throw budgetError;
+
+        budgetConfigMap = (budgetConfigs || []).reduce((acc, config) => {
+          acc[config.budget_id] = config;
+          return acc;
+        }, {});
+      }
+
+      const userIds = requests.flatMap((request) => [request?.submitted_by, request?.created_by]).filter(Boolean);
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap(userIds);
+      } catch (lookupError) {
+        console.warn('[getUserNotifications] User lookup failed:', lookupError?.message || lookupError);
+      }
+
+      const normalized = requests.map((request) => {
+        const approvalsForRequest = approvalsMap.get(request.request_id) || [];
+        const approvalStageStatus = this.computeApprovalStageStatus(approvalsForRequest, request?.overall_status);
+        const submitterId = request?.submitted_by || request?.created_by;
+        const submitterName = userNameMap.get(submitterId) || null;
+        const submitterDetails = submitterName ? { name: submitterName } : getUserDetailsFromUUID(submitterId);
+
+        return {
+          request_id: request.request_id,
+          request_number: request.request_number,
+          budget_id: request.budget_id,
+          budget_name: budgetConfigMap[request.budget_id]?.budget_name || null,
+          budget_description: budgetConfigMap[request.budget_id]?.budget_description || null,
+          submitted_by: request.submitted_by,
+          submitted_by_name: submitterDetails?.name || request?.submitted_by,
+          total_request_amount: request.total_request_amount || 0,
+          overall_status: request.overall_status,
+          approval_stage_status: approvalStageStatus,
+          created_at: request.created_at,
+          updated_at: request.updated_at,
+          is_client_sponsored: request.is_client_sponsored ?? request.client_sponsored ?? null,
+          payroll_cycle: request.payroll_cycle || null,
+          payroll_cycle_Date: request.payroll_cycle_Date || request.payroll_cycle_date || null,
+          context_tags: Array.from(contextMap.get(request.request_id) || []),
+        };
+      });
+
+      normalized.sort((a, b) => {
+        const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+        const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+        return bTime - aTime;
+      });
+
+      return {
+        success: true,
+        data: normalized,
+      };
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
       };
     }
   }
@@ -239,8 +944,12 @@ export class ApprovalRequestService {
         remaining_budget,
         will_exceed_budget,
         excess_amount,
+        payroll_cycle,
+        payroll_cycle_date,
+        payroll_cycle_Date,
         updated_by,
       } = updateData;
+      const resolvedPayrollCycleDate = payroll_cycle_Date || payroll_cycle_date;
 
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
@@ -262,6 +971,10 @@ export class ApprovalRequestService {
           ...(will_exceed_budget !== undefined && { will_exceed_budget }),
           ...(excess_amount !== undefined && {
             excess_amount: excess_amount ? parseFloat(excess_amount) : null,
+          }),
+          ...(payroll_cycle !== undefined && { payroll_cycle }),
+          ...(resolvedPayrollCycleDate !== undefined && {
+            payroll_cycle_Date: resolvedPayrollCycleDate || null,
           }),
           updated_by,
           updated_at: new Date().toISOString(),
@@ -290,6 +1003,8 @@ export class ApprovalRequestService {
    */
   static async submitApprovalRequest(requestId, submittedBy) {
     try {
+      console.log('[submitApprovalRequest] Starting submission for request:', requestId, 'by:', submittedBy);
+      
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
         .update({
@@ -302,21 +1017,52 @@ export class ApprovalRequestService {
         .eq('request_id', requestId)
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[submitApprovalRequest] Database error updating request:', error);
+        throw error;
+      }
+      
+      console.log('[submitApprovalRequest] Request updated to submitted status');
 
-      // Log activity
-      await this.addActivityLog(requestId, 'submitted', submittedBy);
+      console.log('[submitApprovalRequest] Request updated to submitted status');
 
-      // Create approval levels
-      await this.initializeApprovalWorkflow(requestId);
+      // Run these operations in parallel for better performance
+      console.log('[submitApprovalRequest] Running parallel operations: activity log, workflow init, auto-approval check');
+      const [activityResult, workflowResult, autoApprovalResult, notificationResult] = await Promise.allSettled([
+        this.addActivityLog(requestId, 'submitted', submittedBy),
+        this.initializeApprovalWorkflow(requestId),
+        this.checkAndAutoApproveL1(requestId, submittedBy),
+        this.sendSubmissionNotifications(requestId),
+      ]);
+
+      console.log('[submitApprovalRequest] Parallel operations completed');
+      
+      // Log any errors but don't fail the submission
+      if (activityResult.status === 'rejected') {
+        console.warn('Activity log failed:', activityResult.reason);
+      }
+      if (workflowResult.status === 'rejected') {
+        console.warn('Workflow initialization failed:', workflowResult.reason);
+      }
+      if (notificationResult.status === 'rejected') {
+        console.warn('Submission notification failed:', notificationResult.reason);
+      }
+
+      const autoApproved = autoApprovalResult.status === 'fulfilled' && autoApprovalResult.value?.autoApproved;
+      
+      console.log('[submitApprovalRequest] Submission complete. Auto-approved:', autoApproved);
 
       return {
         success: true,
         data: data[0],
-        message: 'Approval request submitted successfully',
+        autoApproved: autoApproved || false,
+        message: autoApproved 
+          ? 'Approval request submitted and L1 auto-approved (Self-Request)' 
+          : 'Approval request submitted successfully',
       };
     } catch (error) {
-      console.error('Error submitting approval request:', error);
+      console.error('[submitApprovalRequest] Error submitting approval request:', error);
+      console.error('[submitApprovalRequest] Error stack:', error.stack);
       return {
         success: false,
         error: error.message,
@@ -329,7 +1075,7 @@ export class ApprovalRequestService {
    */
   static async initializeApprovalWorkflow(requestId) {
     try {
-      // Get budget configuration with approvers
+      // Get budget configuration first
       const { data: request, error: reqError } = await supabase
         .from('tblbudgetapprovalrequests')
         .select('budget_id')
@@ -338,14 +1084,13 @@ export class ApprovalRequestService {
 
       if (reqError) throw reqError;
 
-      // Get approvers from budget config
-      const { data: approvers, error: appError } = await supabase
+      // Get approvers for the budget configuration
+      const { data: approvers, error: approverError } = await supabase
         .from('tblbudgetconfig_approvers')
-        .select('*')
-        .eq('budget_id', request.budget_id)
-        .order('approval_level', { ascending: true });
+        .select('approval_level, primary_approver, backup_approver')
+        .eq('budget_id', request?.budget_id);
 
-      if (appError) throw appError;
+      if (approverError) throw approverError;
 
       // Create approval records for each level
       const approvalRecords = approvers.map((approver) => ({
@@ -390,6 +1135,83 @@ export class ApprovalRequestService {
         success: false,
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Check if submitter is L1 approver and auto-approve (Self-Request)
+   */
+  static async checkAndAutoApproveL1(requestId, submittedBy) {
+    try {
+      // Get request budget id
+      const { data: request, error: reqError } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('budget_id, submitted_by, created_by')
+        .eq('request_id', requestId)
+        .single();
+
+      if (reqError) throw reqError;
+
+      const effectiveSubmittedBy = String(submittedBy || request?.submitted_by || request?.created_by || '').trim();
+      if (!effectiveSubmittedBy) {
+        return { autoApproved: false };
+      }
+
+      // Get L1 approvers for the budget configuration
+      const { data: l1Approvers, error: approverError } = await supabase
+        .from('tblbudgetconfig_approvers')
+        .select('primary_approver, backup_approver')
+        .eq('budget_id', request?.budget_id)
+        .eq('approval_level', 1);
+
+      if (approverError) throw approverError;
+
+      // Check if submittedBy matches any L1 approver UUID
+      const isL1Approver = l1Approvers.some((approver) => {
+        const primary = String(approver.primary_approver || '').trim();
+        const backup = String(approver.backup_approver || '').trim();
+        return primary === effectiveSubmittedBy || backup === effectiveSubmittedBy;
+      });
+
+      if (!isL1Approver) {
+        return { autoApproved: false };
+      }
+
+      // Auto-approve L1 level and update request status in parallel
+      const [approvalUpdate, requestUpdate, activityLog] = await Promise.all([
+        supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .update({
+            status: 'approved',
+            approved_by: effectiveSubmittedBy,
+            approver_name: 'Self',
+            approver_title: 'L1 Approver (Self-Request)',
+            approval_notes: 'Auto-approved: Self-request by L1 approver',
+            approval_date: new Date().toISOString(),
+            is_self_request: true,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('request_id', requestId)
+          .eq('approval_level', 1),
+        supabase
+          .from('tblbudgetapprovalrequests')
+          .update({
+            overall_status: 'in_progress',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('request_id', requestId),
+        this.addActivityLog(requestId, 'approved', effectiveSubmittedBy, 'Auto-approved: Self-request by L1 approver')
+      ]);
+
+      if (approvalUpdate.error) throw approvalUpdate.error;
+
+      console.log(`[Auto-Approve] L1 auto-approved for request ${requestId} (Self-Request)`);
+
+      return { autoApproved: true };
+    } catch (error) {
+      console.error('Error in L1 auto-approval check:', error);
+      // Don't fail the entire submission if auto-approval fails
+      return { autoApproved: false };
     }
   }
 
@@ -456,30 +1278,65 @@ export class ApprovalRequestService {
    */
   static async addLineItemsBulk(requestId, lineItems, createdBy) {
     try {
+      console.log('[addLineItemsBulk] Starting bulk insert');
+      console.log('[addLineItemsBulk] Request ID:', requestId);
+      console.log('[addLineItemsBulk] Created by:', createdBy);
+      console.log('[addLineItemsBulk] Line items received:', Array.isArray(lineItems) ? lineItems.length : 'NOT AN ARRAY');
+      
+      if (!Array.isArray(lineItems)) {
+        console.error('[addLineItemsBulk] lineItems is not an array:', typeof lineItems, lineItems);
+        throw new Error('lineItems must be an array');
+      }
+      
+      if (lineItems.length === 0) {
+        console.error('[addLineItemsBulk] lineItems array is empty');
+        throw new Error('lineItems array cannot be empty');
+      }
+      
+      console.log('[addLineItemsBulk] First item structure:', JSON.stringify(lineItems[0], null, 2));
+      
       const records = lineItems.map((item, index) => ({
         request_id: requestId,
         item_number: index + 1,
-        employee_id: item.employee_id,
-        employee_name: item.employee_name,
-        department: item.department,
-        position: item.position,
-        item_type: this.normalizeItemType(item.item_type),
-        item_description: item.item_description,
-        amount: parseFloat(item.amount),
+        employee_id: item.employee_id || '',
+        employee_name: item.employee_name || '',
+        department: item.department || '',
+        position: item.position || '',
+        item_type: this.normalizeItemType(item.item_type || 'bonus'),
+        item_description: item.item_description || item.notes || null,
+        amount: parseFloat(item.amount) || 0,
         is_deduction: item.is_deduction || item.amount < 0,
         has_warning: item.has_warning || false,
-        warning_reason: item.warning_reason,
-        notes: item.notes,
+        warning_reason: item.warning_reason || '',
+        notes: item.notes || null,
+        // New fields from updated schema
+        email: item.email || null,
+        employee_status: item.employee_status || item.employeeStatus || null,
+        geo: item.geo || null,
+        Location: item.location || item.Location || null,
+        hire_date: item.hire_date || item.hireDate || null,
+        termination_date: item.termination_date || item.terminationDate || null,
         created_at: new Date().toISOString(),
       }));
 
+      console.log('[addLineItemsBulk] Mapped records count:', records.length);
+      console.log('[addLineItemsBulk] First mapped record:', JSON.stringify(records[0], null, 2));
+      console.log('[addLineItemsBulk] Inserting records into database...');
+      
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_line_items')
         .insert(records)
         .select();
 
-      if (error) throw error;
+      if (error) {
+        console.error('[addLineItemsBulk] Database error:', error);
+        console.error('[addLineItemsBulk] Error details:', JSON.stringify(error, null, 2));
+        throw error;
+      }
 
+      console.log('[addLineItemsBulk] Line items inserted successfully:', data?.length || 0);
+      console.log('[addLineItemsBulk] Updating employee count...');
+      
       // Update request with employee count
       await this.updateApprovalRequest(requestId, {
         employee_count: lineItems.length,
@@ -489,13 +1346,19 @@ export class ApprovalRequestService {
       // Log activity
       await this.addActivityLog(requestId, 'line_item_added', createdBy);
 
+      console.log('[addLineItemsBulk] Bulk insert complete:', data.length, 'items added');
+
       return {
         success: true,
         data,
         message: `${data.length} line items added successfully`,
       };
     } catch (error) {
-      console.error('Error adding line items:', error);
+      console.error('[addLineItemsBulk] ❌ ERROR IN BULK INSERT ❌');
+      console.error('[addLineItemsBulk] Error type:', error.constructor.name);
+      console.error('[addLineItemsBulk] Error message:', error.message);
+      console.error('[addLineItemsBulk] Error stack:', error.stack);
+      console.error('[addLineItemsBulk] Full error:', JSON.stringify(error, null, 2));
       return {
         success: false,
         error: error.message,
@@ -541,6 +1404,8 @@ export class ApprovalRequestService {
         approver_title,
         approval_notes,
         conditions_applied,
+        payroll_cycle,
+        payroll_cycle_date,
       } = approvalData;
 
       const { data, error } = await supabase
@@ -562,22 +1427,22 @@ export class ApprovalRequestService {
 
       if (error) throw error;
 
-      // Check if all approvals are complete
       const allApprovalsComplete = await this.checkAllApprovalsComplete(requestId);
-      if (allApprovalsComplete) {
-        // Update main request status
-        await this.updateApprovalRequest(requestId, {
-          overall_status: 'approved',
-          approved_date: new Date().toISOString(),
-          updated_by: approved_by,
-        });
-      } else {
-        // Update to in_progress if not already
-        await this.updateApprovalRequest(requestId, {
-          overall_status: 'in_progress',
-          updated_by: approved_by,
-        });
-      }
+      const approvalsSnapshot = await this.getApprovalsByRequestId(requestId);
+      const approvalStageStatus = this.computeApprovalStageStatus(
+        approvalsSnapshot.data || [],
+        allApprovalsComplete ? 'approved' : 'in_progress'
+      );
+      const overallStatus = allApprovalsComplete ? 'approved' : 'in_progress';
+
+      const normalizedLevel = Number(approvalLevel);
+      await this.updateApprovalRequest(requestId, {
+        overall_status: overallStatus,
+        ...(allApprovalsComplete && { approved_date: new Date().toISOString() }),
+        ...(normalizedLevel === 4 && payroll_cycle ? { payroll_cycle } : {}),
+        ...(normalizedLevel === 4 && payroll_cycle_date ? { payroll_cycle_date: payroll_cycle_date } : {}),
+        updated_by: approved_by,
+      });
 
       // Log activity
       await this.addActivityLog(
@@ -586,6 +1451,13 @@ export class ApprovalRequestService {
         approved_by,
         `Approved at level ${approvalLevel}`
       );
+
+      await this.sendApprovalStepNotifications({
+        requestId,
+        approvalLevel,
+        payrollCycle: payroll_cycle,
+        payrollCycleDate: payroll_cycle_date,
+      });
 
       return {
         success: true,
@@ -646,6 +1518,57 @@ export class ApprovalRequestService {
       };
     } catch (error) {
       console.error('Error rejecting request:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Complete payroll payment for a request (Payroll step 2)
+   */
+  static async completePayrollPayment(requestId, completionData) {
+    try {
+      const { completed_by, approver_name, approval_notes } = completionData;
+
+      const { data, error } = await supabase
+        .from('tblbudgetapprovalrequests_approvals')
+        .update({
+          status: 'approved',
+          approved_by: completed_by,
+          approver_name,
+          approval_decision: 'approved',
+          approval_notes: approval_notes || 'Payment completed',
+          approval_date: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('request_id', requestId)
+        .eq('approval_level', 4)
+        .select();
+
+      if (error) throw error;
+
+      await this.updateApprovalRequest(requestId, {
+        overall_status: 'completed',
+        submission_status: 'completed',
+        updated_by: completed_by,
+      });
+
+      await this.addActivityLog(
+        requestId,
+        'payment_completed',
+        completed_by,
+        'Payroll payment completed'
+      );
+
+      return {
+        success: true,
+        data: data[0],
+        message: 'Payroll payment completed',
+      };
+    } catch (error) {
+      console.error('Error completing payroll payment:', error);
       return {
         success: false,
         error: error.message,
@@ -850,7 +1773,7 @@ export class ApprovalRequestService {
   /**
    * Get approvals pending for a user
    */
-  static async getPendingApprovalsForUser(userId) {
+  static async getPendingApprovalsForUser(userId, budgetIds = null) {
     try {
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_approvals')
@@ -861,9 +1784,31 @@ export class ApprovalRequestService {
 
       if (error) throw error;
 
+      let filtered = data || [];
+      if (Array.isArray(budgetIds)) {
+        if (!budgetIds.length) {
+          return { success: true, data: [] };
+        }
+
+        const requestIds = filtered.map((row) => row.request_id).filter(Boolean);
+        if (!requestIds.length) {
+          return { success: true, data: [] };
+        }
+
+        const { data: requestRows, error: requestError } = await supabase
+          .from('tblbudgetapprovalrequests')
+          .select('request_id, budget_id')
+          .in('request_id', requestIds);
+
+        if (requestError) throw requestError;
+
+        const budgetMap = new Map((requestRows || []).map((row) => [row.request_id, row.budget_id]));
+        filtered = filtered.filter((row) => budgetIds.includes(budgetMap.get(row.request_id)));
+      }
+
       return {
         success: true,
-        data,
+        data: filtered,
       };
     } catch (error) {
       console.error('Error fetching pending approvals:', error);

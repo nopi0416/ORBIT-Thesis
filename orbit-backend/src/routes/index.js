@@ -3,6 +3,7 @@ import budgetConfigRoutes from './budgetConfigRoutes.js';
 import approvalRequestRoutes from './approvalRequestRoutes.js';
 import authRoutes from './authRoutes.js';
 import adminUserManagementRoutes from './adminUserManagementRoutes.js';
+import aiInsightsRoutes from './aiInsightsRoutes.js';
 
 const router = Router();
 
@@ -24,5 +25,7 @@ router.use('/approval-requests', approvalRequestRoutes);
 router.use('/admin', adminUserManagementRoutes);
 
 
+// AI Insights routes
+router.use('/ai', aiInsightsRoutes);
 
 export default router;

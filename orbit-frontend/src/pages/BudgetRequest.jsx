@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -11,12 +11,12 @@ import { SearchableSelect } from "../components/ui/searchable-select";
 import { MultiSelect } from "../components/ui/multi-select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
+import { resolveUserRole } from "../utils/roleUtils";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
-import budgetConfigService from "../services/budgetConfigService";
+import * as budgetConfigService from "../services/budgetConfigService";
 import { connectWebSocket, addWebSocketListener } from "../services/realtimeService";
-import currencyData from "../data/currencies.json";
-import * as currencyCodes from "currency-codes/index.js";
-
+import { fetchWithCache, invalidateNamespace } from "../utils/dataCache";
 const parseStoredList = (value) => {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -33,68 +33,26 @@ const parseStoredList = (value) => {
   return [value];
 };
 
-const getCurrencyOptionsFromLibrary = () => {
-  const data = currencyCodes?.data;
-  if (Array.isArray(data) && data.length) {
-    return data.map((item) => ({
-      value: item.code,
-      label: `${item.code} - ${item.currency}`,
-    }));
-  }
+const sanitizeTextInput = (value = "") =>
+  String(value).replace(/[^A-Za-z0-9 _\-";:'\n\r]/g, "");
 
-  if (typeof currencyCodes?.codes === "function") {
-    const codes = currencyCodes.codes();
-    if (Array.isArray(codes) && codes.length) {
-      return codes.map((code) => {
-        const info = currencyCodes.code ? currencyCodes.code(code) : null;
-        const currencyName = info?.currency || code;
-        return { value: code, label: `${code} - ${currencyName}` };
-      });
-    }
-  }
+const sanitizeSingleLine = (value = "") =>
+  sanitizeTextInput(value).replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trimStart();
 
-  return [];
+const blockShortcuts = (event) => {
+  const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+  if (!hasModifier) return;
+
+  const key = String(event.key || "").toLowerCase();
+  const allowClipboard = (event.ctrlKey || event.metaKey) && (key === "v" || key === "c" || key === "x");
+  const allowShiftInsert = event.shiftKey && key === "insert";
+
+  if (allowClipboard || allowShiftInsert) return;
+
+  event.preventDefault();
 };
 
-const getCurrencyOptionsFromJson = (data) => {
-  if (!Array.isArray(data)) return [];
-  return data
-    .map((item) => {
-      const code = item?.code || item?.value;
-      if (!code) return null;
-      if (item?.label) {
-        return { value: code, label: item.label };
-      }
-      const name = item?.name || item?.currency;
-      const label = name ? `${code} - ${name}` : code;
-      return { value: code, label };
-    })
-    .filter(Boolean);
-};
-
-const buildCurrencyOptions = () => {
-  const libraryOptions = getCurrencyOptionsFromLibrary();
-  const jsonOptions = getCurrencyOptionsFromJson(currencyData);
-
-  if (!libraryOptions.length) {
-    return jsonOptions;
-  }
-
-  if (!jsonOptions.length) {
-    return libraryOptions;
-  }
-
-  const libraryMap = new Map(libraryOptions.map((option) => [option.value, option]));
-  jsonOptions.forEach((option) => {
-    if (libraryMap.has(option.value)) {
-      libraryMap.set(option.value, { ...libraryMap.get(option.value), ...option });
-    }
-  });
-
-  return Array.from(libraryMap.values()).sort((a, b) => a.value.localeCompare(b.value));
-};
-
-const currencyOptions = buildCurrencyOptions();
+const currencyOptions = [{ value: "PHP", label: "PHP - Philippine Peso" }];
 
 const getApprovalStatusInfo = (status) => {
   switch (status) {
@@ -122,8 +80,14 @@ const getApprovalStatusInfo = (status) => {
 
 export default function BudgetConfigurationPage() {
   const { user } = useAuth();
-  const userRole = user?.role || "requestor";
+  const userRole = resolveUserRole(user);
   const [activeTab, setActiveTab] = useState("list");
+
+  useEffect(() => {
+    const handleSwitchToList = () => setActiveTab("list");
+    window.addEventListener('switchToConfigList', handleSwitchToList);
+    return () => window.removeEventListener('switchToConfigList', handleSwitchToList);
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -141,12 +105,14 @@ export default function BudgetConfigurationPage() {
             >
               Configuration List
             </TabsTrigger>
-            <TabsTrigger
-              value="create"
-              className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-            >
-              Create Configuration
-            </TabsTrigger>
+            {!['l2', 'l3'].includes(String(userRole || '').toLowerCase()) && (
+              <TabsTrigger
+                value="create"
+                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+              >
+                Create Configuration
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="list">
@@ -154,7 +120,9 @@ export default function BudgetConfigurationPage() {
           </TabsContent>
 
           <TabsContent value="create">
-            {activeTab === "create" && <CreateConfiguration />}
+            {activeTab === "create" && !['l2', 'l3'].includes(String(userRole || '').toLowerCase()) && (
+              <CreateConfiguration />
+            )}
           </TabsContent>
         </Tabs>
       </div>
@@ -162,75 +130,277 @@ export default function BudgetConfigurationPage() {
   );
 }
 
-function ConfigurationList() {
+function ConfigurationList({ userRole }) {
   const { user } = useAuth();
+  const toast = useToast();
   const [searchQuery, setSearchQuery] = useState("");
   const [filterGeo, setFilterGeo] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("active");
   const [configurations, setConfigurations] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
   const [editConfig, setEditConfig] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
-  const [editError, setEditError] = useState(null);
-  const [editSuccess, setEditSuccess] = useState(false);
+  const [approvalsL1, setApprovalsL1] = useState([]);
+  const [approvalsL2, setApprovalsL2] = useState([]);
+  const [approvalsL3, setApprovalsL3] = useState([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(true);
+  const [userNameMap, setUserNameMap] = useState(new Map());
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
-  const transformConfig = (config) => {
+  const getApproverName = (approverId, approversList) => {
+    if (!approverId) return null;
+    if (!Array.isArray(approversList) || approversList.length === 0) return null;
+    const approver = approversList.find(a => a.user_id === approverId);
+    if (!approver) {
+      console.log('Approver not found:', approverId, 'in list:', approversList);
+      return null;
+    }
+    const fullName = `${approver.first_name || ''} ${approver.last_name || ''}`.trim();
+    return fullName || null;
+  };
+
+  const transformConfig = useCallback((config) => {
     const startDate = config.start_date || config.startDate || null;
     const endDate = config.end_date || config.endDate || null;
     const dateRangeLabel = startDate && endDate ? `${startDate} → ${endDate}` : "Not specified";
+
+    // Extract approver IDs and names from the approvers array (from tblbudgetconfig_approvers)
+    const approversArray = config.approvers || [];
+    const l1Approver = approversArray.find(a => a.approval_level === 1);
+    const l2Approver = approversArray.find(a => a.approval_level === 2);
+    const l3Approver = approversArray.find(a => a.approval_level === 3);
+
+    const approverL1Id = l1Approver?.primary_approver || "";
+    const backupApproverL1Id = l1Approver?.backup_approver || "";
+    const approverL2Id = l2Approver?.primary_approver || "";
+    const backupApproverL2Id = l2Approver?.backup_approver || "";
+    const approverL3Id = l3Approver?.primary_approver || "";
+    const backupApproverL3Id = l3Approver?.backup_approver || "";
+
+    // Use names from backend (already enriched with user data)
+    const approverL1Name = l1Approver?.approver_name || null;
+    const backupApproverL1Name = l1Approver?.backup_approver_name || null;
+    const approverL2Name = l2Approver?.approver_name || null;
+    const backupApproverL2Name = l2Approver?.backup_approver_name || null;
+    const approverL3Name = l3Approver?.approver_name || null;
+    const backupApproverL3Name = l3Approver?.backup_approver_name || null;
+
+    console.log('Transform config:', config.budget_name || config.name, {
+      approverL1Id,
+      approverL1Name,
+      approverL2Id,
+      approverL2Name,
+      approverL3Id,
+      approverL3Name,
+      approversArray: approversArray.length
+    });
+
+    const resolvedCreatedById = config.created_by || config.createdBy || null;
+    const resolvedCreatedByName =
+      config.created_by_name ||
+      config.createdByName ||
+      (resolvedCreatedById ? userNameMap.get(resolvedCreatedById) : null) ||
+      resolvedCreatedById ||
+      "—";
 
     return {
       id: config.budget_id || config.id,
       name: config.budget_name || config.name || "Unnamed Configuration",
       description: config.description || config.budget_description || "No description provided",
+      status: config.status || config.configuration_status || "active",
+      createdById: resolvedCreatedById,
+      createdByName: resolvedCreatedByName,
       startDate,
       endDate,
       dateRangeLabel,
       limitMin: config.min_limit || config.limitMin || 0,
       limitMax: config.max_limit || config.limitMax || 0,
       budgetControlEnabled: config.budget_control || config.budgetControlEnabled || false,
-      budgetLimit: config.budget_limit || config.budgetLimit || config.max_limit || 0,
+      budgetLimit: config.budget_limit || config.budgetLimit || config.budget_control_limit || config.budgetControlLimit || 0,
       payCycle: config.pay_cycle || config.payCycle || "—",
       currency: config.currency || config.currency_code || config.currencyCode || "—",
+      approvedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
+      clientSponsoredAmount:
+        config.client_sponsored_amount ??
+        config.clientSponsoredAmount ??
+        config.client_sponsored_budget ??
+        config.clientSponsoredBudget ??
+        0,
+      ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
+      hasApprovalActivity:
+        config.has_approval_activity ?? config.hasApprovalActivity ?? false,
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
-      approvers: config.approvers || config.approval_hierarchy || [],
-      approverL1: config.approver_l1 || config.approverL1 || config.approver_l1_id || "",
-      backupApproverL1: config.backup_approver_l1 || config.backupApproverL1 || config.backup_approver_l1_id || "",
-      approverL2: config.approver_l2 || config.approverL2 || config.approver_l2_id || "",
-      backupApproverL2: config.backup_approver_l2 || config.backupApproverL2 || config.backup_approver_l2_id || "",
-      approverL3: config.approver_l3 || config.approverL3 || config.approver_l3_id || "",
-      backupApproverL3: config.backup_approver_l3 || config.backupApproverL3 || config.backup_approver_l3_id || "",
+      history: config.history || config.history_entries || config.historyEntries || [],
+      logs: config.logs || config.logEntries || config.configuration_logs || config.log_entries || [],
+      approvers: approversArray,
+      approverL1: approverL1Id,
+      backupApproverL1: backupApproverL1Id,
+      approverL2: approverL2Id,
+      backupApproverL2: backupApproverL2Id,
+      approverL3: approverL3Id,
+      backupApproverL3: backupApproverL3Id,
+      approverL1Name,
+      backupApproverL1Name,
+      approverL2Name,
+      backupApproverL2Name,
+      approverL3Name,
+      backupApproverL3Name,
       approvalStatus: config.approvalStatus || "no_submission",
     };
+  }, [userNameMap]);
+
+  const resolveApproverId = (value, approvers = []) => {
+    if (!value) return "";
+    const exactMatch = approvers.find((approver) => approver.user_id === value);
+    if (exactMatch) return value;
+    const normalized = String(value).trim().toLowerCase();
+    const nameMatch = approvers.find((approver) =>
+      `${approver.first_name || ""} ${approver.last_name || ""}`.trim().toLowerCase() === normalized
+    );
+    return nameMatch ? nameMatch.user_id : value;
   };
 
+  const fetchConfigurations = useCallback(async (forceRefresh = false) => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const token = user?.token || localStorage.getItem("authToken") || "";
+      if (forceRefresh) {
+        invalidateNamespace('budgetConfigs');
+      }
+      const data = await fetchWithCache(
+        'budgetConfigs',
+        `org_${user?.org_id || 'all'}`,
+        () => budgetConfigService.getBudgetConfigurations({ org_id: user?.org_id }, token),
+        5 * 60 * 1000 // 5 minutes TTL
+      );
+      setConfigurations((data || []).map(transformConfig));
+    } catch (err) {
+      console.error("Error fetching configurations:", err);
+      toast.error(err.message || "Failed to load configurations");
+      setConfigurations([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, transformConfig]);
+
   useEffect(() => {
-    const fetchConfigurations = async () => {
-      setLoading(true);
-      setError(null);
+    // Initial fetch
+    fetchConfigurations();
+    
+    // Auto-refresh when tab/window regains focus to update ongoing amounts
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchConfigurations(true);
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    
+    // Auto-refresh on mount if data might be stale effectively
+    const timer = setTimeout(() => fetchConfigurations(true), 500);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      clearTimeout(timer);
+    };
+  }, [fetchConfigurations]);
+
+  useEffect(() => {
+    const fetchApprovers = async () => {
       try {
-        const token = user?.token || localStorage.getItem("authToken") || "";
-        const data = await budgetConfigService.getBudgetConfigurations({}, token);
-        setConfigurations((data || []).map(transformConfig));
+        setApprovalsLoading(true);
+        const [l1Data, l2Data, l3Data] = await Promise.all([
+          budgetConfigService.getApproversByLevel("L1", token),
+          budgetConfigService.getApproversByLevel("L2", token),
+          budgetConfigService.getApproversByLevel("L3", token),
+        ]);
+        setApprovalsL1(l1Data || []);
+        setApprovalsL2(l2Data || []);
+        setApprovalsL3(l3Data || []);
       } catch (err) {
-        console.error("Error fetching configurations:", err);
-        setError(err.message || "Failed to load configurations");
-        setConfigurations([]);
+        console.error("Error fetching approvers:", err);
+        setApprovalsL1([]);
+        setApprovalsL2([]);
+        setApprovalsL3([]);
       } finally {
-        setLoading(false);
+        setApprovalsLoading(false);
       }
     };
 
-    fetchConfigurations();
-  }, [user]);
+    fetchApprovers();
+  }, [token]);
+
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const data = await fetchWithCache(
+          'budgetUsers',
+          'all',
+          () => budgetConfigService.getUsersList(token),
+          10 * 60 * 1000
+        );
+        const map = new Map(
+          (data || []).map((userRow) => [
+            userRow.user_id,
+            `${userRow.first_name || ''} ${userRow.last_name || ''}`.trim(),
+          ])
+        );
+        setUserNameMap(map);
+      } catch (err) {
+        console.error('Error fetching users list:', err);
+        setUserNameMap(new Map());
+      }
+    };
+
+    fetchUsers();
+  }, [token]);
+
+  // Re-transform configurations when approver data loads to populate names
+  useEffect(() => {
+    console.log('Approver data effect:', {
+      loading: approvalsLoading,
+      configCount: configurations.length,
+      l1Count: approvalsL1.length,
+      l2Count: approvalsL2.length,
+      l3Count: approvalsL3.length
+    });
+
+    if (approvalsLoading) return;
+    if (configurations.length === 0) return;
+
+    console.log('Re-transforming configurations with approver names');
+    setConfigurations(prev => {
+      const rawConfigs = prev.map(config => ({
+        // Get raw config data (revert to original structure for re-transform)
+        budget_id: config.id,
+        budget_name: config.name,
+        description: config.description,
+        created_by: config.createdById,
+        created_by_name: config.createdByName,
+        start_date: config.startDate,
+        end_date: config.endDate,
+        min_limit: config.limitMin,
+        max_limit: config.limitMax,
+        budget_control: config.budgetControlEnabled,
+        budget_limit: config.budgetLimit,
+        pay_cycle: config.payCycle,
+        currency: config.currency,
+        geo: config.geo,
+        location: config.location,
+        client: config.clients,
+        approvers: config.approvers, // Preserve the approvers array from backend
+        status: config.status,
+      }));
+      return rawConfigs.map(transformConfig);
+    });
+  }, [approvalsLoading, transformConfig]);
 
   useEffect(() => {
     connectWebSocket();
@@ -273,29 +443,107 @@ function ConfigurationList() {
   }, [token, selectedConfig?.id]);
 
   useEffect(() => {
-    if (!selectedConfig) return;
+    if (!detailsOpen || !selectedConfig?.id) return;
+    let isActive = true;
+
+    const fetchConfigDetails = async () => {
+      try {
+        const data = await budgetConfigService.getBudgetConfigurationById(selectedConfig.id, token);
+        if (!isActive || !data) return;
+        const normalized = transformConfig(data);
+        setSelectedConfig((prev) => (prev && prev.id === normalized.id ? { ...prev, ...normalized } : prev));
+      } catch (err) {
+        console.error('Failed to refresh configuration details:', err);
+      }
+    };
+
+    fetchConfigDetails();
+
+    return () => {
+      isActive = false;
+    };
+  }, [detailsOpen, selectedConfig?.id, token, transformConfig]);
+
+  useEffect(() => {
+    if (!selectedConfig) {
+      setEditConfig(null);
+      return;
+    }
+
+    // Extract approver ID from various possible formats
+    const extractApproverId = (value) => {
+      if (!value) return '';
+      if (typeof value === 'string') return value;
+      if (typeof value === 'object' && value.user_id) return value.user_id;
+      if (typeof value === 'object' && value.id) return value.id;
+      return '';
+    };
+
     setEditConfig({
       id: selectedConfig.id,
       name: selectedConfig.name || "",
       description: selectedConfig.description || "",
+      status: selectedConfig.status || "active",
+      createdById: selectedConfig.createdById || null,
+      createdByName: selectedConfig.createdByName || "—",
       startDate: selectedConfig.startDate || "",
       endDate: selectedConfig.endDate || "",
       limitMin: selectedConfig.limitMin || "",
       limitMax: selectedConfig.limitMax || "",
-      currency: selectedConfig.currency || "",
-      payCycle: selectedConfig.payCycle || "",
+      currency: "PHP",
+      payCycle: "SEMI_MONTHLY",
       budgetControlEnabled: Boolean(selectedConfig.budgetControlEnabled),
       budgetControlLimit: selectedConfig.budgetLimit || "",
-      approverL1: selectedConfig.approverL1 || "",
-      backupApproverL1: selectedConfig.backupApproverL1 || "",
-      approverL2: selectedConfig.approverL2 || "",
-      backupApproverL2: selectedConfig.backupApproverL2 || "",
-      approverL3: selectedConfig.approverL3 || "",
-      backupApproverL3: selectedConfig.backupApproverL3 || "",
+      approverL1: extractApproverId(selectedConfig.approverL1),
+      backupApproverL1: extractApproverId(selectedConfig.backupApproverL1),
+      approverL2: extractApproverId(selectedConfig.approverL2),
+      backupApproverL2: extractApproverId(selectedConfig.backupApproverL2),
+      approverL3: extractApproverId(selectedConfig.approverL3),
+      backupApproverL3: extractApproverId(selectedConfig.backupApproverL3),
     });
-    setEditError(null);
-    setEditSuccess(false);
   }, [selectedConfig]);
+
+  useEffect(() => {
+    if (!editConfig) return;
+    setEditConfig((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      const resolvedL1 = resolveApproverId(prev.approverL1, approvalsL1);
+      const resolvedBackupL1 = resolveApproverId(prev.backupApproverL1, approvalsL1);
+      const resolvedL2 = resolveApproverId(prev.approverL2, approvalsL2);
+      const resolvedBackupL2 = resolveApproverId(prev.backupApproverL2, approvalsL2);
+      const resolvedL3 = resolveApproverId(prev.approverL3, approvalsL3);
+      const resolvedBackupL3 = resolveApproverId(prev.backupApproverL3, approvalsL3);
+
+      let changed = false;
+      if (resolvedL1 !== prev.approverL1) {
+        next.approverL1 = resolvedL1;
+        changed = true;
+      }
+      if (resolvedBackupL1 !== prev.backupApproverL1) {
+        next.backupApproverL1 = resolvedBackupL1;
+        changed = true;
+      }
+      if (resolvedL2 !== prev.approverL2) {
+        next.approverL2 = resolvedL2;
+        changed = true;
+      }
+      if (resolvedBackupL2 !== prev.backupApproverL2) {
+        next.backupApproverL2 = resolvedBackupL2;
+        changed = true;
+      }
+      if (resolvedL3 !== prev.approverL3) {
+        next.approverL3 = resolvedL3;
+        changed = true;
+      }
+      if (resolvedBackupL3 !== prev.backupApproverL3) {
+        next.backupApproverL3 = resolvedBackupL3;
+        changed = true;
+      }
+
+      return changed ? next : prev;
+    });
+  }, [approvalsL1, approvalsL2, approvalsL3]);
 
   const renderApproverSummary = (config) => {
     if (config.approvers?.length) {
@@ -320,14 +568,19 @@ function ConfigurationList() {
   };
 
   const handleEditChange = (field, value) => {
-    setEditConfig((prev) => (prev ? { ...prev, [field]: value } : prev));
+    const textFields = new Set(["name", "description"]);
+    const nextValue = textFields.has(field) ? sanitizeSingleLine(value) : value;
+    setEditConfig((prev) => (prev ? { ...prev, [field]: nextValue } : prev));
   };
 
   const handleSaveEdit = async () => {
     if (!editConfig?.id) return;
+    const isOwner = String(editConfig.createdById || '') && String(editConfig.createdById) === String(user?.id || '');
+    if (!isOwner) {
+      toast.error('Only the configuration creator can modify this configuration.');
+      return;
+    }
     setEditSaving(true);
-    setEditError(null);
-    setEditSuccess(false);
 
     try {
       const payload = {
@@ -337,8 +590,8 @@ function ConfigurationList() {
         endDate: editConfig.endDate || null,
         minLimit: editConfig.limitMin ? parseFloat(editConfig.limitMin) : 0,
         maxLimit: editConfig.limitMax ? parseFloat(editConfig.limitMax) : 0,
-        currency: editConfig.currency || null,
-        payCycle: editConfig.payCycle || null,
+        currency: "PHP",
+        payCycle: "SEMI_MONTHLY",
         budgetControlEnabled: editConfig.budgetControlEnabled,
         budgetControlLimit: editConfig.budgetControlEnabled && editConfig.budgetControlLimit
           ? parseFloat(editConfig.budgetControlLimit)
@@ -352,6 +605,7 @@ function ConfigurationList() {
         backupApproverL2: editConfig.backupApproverL2 || null,
         approverL3: editConfig.approverL3 || null,
         backupApproverL3: editConfig.backupApproverL3 || null,
+        status: editConfig.status || 'active',
       };
 
       await budgetConfigService.updateBudgetConfiguration(editConfig.id, payload, token);
@@ -371,8 +625,8 @@ function ConfigurationList() {
                     : config.dateRangeLabel,
                 limitMin: editConfig.limitMin,
                 limitMax: editConfig.limitMax,
-                currency: editConfig.currency,
-                payCycle: editConfig.payCycle,
+                currency: "PHP",
+                payCycle: "SEMI_MONTHLY",
                 budgetControlEnabled: editConfig.budgetControlEnabled,
                 budgetLimit: editConfig.budgetControlEnabled ? editConfig.budgetControlLimit : "—",
                 approverL1: editConfig.approverL1,
@@ -381,15 +635,16 @@ function ConfigurationList() {
                 backupApproverL2: editConfig.backupApproverL2,
                 approverL3: editConfig.approverL3,
                 backupApproverL3: editConfig.backupApproverL3,
+                status: editConfig.status || config.status,
               }
             : config
         )
       );
 
       setSelectedConfig((prev) => (prev ? { ...prev, ...editConfig } : prev));
-      setEditSuccess(true);
+      toast.success("Configuration updated successfully.");
     } catch (err) {
-      setEditError(err.message || "Failed to update configuration");
+      toast.error(err.message || "Failed to update configuration");
     } finally {
       setEditSaving(false);
     }
@@ -418,11 +673,35 @@ function ConfigurationList() {
     const matchesGeo = filterGeo === "all" || config.geo.includes(filterGeo);
     const matchesLocation = filterLocation === "all" || config.location.includes(filterLocation);
     const matchesClient = filterClient === "all" || config.clients.includes(filterClient);
-    return matchesSearch && matchesGeo && matchesLocation && matchesClient;
+    const statusNormalized = String(config.status || "active").toLowerCase();
+    const matchesStatus = statusFilter === "all" || statusNormalized === statusFilter;
+    return matchesSearch && matchesGeo && matchesLocation && matchesClient && matchesStatus;
   });
 
   const historyItems = selectedConfig?.history || [];
   const logItems = selectedConfig?.logs || selectedConfig?.logEntries || [];
+  const isOwner = editConfig && String(editConfig.createdById || '') === String(user?.id || '');
+  const canViewLogs = String((selectedConfig?.createdById || editConfig?.createdById) || '') === String(user?.id || '') || ['payroll', 'admin', 'super_admin'].includes(userRole);
+  const normalizedStatus = String(editConfig?.status || 'active').toLowerCase();
+  const isExpired = normalizedStatus === 'expired';
+  const hasApprovalActivity = Boolean(editConfig?.hasApprovalActivity || editConfig?.has_approval_activity);
+
+  const normalizeLogItem = (item) => {
+    if (!item) return {};
+    if (typeof item === 'string') return { description: item };
+    return item;
+  };
+
+  const getLogValue = (item, fields, fallback = '—') => {
+    const entry = normalizeLogItem(item);
+    for (const field of fields) {
+      const value = entry?.[field];
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return value;
+      }
+    }
+    return fallback;
+  };
 
   return (
     <div className="space-y-6">
@@ -441,7 +720,8 @@ function ConfigurationList() {
                   id="search"
                   placeholder="Search by configuration name..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => setSearchQuery(sanitizeSingleLine(e.target.value))}
+                  onKeyDown={blockShortcuts}
                   className="pl-9 bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
                 />
               </div>
@@ -498,78 +778,190 @@ function ConfigurationList() {
           <CardDescription className="text-gray-400">All budget configurations</CardDescription>
         </CardHeader>
         <CardContent>
+          <Tabs value={statusFilter} onValueChange={setStatusFilter} className="mb-4">
+            <TabsList className="bg-slate-700/60 border-slate-600 p-1">
+              <TabsTrigger value="active" className="data-[state=active]:bg-emerald-600 data-[state=active]:text-white text-gray-300 border-0">
+                Active
+              </TabsTrigger>
+              <TabsTrigger value="expired" className="data-[state=active]:bg-amber-600 data-[state=active]:text-white text-gray-300 border-0">
+                Expired
+              </TabsTrigger>
+              <TabsTrigger value="deactivated" className="data-[state=active]:bg-rose-600 data-[state=active]:text-white text-gray-300 border-0">
+                Deactivated
+              </TabsTrigger>
+              <TabsTrigger value="all" className="data-[state=active]:bg-slate-600 data-[state=active]:text-white text-gray-300 border-0">
+                All
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <Loader className="h-6 w-6 text-pink-500 animate-spin" />
             </div>
-          ) : error ? (
-            <div className="text-sm text-red-400">{error}</div>
           ) : filteredConfigurations.length === 0 ? (
             <div className="text-sm text-gray-400">No configurations found.</div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm text-left text-gray-300">
-                <thead className="text-xs uppercase bg-slate-700 text-gray-300">
+            <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+              <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
                   <tr>
-                    <th className="px-4 py-3">Configuration</th>
-                    <th className="px-4 py-3">Date Range</th>
-                    <th className="px-4 py-3">Budget Limit</th>
-                    <th className="px-4 py-3">Payroll Cycle</th>
-                    <th className="px-4 py-3">Currency</th>
-                    <th className="px-4 py-3">Geo</th>
-                    <th className="px-4 py-3">Location</th>
-                    <th className="px-4 py-3">Client</th>
-                    <th className="px-4 py-3">Approvers</th>
-                    <th className="px-4 py-3">Status</th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[160px] max-w-[280px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Configuration
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[90px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Status
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Created By
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[130px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Period
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[110px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Budget Limit
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Approved Amount
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[140px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Client Sponsored Amount
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Ongoing Amount
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[90px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Min - Max
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[100px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Geo
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[100px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Location
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      Client
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      L1 Approver
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      L2 Approver
+                    </th>
+                    <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
+                      L3 Approver
+                    </th>
+                    <th className="px-2 py-2 min-w-[70px] sticky right-0 z-20 bg-slate-700">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredConfigurations.map((config) => {
-                    const approvalInfo = getApprovalStatusInfo(config.approvalStatus);
-                    const StatusIcon = approvalInfo.icon;
-
-                    return (
-                      <tr
-                        key={config.id}
-                        className="border-b border-slate-700 hover:bg-slate-700/60 cursor-pointer"
-                        onClick={() => {
-                          setSelectedConfig(config);
-                          setDetailsOpen(true);
-                        }}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-semibold text-white">{config.name}</div>
-                          <div className="text-xs text-gray-400">{config.description}</div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant="outline" className="text-xs border-slate-500 text-gray-300 bg-slate-600">
-                            {config.dateRangeLabel}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          {config.budgetControlEnabled ? config.budgetLimit : "—"}
-                        </td>
-                        <td className="px-4 py-3">{config.payCycle}</td>
-                        <td className="px-4 py-3">{config.currency || "—"}</td>
-                        <td className="px-4 py-3">{config.geo.length ? config.geo.join(", ") : "—"}</td>
-                        <td className="px-4 py-3">{config.location.length ? config.location.join(", ") : "—"}</td>
-                        <td className="px-4 py-3">{config.clients.length ? config.clients.join(", ") : "—"}</td>
-                        <td className="px-4 py-3">
-                          <div className="space-y-1 text-xs text-gray-300">
-                            {renderApproverSummary(config).map((line, index) => (
-                              <div key={`${config.id}-approver-${index}`}>{line}</div>
-                            ))}
+                  {filteredConfigurations.map((config) => (
+                    <tr key={config.id} className="border-b border-slate-700 hover:bg-slate-700/50 transition-colors">
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="font-medium text-white">{config.name}</div>
+                        {config.description && (
+                          <div className="text-xs text-gray-400 mt-1 line-clamp-2">{config.description}</div>
+                        )}
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <Badge className={`text-[10px] ${
+                          String(config.status || '').toLowerCase() === 'active'
+                            ? 'bg-emerald-600 text-white'
+                            : String(config.status || '').toLowerCase() === 'expired'
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-rose-600 text-white'
+                        }`}>
+                          {String(config.status || 'active').charAt(0).toUpperCase() + String(config.status || 'active').slice(1)}
+                        </Badge>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">{config.createdByName || '—'}</div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs">{config.dateRangeLabel}</div>
+                        <div className="text-xs text-gray-400">{config.payCycle === 'SEMI_MONTHLY' ? 'Semi-Monthly' : config.payCycle}</div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        {config.budgetControlEnabled ? (
+                          <div className="font-medium text-green-400">
+                            {config.currency} {Number(config.budgetLimit || 0).toLocaleString()}
                           </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2 text-xs">
-                            <StatusIcon className={`h-4 w-4 ${approvalInfo.color}`} />
-                            <span>{approvalInfo.label}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                        ) : (
+                          <div className="text-xs text-gray-400">No limit</div>
+                        )}
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        <div className="font-medium text-emerald-400">
+                          {config.currency} {Number(config.approvedAmount || 0).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        <div className="font-medium text-cyan-300">
+                          {config.currency} {Number(config.clientSponsoredAmount || 0).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        <div className="font-medium text-amber-300">
+                          {config.currency} {Number(config.ongoingAmount || 0).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600 text-right">
+                        <div className="text-xs">
+                          {config.currency} {Number(config.limitMin || 0).toLocaleString()} - {Number(config.limitMax || 0).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs">{config.geo?.length ? config.geo.join(', ') : 'All'}</div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs">{config.location?.length ? config.location.join(', ') : 'All'}</div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs">
+                          {Array.isArray(config.clients) && config.clients.length > 0
+                            ? config.clients.length > 2
+                              ? `${config.clients.slice(0, 2).join(', ')}... (+${config.clients.length - 2})`
+                              : config.clients.join(', ')
+                            : 'All'}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">
+                          {config.approverL1Name || config.approverL1 || '—'}
+                          {config.backupApproverL1Name && (
+                            <div className="text-xs text-gray-500 mt-0.5">Backup: {config.backupApproverL1Name}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">
+                          {config.approverL2Name || config.approverL2 || '—'}
+                          {config.backupApproverL2Name && (
+                            <div className="text-xs text-gray-500 mt-0.5">Backup: {config.backupApproverL2Name}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 border-r border-slate-600">
+                        <div className="text-xs text-gray-300">
+                          {config.approverL3Name || config.approverL3 || '—'}
+                          {config.backupApproverL3Name && (
+                            <div className="text-xs text-gray-500 mt-0.5">Backup: {config.backupApproverL3Name}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 sticky right-0 z-10 bg-slate-800">
+                        <Button
+                          onClick={() => {
+                            setSelectedConfig(config);
+                            setDetailsOpen(true);
+                          }}
+                          size="sm"
+                          className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-7"
+                        >
+                          View
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -578,7 +970,10 @@ function ConfigurationList() {
       </Card>
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[90vw] max-w-2xl">
+        <DialogContent
+          className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] 2xl:w-[50vw] max-w-[900px] max-h-[85vh] overflow-y-auto"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="text-white">{selectedConfig?.name || "Configuration"}</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -588,24 +983,29 @@ function ConfigurationList() {
 
           <Tabs defaultValue="edit" className="space-y-4">
             <TabsList className="bg-slate-700/60 border-slate-600 p-1">
-              <TabsTrigger
+              {/* History & Logs Removed as per request */}
+              {/* <TabsTrigger
                 value="edit"
                 className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
               >
                 Edit
               </TabsTrigger>
-              <TabsTrigger
-                value="history"
-                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-              >
-                History
-              </TabsTrigger>
-              <TabsTrigger
-                value="logs"
-                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-              >
-                Logs
-              </TabsTrigger>
+              {canViewLogs && (
+                <>
+                  <TabsTrigger
+                    value="history"
+                    className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+                  >
+                    History
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="logs"
+                    className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+                  >
+                    Logs
+                  </TabsTrigger>
+                </>
+              )} */}
             </TabsList>
 
             <TabsContent value="edit" className="space-y-4">
@@ -613,24 +1013,46 @@ function ConfigurationList() {
                 <p className="text-sm text-gray-400">Select a configuration to edit.</p>
               ) : (
                 <div className="space-y-4">
-                  {editError && (
-                    <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
-                      {editError}
+                  {!String(editConfig.createdById || '') || String(editConfig.createdById) !== String(user?.id || '') ? (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">
+                      Only the configuration creator can modify this configuration.
                     </div>
-                  )}
-                  {editSuccess && (
-                    <div className="rounded-lg border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-300">
-                      Configuration updated successfully.
-                    </div>
-                  )}
+                  ) : null}
 
                   <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label className="text-white">Status</Label>
+                      <SearchableSelect
+                        value={normalizedStatus}
+                        onValueChange={(value) => handleEditChange("status", value)}
+                        options={[
+                          { value: "active", label: "Active" },
+                          ...(isExpired ? [{ value: "expired", label: "Expired" }] : []),
+                          { value: "deactivated", label: "Deactivated" },
+                        ]}
+                        placeholder="Select status"
+                        searchPlaceholder="Search status..."
+                        maxLength={10}
+                        disabled={!isOwner || isExpired}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Created By</Label>
+                      <Input
+                        value={editConfig.createdByName || "—"}
+                        disabled
+                        className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
+                      />
+                    </div>
                     <div className="space-y-2">
                       <Label className="text-white">Budget Name</Label>
                       <Input
                         value={editConfig.name}
                         onChange={(e) => handleEditChange("name", e.target.value)}
+                        onKeyDown={blockShortcuts}
+                        maxLength={100}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                     <div className="space-y-2">
@@ -639,11 +1061,10 @@ function ConfigurationList() {
                         value={editConfig.payCycle}
                         onValueChange={(value) => handleEditChange("payCycle", value)}
                         options={[
-                          { value: "MONTHLY", label: "Monthly (End of Month)" },
                           { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
-                          { value: "BI_WEEKLY", label: "Bi-Weekly (Every 14 Days)" },
                         ]}
                         placeholder="Select payroll cycle"
+                        disabled
                       />
                     </div>
                     <div className="space-y-2">
@@ -653,6 +1074,7 @@ function ConfigurationList() {
                         value={editConfig.startDate || ""}
                         onChange={(e) => handleEditChange("startDate", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner || hasApprovalActivity || isExpired}
                       />
                     </div>
                     <div className="space-y-2">
@@ -662,6 +1084,7 @@ function ConfigurationList() {
                         value={editConfig.endDate || ""}
                         onChange={(e) => handleEditChange("endDate", e.target.value)}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                     <div className="space-y-2">
@@ -671,6 +1094,7 @@ function ConfigurationList() {
                         onValueChange={(value) => handleEditChange("currency", value)}
                         options={currencyOptions}
                         placeholder="Select currency"
+                        disabled
                       />
                     </div>
                     <div className="space-y-2">
@@ -681,6 +1105,7 @@ function ConfigurationList() {
                           checked={editConfig.budgetControlEnabled}
                           onCheckedChange={(checked) => handleEditChange("budgetControlEnabled", Boolean(checked))}
                           className="border-blue-400 bg-slate-600"
+                          disabled={!isOwner}
                         />
                         <Label htmlFor="edit-budget-control" className="text-white text-sm">Enable</Label>
                       </div>
@@ -690,9 +1115,10 @@ function ConfigurationList() {
                       <Input
                         type="number"
                         value={editConfig.budgetControlLimit}
-                        onChange={(e) => handleEditChange("budgetControlLimit", e.target.value)}
+                        onChange={(e) => handleEditChange("budgetControlLimit", e.target.value.slice(0, 15))}
+                        maxLength={15}
                         className="bg-slate-700 border-gray-300 text-white"
-                        disabled={!editConfig.budgetControlEnabled}
+                        disabled={!isOwner || !editConfig.budgetControlEnabled}
                       />
                     </div>
                     <div className="space-y-2">
@@ -700,8 +1126,10 @@ function ConfigurationList() {
                       <Input
                         type="number"
                         value={editConfig.limitMin}
-                        onChange={(e) => handleEditChange("limitMin", e.target.value)}
+                        onChange={(e) => handleEditChange("limitMin", e.target.value.slice(0, 10))}
+                        maxLength={10}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                     <div className="space-y-2">
@@ -709,8 +1137,10 @@ function ConfigurationList() {
                       <Input
                         type="number"
                         value={editConfig.limitMax}
-                        onChange={(e) => handleEditChange("limitMax", e.target.value)}
+                        onChange={(e) => handleEditChange("limitMax", e.target.value.slice(0, 10))}
+                        maxLength={10}
                         className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner}
                       />
                     </div>
                   </div>
@@ -720,58 +1150,124 @@ function ConfigurationList() {
                     <textarea
                       value={editConfig.description}
                       onChange={(e) => handleEditChange("description", e.target.value)}
+                      onKeyDown={blockShortcuts}
+                      maxLength={500}
                       rows={3}
                       className="w-full rounded-md bg-slate-700 border border-gray-300 px-3 py-2 text-white"
+                      disabled={!isOwner}
                     />
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <Label className="text-white">Approver L1</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.approverL1}
-                        onChange={(e) => handleEditChange("approverL1", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => {
+                          handleEditChange("approverL1", value);
+                          if (editConfig.backupApproverL1 === value) {
+                            handleEditChange("backupApproverL1", "");
+                          }
+                        }}
+                        options={approvalsL1.map((approver) => ({
+                          value: approver.user_id,
+                          label: `${approver.first_name} ${approver.last_name}`,
+                        }))}
+                        disabled={approvalsLoading || !isOwner}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                        searchPlaceholder="Search approver..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Backup L1</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.backupApproverL1}
-                        onChange={(e) => handleEditChange("backupApproverL1", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => handleEditChange("backupApproverL1", value)}
+                        options={approvalsL1
+                          .filter((approver) => approver.user_id !== editConfig.approverL1)
+                          .map((approver) => ({
+                            value: approver.user_id,
+                            label: `${approver.first_name} ${approver.last_name}`,
+                          }))}
+                        disabled={approvalsLoading || !isOwner}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                        searchPlaceholder="Search backup..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Approver L2</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.approverL2}
-                        onChange={(e) => handleEditChange("approverL2", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => {
+                          handleEditChange("approverL2", value);
+                          if (editConfig.backupApproverL2 === value) {
+                            handleEditChange("backupApproverL2", "");
+                          }
+                        }}
+                        options={approvalsL2.map((approver) => ({
+                          value: approver.user_id,
+                          label: `${approver.first_name} ${approver.last_name}`,
+                        }))}
+                        disabled={approvalsLoading || !isOwner}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                        searchPlaceholder="Search approver..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Backup L2</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.backupApproverL2}
-                        onChange={(e) => handleEditChange("backupApproverL2", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => handleEditChange("backupApproverL2", value)}
+                        options={approvalsL2
+                          .filter((approver) => approver.user_id !== editConfig.approverL2)
+                          .map((approver) => ({
+                            value: approver.user_id,
+                            label: `${approver.first_name} ${approver.last_name}`,
+                          }))}
+                        disabled={approvalsLoading || !isOwner}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                        searchPlaceholder="Search backup..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Approver L3</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.approverL3}
-                        onChange={(e) => handleEditChange("approverL3", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => {
+                          handleEditChange("approverL3", value);
+                          if (editConfig.backupApproverL3 === value) {
+                            handleEditChange("backupApproverL3", "");
+                          }
+                        }}
+                        options={approvalsL3.map((approver) => ({
+                          value: approver.user_id,
+                          label: `${approver.first_name} ${approver.last_name}`,
+                        }))}
+                        disabled={approvalsLoading || !isOwner}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
+                        searchPlaceholder="Search approver..."
+                        maxLength={50}
                       />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white">Backup L3</Label>
-                      <Input
+                      <SearchableSelect
                         value={editConfig.backupApproverL3}
-                        onChange={(e) => handleEditChange("backupApproverL3", e.target.value)}
-                        className="bg-slate-700 border-gray-300 text-white"
+                        onValueChange={(value) => handleEditChange("backupApproverL3", value)}
+                        options={approvalsL3
+                          .filter((approver) => approver.user_id !== editConfig.approverL3)
+                          .map((approver) => ({
+                            value: approver.user_id,
+                            label: `${approver.first_name} ${approver.last_name}`,
+                          }))}
+                        disabled={approvalsLoading || !isOwner}
+                        placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
+                        searchPlaceholder="Search backup..."
+                        maxLength={50}
                       />
                     </div>
                   </div>
@@ -779,7 +1275,7 @@ function ConfigurationList() {
                   <div className="flex justify-end">
                     <Button
                       onClick={handleSaveEdit}
-                      disabled={editSaving}
+                      disabled={editSaving || String(editConfig.createdById || '') !== String(user?.id || '')}
                       className="bg-blue-600 hover:bg-blue-700 text-white"
                     >
                       {editSaving ? "Saving..." : "Save Changes"}
@@ -788,34 +1284,83 @@ function ConfigurationList() {
                 </div>
               )}
             </TabsContent>
+            {false && (
+              <>
+                <TabsContent value="history" className="space-y-2">
+                  {!canViewLogs ? (
+                    <p className="text-sm text-gray-400">Only the configuration creator can view history.</p>
+                  ) : historyItems.length === 0 ? (
+                    <p className="text-sm text-gray-400">No history available.</p>
+                  ) : (
+                    <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
+                      <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                        <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
+                          <tr>
+                            <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Event</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Details</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700">
+                          {historyItems.map((item, index) => (
+                            <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-200">
+                                {getLogValue(item, ['event', 'action', 'action_type', 'type', 'message'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </TabsContent>
 
-            <TabsContent value="history" className="space-y-2">
-              {historyItems.length === 0 ? (
-                <p className="text-sm text-gray-400">No history available.</p>
-              ) : (
-                <ul className="space-y-2 text-sm text-gray-200">
-                  {historyItems.map((item, index) => (
-                    <li key={`${item.id || item.timestamp || index}`} className="bg-slate-700/50 rounded p-3">
-                      {item.message || item.event || JSON.stringify(item)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </TabsContent>
-
-            <TabsContent value="logs" className="space-y-2">
-              {logItems.length === 0 ? (
-                <p className="text-sm text-gray-400">No logs available.</p>
-              ) : (
-                <ul className="space-y-2 text-sm text-gray-200">
-                  {logItems.map((item, index) => (
-                    <li key={`${item.id || item.timestamp || index}`} className="bg-slate-700/50 rounded p-3">
-                      {item.message || item.event || JSON.stringify(item)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </TabsContent>
+                <TabsContent value="logs" className="space-y-2">
+                  {!canViewLogs ? (
+                    <p className="text-sm text-gray-400">Only the configuration creator can view logs.</p>
+                  ) : logItems.length === 0 ? (
+                    <p className="text-sm text-gray-400">No logs available.</p>
+                  ) : (
+                    <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
+                      <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                        <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
+                          <tr>
+                            <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Action</th>
+                            <th className="px-3 py-2 border-b border-slate-600">Description</th>
+                            <th className="px-3 py-2 border-b border-slate-600">By</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700">
+                          {logItems.map((item, index) => (
+                            <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-200">
+                                {getLogValue(item, ['action_type', 'action', 'event', 'type'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-slate-300">
+                                {getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '—')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </TabsContent>
+              </>
+            )}
           </Tabs>
         </DialogContent>
       </Dialog>
@@ -825,10 +1370,8 @@ function ConfigurationList() {
 
 function CreateConfiguration() {
   const { user } = useAuth();
+  const toast = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState(null);
-  const [submitSuccess, setSubmitSuccess] = useState(false);
-  const [stepError, setStepError] = useState(null);
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successCountdown, setSuccessCountdown] = useState(5);
   const [viewStep, setViewStep] = useState("form");
@@ -849,10 +1392,10 @@ function CreateConfiguration() {
     dataControlEnabled: true,
     limitMin: "",
     limitMax: "",
-    currency: "",
+    currency: "PHP",
     budgetControlEnabled: false,
     budgetControlLimit: "",
-    payCycle: "",
+    payCycle: "SEMI_MONTHLY",
     affectedOUPaths: [],
     accessibleOUPaths: [],
     countries: [],
@@ -874,9 +1417,24 @@ function CreateConfiguration() {
       try {
         setApprovalsLoading(true);
         const [l1Data, l2Data, l3Data] = await Promise.all([
-          budgetConfigService.getApproversByLevel("L1", token),
-          budgetConfigService.getApproversByLevel("L2", token),
-          budgetConfigService.getApproversByLevel("L3", token),
+          fetchWithCache(
+            'approvers',
+            'L1',
+            () => budgetConfigService.getApproversByLevel("L1", token),
+            10 * 60 * 1000 // 10 minutes TTL
+          ),
+          fetchWithCache(
+            'approvers',
+            'L2',
+            () => budgetConfigService.getApproversByLevel("L2", token),
+            10 * 60 * 1000
+          ),
+          fetchWithCache(
+            'approvers',
+            'L3',
+            () => budgetConfigService.getApproversByLevel("L3", token),
+            10 * 60 * 1000
+          ),
         ]);
         setApprovalsL1(l1Data || []);
         setApprovalsL2(l2Data || []);
@@ -898,7 +1456,12 @@ function CreateConfiguration() {
     const fetchOrganizations = async () => {
       try {
         setOrganizationsLoading(true);
-        const data = await budgetConfigService.getOrganizations(token);
+        const data = await fetchWithCache(
+          'organizations',
+          'all',
+          () => budgetConfigService.getOrganizations(token),
+          10 * 60 * 1000 // 10 minutes TTL
+        );
         setOrganizations(data || []);
       } catch (err) {
         console.error("Error fetching organizations:", err);
@@ -968,6 +1531,22 @@ function CreateConfiguration() {
 
   const { parents: parentOrgs, childOUs: childOrgMap, grandchildOUs: grandchildOrgMap } = buildOrgHierarchy();
 
+  const getParentSelectionCount = (paths = [], parentId) =>
+    (paths || []).filter((path) => path[0] === parentId).length;
+
+  const buildAllPathsForParent = (parentId) => {
+    const paths = [[parentId]];
+    const children = childOrgMap[parentId] || [];
+    children.forEach((child) => {
+      paths.push([parentId, child.org_id]);
+      const grandchildren = grandchildOrgMap[child.org_id] || [];
+      grandchildren.forEach((grandchild) => {
+        paths.push([parentId, child.org_id, grandchild.org_id]);
+      });
+    });
+    return paths;
+  };
+
   const getOrgName = (orgId) => {
     const org = organizations.find((o) => o.org_id === orgId);
     return org ? org.org_name : orgId;
@@ -987,10 +1566,15 @@ function CreateConfiguration() {
     const lines = [];
 
     parentIds.forEach((parentId) => {
-      const children = childOrgMap[parentId] || [];
-      const parentSelected = paths.some((path) => path[0] === parentId && path.length === 1);
+      const parent = parentOrgs.find((p) => p.org_id === parentId);
+      if (!parent) return;
 
+      const children = childOrgMap[parentId] || [];
+      
+      // Get all selected child departments for this parent
+      const selectedChildren = [];
       const childSelections = new Map();
+      
       paths.forEach((path) => {
         if (path[0] !== parentId) return;
         if (path.length >= 2) {
@@ -1008,6 +1592,7 @@ function CreateConfiguration() {
         }
       });
 
+      // Check if all children are selected
       const isChildAllSelected = (childId) => {
         const grandchildren = grandchildOrgMap[childId] || [];
         const entry = childSelections.get(childId);
@@ -1028,40 +1613,28 @@ function CreateConfiguration() {
 
       const allChildrenFullySelected = children.length > 0 && children.every((child) => isChildAllSelected(child.org_id));
 
-      if (!children.length || (parentSelected && childSelections.size === 0) || allChildrenFullySelected) {
-        lines.push({
-          key: `${parentId}-all`,
-          text: `${getOrgName(parentId)}`,
-          scope: { parentId },
-        });
-        return;
-      }
-
-      childSelections.forEach((entry, childId) => {
-        const grandchildren = grandchildOrgMap[childId] || [];
-        const hasGrandchildSelection = entry.grandchildIds.size > 0;
-        const allGrandchildrenSelected =
-          (entry.childSelected && !hasGrandchildSelection) ||
-          (grandchildren.length > 0 && entry.grandchildIds.size === grandchildren.length);
-
-        if (allGrandchildrenSelected) {
-          lines.push({
-            key: `${parentId}-${childId}-all`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)}`,
-            scope: { parentId, childId },
-          });
-          return;
-        }
-
-        const selectedGrandchildren = Array.from(entry.grandchildIds).map((id) => getOrgName(id));
-        if (selectedGrandchildren.length > 0) {
-          lines.push({
-            key: `${parentId}-${childId}-partial`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → ${selectedGrandchildren.join(", ")}`,
-            scope: { parentId, childId, grandchildIds: new Set(entry.grandchildIds) },
-          });
+      // Build department names list
+      const departmentNames = [];
+      children.forEach((child) => {
+        if (isChildAllSelected(child.org_id)) {
+          departmentNames.push(child.org_name);
         }
       });
+
+      // Create single line for this parent
+      if (allChildrenFullySelected || !children.length) {
+        lines.push({
+          key: `${parentId}-all`,
+          text: `${parent.org_name} → All`,
+          scope: { type: 'parent', parentId },
+        });
+      } else if (departmentNames.length > 0) {
+        lines.push({
+          key: `${parentId}-depts`,
+          text: `${parent.org_name} → ${departmentNames.join(', ')}`,
+          scope: { type: 'parent', parentId },
+        });
+      }
     });
 
     return lines;
@@ -1101,10 +1674,15 @@ function CreateConfiguration() {
     const lines = [];
 
     parentIds.forEach((parentId) => {
-      const children = childOrgMap[parentId] || [];
-      const parentSelected = paths.some((path) => path[0] === parentId && path.length === 1);
+      const parent = parentOrgs.find((p) => p.org_id === parentId);
+      if (!parent) return;
 
+      const children = childOrgMap[parentId] || [];
+      
+      // Get all selected child departments for this parent
+      const selectedChildren = [];
       const childSelections = new Map();
+      
       paths.forEach((path) => {
         if (path[0] !== parentId) return;
         if (path.length >= 2) {
@@ -1122,6 +1700,7 @@ function CreateConfiguration() {
         }
       });
 
+      // Check if all children are selected
       const isChildAllSelected = (childId) => {
         const grandchildren = grandchildOrgMap[childId] || [];
         const entry = childSelections.get(childId);
@@ -1142,40 +1721,28 @@ function CreateConfiguration() {
 
       const allChildrenFullySelected = children.length > 0 && children.every((child) => isChildAllSelected(child.org_id));
 
-      if (!children.length || (parentSelected && childSelections.size === 0) || allChildrenFullySelected) {
-        lines.push({
-          key: `${parentId}-all`,
-          text: `${getOrgName(parentId)} → All`,
-          scope: { parentId },
-        });
-        return;
-      }
-
-      childSelections.forEach((entry, childId) => {
-        const grandchildren = grandchildOrgMap[childId] || [];
-        const hasGrandchildSelection = entry.grandchildIds.size > 0;
-        const allGrandchildrenSelected =
-          (entry.childSelected && !hasGrandchildSelection) ||
-          (grandchildren.length > 0 && entry.grandchildIds.size === grandchildren.length);
-
-        if (allGrandchildrenSelected) {
-          lines.push({
-            key: `${parentId}-${childId}-all`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → All`,
-            scope: { parentId, childId },
-          });
-          return;
-        }
-
-        const selectedGrandchildren = Array.from(entry.grandchildIds).map((id) => getOrgName(id));
-        if (selectedGrandchildren.length > 0) {
-          lines.push({
-            key: `${parentId}-${childId}-partial`,
-            text: `${getOrgName(parentId)} → ${getOrgName(childId)} → ${selectedGrandchildren.join(", ")}`,
-            scope: { parentId, childId, grandchildIds: new Set(entry.grandchildIds) },
-          });
+      // Build department names list
+      const departmentNames = [];
+      children.forEach((child) => {
+        if (isChildAllSelected(child.org_id)) {
+          departmentNames.push(child.org_name);
         }
       });
+
+      // Create single line for this parent
+      if (allChildrenFullySelected || !children.length) {
+        lines.push({
+          key: `${parentId}-all`,
+          text: `${parent.org_name} → All`,
+          scope: { type: 'parent', parentId },
+        });
+      } else if (departmentNames.length > 0) {
+        lines.push({
+          key: `${parentId}-depts`,
+          text: `${parent.org_name} → ${departmentNames.join(', ')}`,
+          scope: { type: 'parent', parentId },
+        });
+      }
     });
 
     return lines;
@@ -1211,7 +1778,9 @@ function CreateConfiguration() {
   };
 
   const updateField = (field, value) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
+    const textFields = new Set(["budgetName", "description"]);
+    const nextValue = textFields.has(field) ? sanitizeSingleLine(value) : value;
+    setFormData((prev) => ({ ...prev, [field]: nextValue }));
   };
 
   const getCurrencyLabel = (code) => {
@@ -1277,10 +1846,9 @@ function CreateConfiguration() {
   };
 
   const handleNext = () => {
-    setStepError(null);
     const validationError = validateForm();
     if (validationError) {
-      setStepError(validationError);
+      toast.error(validationError);
       return;
     }
     setViewStep("review");
@@ -1288,13 +1856,11 @@ function CreateConfiguration() {
 
   const handleSubmit = async () => {
     setIsSubmitting(true);
-    setSubmitError(null);
-    setStepError(null);
 
     const validationError = validateForm();
 
     if (validationError) {
-      setStepError(validationError);
+      toast.error(validationError);
       setIsSubmitting(false);
       return;
     }
@@ -1334,14 +1900,17 @@ function CreateConfiguration() {
         (configData.accessibleOUPaths && configData.accessibleOUPaths.length > 0);
 
       if (!hasScope) {
-        setSubmitError("Please select at least one scope field.");
+        toast.error("Please select at least one scope field.");
         setIsSubmitting(false);
         return;
       }
 
       await budgetConfigService.createBudgetConfiguration(configData, token);
 
-      setSubmitSuccess(true);
+      // Invalidate budget configs cache to force refresh on list
+      invalidateNamespace('budgetConfigs');
+
+      toast.success("Budget configuration created successfully.");
       setSuccessCountdown(5);
       setSuccessModalOpen(true);
       setViewStep("form");
@@ -1354,10 +1923,10 @@ function CreateConfiguration() {
         dataControlEnabled: true,
         limitMin: "",
         limitMax: "",
-        currency: "",
+        currency: "PHP",
         budgetControlEnabled: false,
         budgetControlLimit: "",
-        payCycle: "",
+        payCycle: "SEMI_MONTHLY",
         affectedOUPaths: [],
         accessibleOUPaths: [],
         countries: [],
@@ -1371,11 +1940,9 @@ function CreateConfiguration() {
         approverL3: "",
         backupApproverL3: "",
       });
-
-      setTimeout(() => setSubmitSuccess(false), 3000);
     } catch (err) {
       console.error("Error creating configuration:", err);
-      setSubmitError(err.message || "Failed to create budget configuration");
+      toast.error(err.message || "Failed to create budget configuration");
     } finally {
       setIsSubmitting(false);
     }
@@ -1389,6 +1956,10 @@ function CreateConfiguration() {
         if (prev <= 1) {
           clearInterval(intervalId);
           setSuccessModalOpen(false);
+          // Wait for modal close animation before switching tabs
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('switchToConfigList'));
+          }, 500);
           return 0;
         }
         return prev - 1;
@@ -1474,48 +2045,6 @@ function CreateConfiguration() {
 
   return (
     <div className="space-y-6">
-      {submitError && (
-        <Card className="bg-red-500/10 border-red-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <XCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-red-500">Error</h3>
-                <p className="text-red-300 text-sm">{submitError}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {stepError && (
-        <Card className="bg-amber-500/10 border-amber-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-amber-400">Incomplete Form</h3>
-                <p className="text-amber-200 text-sm">{stepError}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {submitSuccess && (
-        <Card className="bg-green-500/10 border-green-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-green-500">Success</h3>
-                <p className="text-green-300 text-sm">Budget configuration created successfully!</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       <Card className="bg-slate-800 border-slate-700">
         <CardHeader>
           <div className="flex items-start justify-between gap-4">
@@ -1544,31 +2073,32 @@ function CreateConfiguration() {
                       placeholder="e.g., Q1 2024 Performance Bonus"
                       value={formData.budgetName}
                       onChange={(e) => updateField("budgetName", e.target.value)}
+                      onKeyDown={blockShortcuts}
+                      maxLength={100}
                       className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
                     />
                   </div>
                   <div className="space-y-2 md:col-span-6">
-                    <Label className="text-white">Budget Period *</Label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="flex items-center gap-2">
-                        <Label htmlFor="startDate" className="text-xs text-gray-300 whitespace-nowrap">Start Date</Label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="startDate" className="text-sm text-gray-300">Configuration Start Date *</Label>
                         <Input
                           id="startDate"
                           type="date"
                           value={formData.startDate}
                           onChange={(e) => updateField("startDate", e.target.value)}
-                          className="bg-slate-700 border-gray-300 text-white"
+                          className="bg-slate-700 border-gray-300 text-white w-full"
                         />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Label htmlFor="endDate" className="text-xs text-gray-300 whitespace-nowrap">End Date</Label>
+                      <div className="space-y-2">
+                        <Label htmlFor="endDate" className="text-sm text-gray-300">Configuration End Date *</Label>
                         <Input
                           id="endDate"
                           type="date"
                           value={formData.endDate}
                           onChange={(e) => updateField("endDate", e.target.value)}
                           min={minEndDate}
-                          className="bg-slate-700 border-gray-300 text-white"
+                          className="bg-slate-700 border-gray-300 text-white w-full"
                         />
                       </div>
                     </div>
@@ -1582,8 +2112,10 @@ function CreateConfiguration() {
                     placeholder="Describe the purpose and details of this budget configuration..."
                     value={formData.description || ""}
                     onChange={(e) => updateField("description", e.target.value)}
+                    onKeyDown={blockShortcuts}
+                    maxLength={500}
                     rows={4}
-                    className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400"
+                    className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400 resize-none"
                   />
                 </div>
               </div>
@@ -1593,9 +2125,6 @@ function CreateConfiguration() {
                   <h4 className="font-medium text-white">Data Control</h4>
                   <Badge className="bg-green-500 text-white">Enabled</Badge>
                 </div>
-                <p className="text-xs text-gray-400">
-                  Set min and max limits per employee (applies to both positive and negative amounts).
-                </p>
                 <div className="space-y-3">
                   <div className="space-y-2">
                     <Label className="text-white">Currency *</Label>
@@ -1605,6 +2134,7 @@ function CreateConfiguration() {
                       options={currencyOptions}
                       placeholder="Select currency"
                       searchPlaceholder="Search currency..."
+                      disabled
                     />
                   </div>
                   <div className="space-y-2">
@@ -1614,7 +2144,8 @@ function CreateConfiguration() {
                       type="number"
                       placeholder="0"
                       value={formData.limitMin}
-                      onChange={(e) => updateField("limitMin", e.target.value)}
+                      onChange={(e) => updateField("limitMin", e.target.value.slice(0, 10))}
+                      maxLength={10}
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
@@ -1625,7 +2156,8 @@ function CreateConfiguration() {
                       type="number"
                       placeholder="10000"
                       value={formData.limitMax}
-                      onChange={(e) => updateField("limitMax", e.target.value)}
+                      onChange={(e) => updateField("limitMax", e.target.value.slice(0, 10))}
+                      maxLength={10}
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
@@ -1636,19 +2168,17 @@ function CreateConfiguration() {
                 <div className="flex items-center justify-between">
                   <h4 className="font-medium text-white">Payroll Cycle & Budget Control</h4>
                 </div>
-                <p className="text-xs text-gray-400">Define the configuration's payroll period.</p>
                 <div className="space-y-2">
                   <Label className="text-white">Cycle *</Label>
                   <SearchableSelect
                     value={formData.payCycle}
                     onValueChange={(value) => updateField("payCycle", value)}
                     options={[
-                      { value: "MONTHLY", label: "Monthly (End of Month)" },
                       { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
-                      { value: "BI_WEEKLY", label: "Bi-Weekly (Every 14 Days)" },
                     ]}
                     placeholder="Select payroll cycle"
                     searchPlaceholder="Search payroll cycle..."
+                    disabled
                   />
                 </div>
 
@@ -1676,7 +2206,8 @@ function CreateConfiguration() {
                         type="number"
                         placeholder="100000"
                         value={formData.budgetControlLimit}
-                        onChange={(e) => updateField("budgetControlLimit", e.target.value)}
+                        onChange={(e) => updateField("budgetControlLimit", e.target.value.slice(0, 15))}
+                        maxLength={15}
                         className="bg-slate-700 border-gray-300 text-white"
                       />
                     </div>
@@ -1702,19 +2233,42 @@ function CreateConfiguration() {
                           const isParentSelected = formData.affectedOUPaths.some((path) => path[0] === parent.org_id);
 
                           const togglePath = (newPath) => {
+                            if (newPath.length === 1) {
+                              const parentId = newPath[0];
+                              const allParentPaths = buildAllPathsForParent(parentId);
+                              const allSelected = allParentPaths.every((path) =>
+                                formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(path))
+                              );
+
+                              if (allSelected) {
+                                updateField(
+                                  "affectedOUPaths",
+                                  formData.affectedOUPaths.filter((path) => path[0] !== parentId)
+                                );
+                              } else {
+                                const nextPaths = [...formData.affectedOUPaths];
+                                allParentPaths.forEach((path) => {
+                                  const exists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(path));
+                                  if (!exists) nextPaths.push(path);
+                                });
+                                updateField("affectedOUPaths", nextPaths);
+                              }
+                              return;
+                            }
+
                             const pathExists = formData.affectedOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
                             if (pathExists) {
-                              updateField("affectedOUPaths", formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                              updateField(
+                                "affectedOUPaths",
+                                formData.affectedOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath))
+                              );
                             } else {
-                              const nextPaths = [...formData.affectedOUPaths, newPath];
-                              if (newPath.length > 1) {
-                                const parentPath = [newPath[0]];
-                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                                if (!parentExists) nextPaths.push(parentPath);
-                              }
-                              updateField("affectedOUPaths", nextPaths);
+                              // Only add the selected path, don't auto-add parent
+                              updateField("affectedOUPaths", [...formData.affectedOUPaths, newPath]);
                             }
                           };
+
+                          const parentSelectionCount = getParentSelectionCount(formData.affectedOUPaths, parent.org_id);
 
                           return (
                             <div key={parent.org_id} className="space-y-0">
@@ -1725,7 +2279,7 @@ function CreateConfiguration() {
                                   onCheckedChange={() => togglePath([parent.org_id])}
                                   className="border-pink-400 bg-slate-600 h-4 w-4"
                                 />
-                                <span className="text-white text-xs">{parent.org_name}</span>
+                                <span className="text-white text-xs">ALL ({parentSelectionCount} selected)</span>
                               </div>
 
                               {childOrgMap[parent.org_id] && (
@@ -1804,19 +2358,42 @@ function CreateConfiguration() {
                           const isParentSelected = formData.accessibleOUPaths.some((path) => path[0] === parent.org_id);
 
                           const toggleAccessPath = (newPath) => {
+                            if (newPath.length === 1) {
+                              const parentId = newPath[0];
+                              const allParentPaths = buildAllPathsForParent(parentId);
+                              const allSelected = allParentPaths.every((path) =>
+                                formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(path))
+                              );
+
+                              if (allSelected) {
+                                updateField(
+                                  "accessibleOUPaths",
+                                  formData.accessibleOUPaths.filter((path) => path[0] !== parentId)
+                                );
+                              } else {
+                                const nextPaths = [...formData.accessibleOUPaths];
+                                allParentPaths.forEach((path) => {
+                                  const exists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(path));
+                                  if (!exists) nextPaths.push(path);
+                                });
+                                updateField("accessibleOUPaths", nextPaths);
+                              }
+                              return;
+                            }
+
                             const pathExists = formData.accessibleOUPaths.some((p) => JSON.stringify(p) === JSON.stringify(newPath));
                             if (pathExists) {
-                              updateField("accessibleOUPaths", formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath)));
+                              updateField(
+                                "accessibleOUPaths",
+                                formData.accessibleOUPaths.filter((p) => JSON.stringify(p) !== JSON.stringify(newPath))
+                              );
                             } else {
-                              const nextPaths = [...formData.accessibleOUPaths, newPath];
-                              if (newPath.length > 1) {
-                                const parentPath = [newPath[0]];
-                                const parentExists = nextPaths.some((p) => JSON.stringify(p) === JSON.stringify(parentPath));
-                                if (!parentExists) nextPaths.push(parentPath);
-                              }
-                              updateField("accessibleOUPaths", nextPaths);
+                              // Only add the selected path, don't auto-add parent
+                              updateField("accessibleOUPaths", [...formData.accessibleOUPaths, newPath]);
                             }
                           };
+
+                          const parentSelectionCount = getParentSelectionCount(formData.accessibleOUPaths, parent.org_id);
 
                           return (
                             <div key={parent.org_id} className="space-y-0">
@@ -1827,7 +2404,7 @@ function CreateConfiguration() {
                                   onCheckedChange={() => toggleAccessPath([parent.org_id])}
                                   className="border-blue-400 bg-slate-600 h-4 w-4"
                                 />
-                                <span className="text-white text-xs">{parent.org_name}</span>
+                                <span className="text-white text-xs">ALL ({parentSelectionCount} selected)</span>
                               </div>
 
                               {childOrgMap[parent.org_id] && (
@@ -1920,6 +2497,7 @@ function CreateConfiguration() {
                               : "No geo available"
                       }
                       searchPlaceholder="Search geo..."
+                      maxLength={30}
                     />
                   </div>
                   <div className="space-y-2">
@@ -1942,6 +2520,7 @@ function CreateConfiguration() {
                               : "No locations available"
                       }
                       searchPlaceholder="Search location..."
+                      maxLength={50}
                     />
                   </div>
                   <div className="space-y-2">
@@ -1961,6 +2540,7 @@ function CreateConfiguration() {
                       }
                       hasAllOption={true}
                       disabled={!hasLocation || orgScopeLoading || availableClientOptions.length === 0}
+                      maxLength={40}
                     />
                   </div>
                 </div>
@@ -2024,6 +2604,7 @@ function CreateConfiguration() {
                             disabled={approvalsLoading}
                             placeholder={approvalsLoading ? "Loading approvers..." : "Select primary"}
                             searchPlaceholder="Search approver..."
+                            maxLength={50}
                           />
                         </div>
                         <div className="space-y-2">
@@ -2040,6 +2621,7 @@ function CreateConfiguration() {
                             disabled={approvalsLoading}
                             placeholder={approvalsLoading ? "Loading approvers..." : "Select backup"}
                             searchPlaceholder="Search backup..."
+                            maxLength={50}
                           />
                         </div>
                       </div>
@@ -2052,8 +2634,8 @@ function CreateConfiguration() {
           ) : (
             <div className="grid gap-4 lg:grid-cols-12">
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-6">
-                <h4 className="font-medium text-white">Configuration Summary</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Configuration Summary</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Budget Name</span>
                     <span className="text-white font-medium">{formData.budgetName || "Not specified"}</span>
@@ -2062,16 +2644,16 @@ function CreateConfiguration() {
                     <span className="text-gray-400">Budget Period</span>
                     <span>{formData.startDate && formData.endDate ? `${formData.startDate} → ${formData.endDate}` : "Not specified"}</span>
                   </div>
-                  <div>
-                    <span className="text-gray-400">Description</span>
-                    <p className="mt-1 text-gray-200">{formData.description || "No description provided."}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-gray-400 flex-shrink-0">Description</span>
+                    <p className="text-gray-200 text-right">{formData.description || "No description provided."}</p>
                   </div>
                 </div>
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-                <h4 className="font-medium text-white">Data Control</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Data Control</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Currency</span>
                     <span>{getCurrencyLabel(formData.currency)}</span>
@@ -2088,8 +2670,8 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-                <h4 className="font-medium text-white">Payroll & Budget Control</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Payroll & Budget Control</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Payroll Cycle</span>
                     <span>{getPayCycleLabel(formData.payCycle)}</span>
@@ -2108,33 +2690,33 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5">
-                <h4 className="font-medium text-white">Organization Scope</h4>
+                <h4 className="font-medium text-white text-base">Organization Scope</h4>
                 <div className="space-y-3">
                   <div>
-                    <span className="text-xs text-gray-400 uppercase">Affected OUs</span>
+                    <span className="text-sm text-gray-400 uppercase">Affected OUs</span>
                     <div className="mt-2 space-y-1">
                       {affectedPreviewLines.length ? (
                         affectedPreviewLines.map((line) => (
-                          <div key={line.key} className="text-xs text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
+                          <div key={line.key} className="text-sm text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
                             {line.text}
                           </div>
                         ))
                       ) : (
-                        <div className="text-xs text-gray-400">Not specified</div>
+                        <div className="text-sm text-gray-400">Not specified</div>
                       )}
                     </div>
                   </div>
                   <div>
-                    <span className="text-xs text-gray-400 uppercase">Accessible OUs</span>
+                    <span className="text-sm text-gray-400 uppercase">Accessible OUs</span>
                     <div className="mt-2 space-y-1">
                       {accessiblePreviewLines.length ? (
                         accessiblePreviewLines.map((line) => (
-                          <div key={line.key} className="text-xs text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
+                          <div key={line.key} className="text-sm text-gray-200 bg-slate-800/60 px-2 py-1 rounded">
                             {line.text}
                           </div>
                         ))
                       ) : (
-                        <div className="text-xs text-gray-400">Not specified</div>
+                        <div className="text-sm text-gray-400">Not specified</div>
                       )}
                     </div>
                   </div>
@@ -2142,8 +2724,8 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-4">
-                <h4 className="font-medium text-white">Location & Client Scope</h4>
-                <div className="space-y-3 text-sm text-gray-200">
+                <h4 className="font-medium text-white text-base">Location & Client Scope</h4>
+                <div className="space-y-3 text-base text-gray-200">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Geo</span>
                     <span>{formData.countries?.[0] || "Not specified"}</span>
@@ -2152,31 +2734,31 @@ function CreateConfiguration() {
                     <span className="text-gray-400">Site Location</span>
                     <span>{formData.siteLocation?.[0] || "Not specified"}</span>
                   </div>
-                  <div>
-                    <span className="text-gray-400">Clients</span>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-gray-400 text-sm flex-shrink-0">Clients</span>
+                    <div className="flex flex-wrap gap-2 justify-end">
                       {formData.clients?.length ? (
                         formData.clients.map((client) => (
-                          <span key={client} className="text-xs bg-slate-800/60 px-2 py-1 rounded">
+                          <span key={client} className="text-sm bg-slate-800/60 px-2 py-1 rounded">
                             {client}
                           </span>
                         ))
                       ) : (
-                        <span className="text-xs text-gray-400">Not specified</span>
+                        <span className="text-sm text-gray-400">Not specified</span>
                       )}
                     </div>
                   </div>
-                  <div>
-                    <span className="text-gray-400">Tenure Groups</span>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-gray-400 text-sm flex-shrink-0">Tenure Groups</span>
+                    <div className="flex flex-wrap gap-2 justify-end">
                       {formData.selectedTenureGroups?.length ? (
                         formData.selectedTenureGroups.map((tenure) => (
-                          <span key={tenure} className="text-xs bg-slate-800/60 px-2 py-1 rounded">
+                          <span key={tenure} className="text-sm bg-slate-800/60 px-2 py-1 rounded">
                             {tenure}
                           </span>
                         ))
                       ) : (
-                        <span className="text-xs text-gray-400">Not specified</span>
+                        <span className="text-sm text-gray-400">Not specified</span>
                       )}
                     </div>
                   </div>
@@ -2184,22 +2766,28 @@ function CreateConfiguration() {
               </div>
 
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
-                <h4 className="font-medium text-white">Approval Hierarchy</h4>
-                <div className="space-y-3 text-sm text-gray-200">
-                  <div>
-                    <span className="text-xs text-gray-400 uppercase">L1</span>
-                    <p className="mt-1">Primary: {getApproverName(formData.approverL1)}</p>
-                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL1)}</p>
+                <h4 className="font-medium text-white text-base">Approval Hierarchy</h4>
+                <div className="space-y-3 text-gray-200">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-base text-gray-300 uppercase font-semibold flex-shrink-0">L1</span>
+                    <div className="space-y-1 flex-1">
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded">Primary: {getApproverName(formData.approverL1)}</p>
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded text-gray-400">Backup: {getApproverName(formData.backupApproverL1)}</p>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs text-gray-400 uppercase">L2</span>
-                    <p className="mt-1">Primary: {getApproverName(formData.approverL2)}</p>
-                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL2)}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-base text-gray-300 uppercase font-semibold flex-shrink-0">L2</span>
+                    <div className="space-y-1 flex-1">
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded">Primary: {getApproverName(formData.approverL2)}</p>
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded text-gray-400">Backup: {getApproverName(formData.backupApproverL2)}</p>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs text-gray-400 uppercase">L3</span>
-                    <p className="mt-1">Primary: {getApproverName(formData.approverL3)}</p>
-                    <p className="text-xs text-gray-400">Backup: {getApproverName(formData.backupApproverL3)}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-base text-gray-300 uppercase font-semibold flex-shrink-0">L3</span>
+                    <div className="space-y-1 flex-1">
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded">Primary: {getApproverName(formData.approverL3)}</p>
+                      <p className="text-base bg-slate-800/60 px-2 py-1 rounded text-gray-400">Backup: {getApproverName(formData.backupApproverL3)}</p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2209,14 +2797,14 @@ function CreateConfiguration() {
       </Card>
 
       <Card className="bg-slate-800 border-slate-700">
-        <CardContent className="py-4">
+        <CardContent className="!py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-gray-400">
               {viewStep === "review"
                 ? "Review the details before creating the configuration."
                 : "All required fields must be completed before continuing."}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-3">
               {viewStep === "review" ? (
                 <>
                   <Button
@@ -2266,13 +2854,6 @@ function CreateConfiguration() {
             </div>
             <div className="flex items-center justify-between text-xs text-gray-400">
               <span>Auto-closing in {successCountdown}s</span>
-              <Button
-                variant="outline"
-                onClick={() => setSuccessModalOpen(false)}
-                className="border-slate-500 text-white"
-              >
-                Close now
-              </Button>
             </div>
           </div>
         </DialogContent>

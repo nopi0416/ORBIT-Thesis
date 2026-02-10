@@ -81,13 +81,13 @@ async function apiCall(endpoint, options = {}) {
  */
 export const authAPI = {
   /**
-   * Login with email and password
+   * Login with employee ID and password
    * Returns OTP requirement status
    */
-  login: async (email, password) => {
+  login: async (employeeId, password) => {
     return apiCall('/auth/login', {
       method: 'POST',
-      body: { email, password },
+      body: { employee_id: employeeId, password },
       includeToken: false,
     });
   },

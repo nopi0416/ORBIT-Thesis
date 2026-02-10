@@ -1,5 +1,6 @@
 import React from 'react';
 import { cn } from '../utils/cn';
+import { NotificationBell } from './NotificationBell';
 
 const PageHeader = ({ 
   title, 
@@ -24,11 +25,16 @@ const PageHeader = ({
               <p className="text-white/80 text-sm">{description}</p>
             )}
           </div>
-          {children && (
-            <div className="flex flex-col gap-2 min-[400px]:flex-row">
-              {children}
+          <div className="flex items-center gap-4 mt-2 md:mt-0">
+            {children && (
+              <div className="flex flex-col gap-2 min-[400px]:flex-row">
+                {children}
+              </div>
+            )}
+            <div className="border-l border-white/20 pl-4 ml-2">
+              <NotificationBell />
             </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

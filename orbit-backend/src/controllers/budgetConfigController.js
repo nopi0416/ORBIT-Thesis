@@ -3,6 +3,14 @@ import { sendSuccess, sendError } from '../utils/response.js';
 import { validateBudgetConfig, validateScopeFields } from '../utils/validators.js';
 import { broadcast } from '../realtime/websocketServer.js';
 
+const normalizeRole = (role) => String(role || '').toLowerCase();
+const isAdminUser = (req) => {
+  const role = normalizeRole(req.user?.role);
+  // Admin check
+  return req.user?.userType === 'admin' || ['admin', 'administrator', 'system admin', 'system administrator'].includes(role);
+};
+
+
 /**
  * Budget Configuration Controller
  * Handles HTTP requests for budget configurations
@@ -16,6 +24,9 @@ export class BudgetConfigController {
   static async createBudgetConfig(req, res) {
     try {
       const configData = req.body;
+      const userId = req.user?.id;
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
       
       console.log('=== FULL Budget Config Request Data ===');
       console.log(JSON.stringify(configData, null, 2));
@@ -31,6 +42,33 @@ export class BudgetConfigController {
       console.log('Selected Tenure Groups:', configData.selectedTenureGroups);
       console.log('Approver L1:', configData.approverL1);
       console.log('========================================');
+
+      // Enforce PH-only defaults
+      configData.currency = 'PHP';
+      configData.payCycle = 'SEMI_MONTHLY';
+
+      // Restrict scope to user's org if applicable
+      if (restrictByOrg) {
+        const subtreeResult = await BudgetConfigService.getOrganizationSubtreeIds(orgId);
+        const allowedOrgIds = new Set(subtreeResult.data || [orgId]);
+
+        const filterPaths = (paths = []) =>
+          (paths || []).filter((path) => Array.isArray(path) && path.every((id) => allowedOrgIds.has(id)));
+
+        configData.affectedOUPaths = filterPaths(configData.affectedOUPaths);
+        configData.accessibleOUPaths = filterPaths(configData.accessibleOUPaths);
+
+        const geoLocResult = await BudgetConfigService.getOrganizationGeoLocationsByOrgIds(Array.from(allowedOrgIds));
+        const allowedGeos = new Set((geoLocResult.data || []).map((row) => row.geo_id));
+        const allowedLocations = new Set((geoLocResult.data || []).map((row) => row.location_id));
+
+        configData.countries = (configData.countries || []).filter((id) => allowedGeos.has(id));
+        configData.siteLocation = (configData.siteLocation || []).filter((id) => allowedLocations.has(id));
+
+        const clientResult = await BudgetConfigService.getClientsByParentOrgIds(Array.from(allowedOrgIds));
+        const allowedClients = new Set((clientResult.data || []).map((row) => row.client_org_id));
+        configData.clients = (configData.clients || []).filter((id) => allowedClients.has(id));
+      }
 
       // Validate required fields
       const validation = validateBudgetConfig(configData);
@@ -63,12 +101,12 @@ export class BudgetConfigController {
         max_limit: configData.maxLimit || null,
         budget_control: configData.budgetControlEnabled || false,
         budget_limit: configData.budgetLimit ?? configData.budgetControlLimit ?? null,
-        currency: configData.currency || null,
-        pay_cycle: configData.payCycle || configData.pay_cycle || null,
+        currency: 'PHP',
+        pay_cycle: 'SEMI_MONTHLY',
         start_date: configData.startDate || null,
         end_date: configData.endDate || null,
         budget_description: configData.description || configData.budget_description || null,
-        created_by: configData.createdBy || '00000000-0000-0000-0000-000000000000',
+        created_by: userId || configData.createdBy || '00000000-0000-0000-0000-000000000000',
 
         geo: geoValue,
         location: locationValue,
@@ -79,6 +117,10 @@ export class BudgetConfigController {
 
         // Related data for approvers table
         approvers: configData.approvers || BudgetConfigService.buildApproversFromConfig(configData),
+        log_meta: {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        },
       };
 
       // Create budget configuration
@@ -106,11 +148,15 @@ export class BudgetConfigController {
    */
   static async getAllBudgetConfigs(req, res) {
     try {
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
       const filters = {
         budget_name: req.query.name,
         geo: req.query.geo,
         location: req.query.location,
         client: req.query.client,
+        status: req.query.status,
+        ...(restrictByOrg ? { org_id: orgId } : {}),
       };
 
       const result = await BudgetConfigService.getAllBudgetConfigs(filters);
@@ -159,12 +205,45 @@ export class BudgetConfigController {
     try {
       const { id } = req.params;
       const updateData = req.body;
+      const userId = req.user?.id;
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
 
       if (!id) {
         return sendError(res, 'Budget ID is required', 400);
       }
 
-      const result = await BudgetConfigService.updateBudgetConfig(id, updateData);
+      const safeUpdate = {
+        ...updateData,
+        currency: 'PHP',
+        pay_cycle: 'SEMI_MONTHLY',
+        updated_by: userId || updateData.updated_by,
+      };
+
+      if (restrictByOrg) {
+        const accessCheck = await BudgetConfigService.isBudgetConfigInOrg(id, orgId);
+        if (!accessCheck.success || !accessCheck.data) {
+          return sendError(res, 'Access denied for this budget configuration', 403);
+        }
+      }
+
+      const currentConfig = await BudgetConfigService.getBudgetConfigById(id);
+      if (!currentConfig.success) {
+        return sendError(res, currentConfig.error || 'Budget configuration not found', 404);
+      }
+
+      const creatorId = currentConfig.data?.created_by;
+      if (creatorId && userId && String(creatorId) !== String(userId)) {
+        return sendError(res, 'Only the configuration creator can modify this configuration', 403);
+      }
+
+      const result = await BudgetConfigService.updateBudgetConfig(id, {
+        ...safeUpdate,
+        log_meta: {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        },
+      });
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -194,7 +273,10 @@ export class BudgetConfigController {
         return sendError(res, 'Budget ID is required', 400);
       }
 
-      const result = await BudgetConfigService.deleteBudgetConfig(id);
+      const result = await BudgetConfigService.deleteBudgetConfig(id, req.user?.id, {
+        ip_address: req.ip,
+        user_agent: req.get('user-agent'),
+      });
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -281,7 +363,15 @@ export class BudgetConfigController {
         return sendError(res, 'Tenure groups array is required', 400);
       }
 
-      const result = await BudgetConfigService.addTenureGroups(budgetId, tenure_groups);
+      const result = await BudgetConfigService.addTenureGroups(
+        budgetId,
+        tenure_groups,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -306,7 +396,14 @@ export class BudgetConfigController {
         return sendError(res, 'Tenure group ID is required', 400);
       }
 
-      const result = await BudgetConfigService.removeTenureGroup(tenureGroupId);
+      const result = await BudgetConfigService.removeTenureGroup(
+        tenureGroupId,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -373,7 +470,11 @@ export class BudgetConfigController {
         approval_level,
         primary_approver,
         backup_approver,
-        userId
+        userId,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
       );
 
       if (!result.success) {
@@ -399,7 +500,14 @@ export class BudgetConfigController {
         return sendError(res, 'Approver ID is required', 400);
       }
 
-      const result = await BudgetConfigService.removeApprover(approverId);
+      const result = await BudgetConfigService.removeApprover(
+        approverId,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -457,7 +565,16 @@ export class BudgetConfigController {
         return sendError(res, 'Scope type and scope value are required', 400);
       }
 
-      const result = await BudgetConfigService.addAccessScope(budgetId, scope_type, scope_value, userId);
+      const result = await BudgetConfigService.addAccessScope(
+        budgetId,
+        scope_type,
+        scope_value,
+        userId,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -482,7 +599,14 @@ export class BudgetConfigController {
         return sendError(res, 'Scope ID is required', 400);
       }
 
-      const result = await BudgetConfigService.removeAccessScope(scopeId);
+      const result = await BudgetConfigService.removeAccessScope(
+        scopeId,
+        req.user?.id,
+        {
+          ip_address: req.ip,
+          user_agent: req.get('user-agent'),
+        }
+      );
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -551,7 +675,10 @@ export class BudgetConfigController {
    */
   static async getOrganizations(req, res) {
     try {
-      const result = await BudgetConfigService.getAllOrganizations();
+      const orgId = req.user?.org_id;
+      const result = orgId && !isAdminUser(req)
+        ? await BudgetConfigService.getOrganizationsByOrgId(orgId)
+        : await BudgetConfigService.getAllOrganizations();
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -655,7 +782,19 @@ export class BudgetConfigController {
    */
   static async getOrganizationsByLevel(req, res) {
     try {
+      const orgId = req.user?.org_id;
       const result = await BudgetConfigService.getOrganizationsByLevel();
+
+      if (orgId && !isAdminUser(req)) {
+        const subtreeResult = await BudgetConfigService.getOrganizationSubtreeIds(orgId);
+        const allowed = new Set(subtreeResult.data || []);
+        const filtered = {};
+        Object.entries(result.data || {}).forEach(([depth, orgs]) => {
+          const scoped = (orgs || []).filter((org) => allowed.has(org.org_id));
+          if (scoped.length) filtered[depth] = scoped;
+        });
+        return sendSuccess(res, filtered, 'Organizations retrieved successfully');
+      }
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -674,6 +813,24 @@ export class BudgetConfigController {
    */
   static async getAllGeo(req, res) {
     try {
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
+      if (restrictByOrg) {
+        const subtreeResult = await BudgetConfigService.getOrganizationSubtreeIds(orgId);
+        const mapping = await BudgetConfigService.getOrganizationGeoLocationsByOrgIds(subtreeResult.data || [orgId]);
+        const unique = new Map();
+        (mapping.data || []).forEach((row) => {
+          if (!unique.has(row.geo_id)) {
+            unique.set(row.geo_id, {
+              geo_id: row.geo_id,
+              geo_code: row.geo_code,
+              geo_name: row.geo_name,
+            });
+          }
+        });
+        return sendSuccess(res, Array.from(unique.values()), 'Geo retrieved successfully');
+      }
+
       const result = await BudgetConfigService.getAllGeo();
 
       if (!result.success) {
@@ -766,6 +923,27 @@ export class BudgetConfigController {
   static async getLocations(req, res) {
     try {
       const { geo_id } = req.query;
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
+
+      if (restrictByOrg) {
+        const subtreeResult = await BudgetConfigService.getOrganizationSubtreeIds(orgId);
+        const mapping = await BudgetConfigService.getOrganizationGeoLocationsByOrgIds(subtreeResult.data || [orgId]);
+        const filtered = (mapping.data || []).filter((row) => (geo_id ? row.geo_id === geo_id : true));
+        const unique = new Map();
+        filtered.forEach((row) => {
+          if (!unique.has(row.location_id)) {
+            unique.set(row.location_id, {
+              location_id: row.location_id,
+              location_code: row.location_code,
+              location_name: row.location_name,
+              geo_id: row.geo_id,
+            });
+          }
+        });
+        return sendSuccess(res, Array.from(unique.values()), 'Locations retrieved successfully');
+      }
+
       const result = await BudgetConfigService.getLocations(geo_id || null);
 
       if (!result.success) {
@@ -886,7 +1064,13 @@ export class BudgetConfigController {
         ? org_id.split(',').map((id) => id.trim()).filter(Boolean)
         : [];
 
-      const result = await BudgetConfigService.getOrganizationGeoLocationsByOrgIds(orgIds);
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
+      const scopedOrgIds = restrictByOrg && !orgIds.length
+        ? (await BudgetConfigService.getOrganizationSubtreeIds(orgId)).data || [orgId]
+        : orgIds;
+
+      const result = await BudgetConfigService.getOrganizationGeoLocationsByOrgIds(scopedOrgIds);
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -910,7 +1094,13 @@ export class BudgetConfigController {
         ? org_id.split(',').map((id) => id.trim()).filter(Boolean)
         : [];
 
-      const result = await BudgetConfigService.getClientsByParentOrgIds(orgIds);
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
+      const scopedOrgIds = restrictByOrg && !orgIds.length
+        ? (await BudgetConfigService.getOrganizationSubtreeIds(orgId)).data || [orgId]
+        : orgIds;
+
+      const result = await BudgetConfigService.getClientsByParentOrgIds(scopedOrgIds);
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -1020,6 +1210,19 @@ export class BudgetConfigController {
    */
   static async getAllApprovers(req, res) {
     try {
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
+
+      if (restrictByOrg) {
+        const levels = ['L1', 'L2', 'L3'];
+        const data = {};
+        for (const level of levels) {
+          const scoped = await BudgetConfigService.getApproversByLevel(level, orgId);
+          data[level] = scoped.data || [];
+        }
+        return sendSuccess(res, data, 'Approvers retrieved successfully');
+      }
+
       const result = await BudgetConfigService.getAllApprovers();
 
       if (!result.success) {
@@ -1040,12 +1243,14 @@ export class BudgetConfigController {
   static async getApproversByLevel(req, res) {
     try {
       const { level } = req.params;
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
 
       if (!level) {
         return sendError(res, 'Approval level is required', 400);
       }
 
-      const result = await BudgetConfigService.getApproversByLevel(level);
+      const result = await BudgetConfigService.getApproversByLevel(level, restrictByOrg ? orgId : null);
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -1089,7 +1294,9 @@ export class BudgetConfigController {
    */
   static async getAllUsers(req, res) {
     try {
-      const result = await BudgetConfigService.getAllUsers();
+      const orgId = req.user?.org_id;
+      const restrictByOrg = orgId && !isAdminUser(req);
+      const result = await BudgetConfigService.getAllUsers(restrictByOrg ? orgId : null);
 
       if (!result.success) {
         return sendError(res, result.error, 400);

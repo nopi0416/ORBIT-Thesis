@@ -4,13 +4,15 @@ import { cn } from '../utils/cn';
 import { LayoutDashboard, FileText, Building2, User, LogOut } from '../components/icons';
 import { Button } from '../components/ui/button';
 import { useAuth } from '../context/AuthContext';
+import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 
-export function Sidebar({ userRole }) {
+export function Sidebar({ userRole: userRoleProp }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
-  const normalizedRole = (userRole || '').toLowerCase();
+  const resolvedRole = resolveUserRole(userRoleProp ? { role: userRoleProp } : user);
+  const normalizedRole = (resolvedRole || '').toLowerCase();
   const isAdmin = normalizedRole.includes('admin');
 
   const handleLogout = () => {
@@ -136,17 +138,7 @@ export function Sidebar({ userRole }) {
             <p className="text-xs font-medium text-white/50">Signed in as</p>
             <p className="truncate text-sm font-semibold text-white">{user.name}</p>
             <p className="text-xs capitalize text-primary">
-              {isAdmin
-                ? (userRole || "Admin")
-                : userRole === "l1"
-                  ? "L1 Approver"
-                  : userRole === "l2"
-                    ? "L2 Approver"
-                    : userRole === "l3"
-                      ? "L3 Approver"
-                      : userRole === "payroll"
-                        ? "Payroll Staff"
-                        : "Requestor"}
+              {isAdmin ? (userRoleProp || "Admin") : getRoleDisplayName(resolvedRole)}
             </p>
           </div>
         )}
