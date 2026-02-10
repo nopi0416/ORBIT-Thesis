@@ -31,6 +31,13 @@ router.post('/admin-users', authenticateToken, AdminUserManagementController.cre
 router.get('/users', authenticateToken, AdminUserManagementController.getAllAdminUsers);
 
 /**
+ * PATCH /api/admin/users/status
+ * Update user status (lock/unlock/deactivate/reactivate)
+ * Body: { userIds: [], action: "lock" | "unlock" | "deactivate" | "reactivate" }
+ */
+router.patch('/users/status', authenticateToken, AdminUserManagementController.updateUserStatus);
+
+/**
  * GET /api/admin/roles
  * Get all available roles
  */

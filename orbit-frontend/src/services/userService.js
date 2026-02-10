@@ -156,6 +156,38 @@ export const getAllUsers = async (token, filters = {}) => {
 };
 
 /**
+ * Update user status (lock/unlock/deactivate/reactivate)
+ */
+export const updateUserStatus = async (userIds, action, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/users/status`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify({ userIds, action }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to update user status';
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = JSON.stringify(data.error);
+        }
+      }
+      throw new Error(errorMessage);
+    }
+
+    return data.data;
+  } catch (error) {
+    console.error('Error updating user status:', error);
+    throw error;
+  }
+};
+
+/**
  * Get available roles
  */
 export const getAvailableRoles = async (token) => {

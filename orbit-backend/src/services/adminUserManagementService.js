@@ -74,6 +74,27 @@ export class AdminUserManagementService {
     return !!data;
   }
 
+  static async logAdminActions(adminId, entries) {
+    if (!adminId || !entries?.length) return;
+
+    const payload = entries.map((entry) => ({
+      admin_id: adminId,
+      action: entry.action,
+      target_table: entry.targetTable,
+      target_id: entry.targetId,
+      description: entry.description,
+      created_at: new Date().toISOString(),
+    }));
+
+    const { error } = await supabase
+      .from('tbladminlogs')
+      .insert(payload);
+
+    if (error) {
+      console.error('Admin log insert error:', error);
+    }
+  }
+
   /**
    * Check if employee_id already exists
    */
@@ -315,6 +336,15 @@ export class AdminUserManagementService {
         throw roleError;
       }
 
+      await this.logAdminActions(adminUUID, [
+        {
+          action: 'create_user',
+          targetTable: 'tblusers',
+          targetId: user_id,
+          description: `Created user ${email}`,
+        },
+      ]);
+
       // Organization is already set in the department field during user creation
       // so no additional update is needed
 
@@ -432,6 +462,15 @@ export class AdminUserManagementService {
         console.error('Admin Insert Error:', adminError);
         throw adminError;
       }
+
+      await this.logAdminActions(creatorId, [
+        {
+          action: 'create_admin_user',
+          targetTable: 'tbladminusers',
+          targetId: adminInsert?.[0]?.admin_id,
+          description: `Created admin account ${email} (${adminRole})`,
+        },
+      ]);
 
       return {
         success: true,
@@ -698,6 +737,81 @@ export class AdminUserManagementService {
         success: false,
         error: error.message,
         data: [],
+      };
+    }
+  }
+
+  static async updateUserStatus(userIds = [], action, adminContext = {}) {
+    try {
+      const adminId = adminContext?.id || null;
+      const normalizedAction = (action || '').toString().trim().toLowerCase();
+      const actionMap = {
+        lock: 'Locked',
+        unlock: 'Active',
+        deactivate: 'Deactivated',
+        reactivate: 'Active',
+      };
+
+      const nextStatus = actionMap[normalizedAction];
+      if (!nextStatus) {
+        return {
+          success: false,
+          error: 'Invalid status action',
+        };
+      }
+
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        return {
+          success: false,
+          error: 'No user IDs provided',
+        };
+      }
+
+      const { data: existingUsers, error: existingError } = await supabase
+        .from('tblusers')
+        .select('user_id, email')
+        .in('user_id', userIds);
+
+      if (existingError) throw existingError;
+
+      if (!existingUsers || existingUsers.length === 0) {
+        return {
+          success: false,
+          error: 'No matching users found',
+        };
+      }
+
+      const { error: updateError } = await supabase
+        .from('tblusers')
+        .update({
+          status: nextStatus,
+          updated_by: adminId,
+          updated_at: new Date().toISOString(),
+        })
+        .in('user_id', existingUsers.map((user) => user.user_id));
+
+      if (updateError) throw updateError;
+
+      const descriptionSuffix = `${normalizedAction} user`;
+      await this.logAdminActions(adminId, existingUsers.map((user) => ({
+        action: normalizedAction,
+        targetTable: 'tblusers',
+        targetId: user.user_id,
+        description: `${descriptionSuffix} ${user.email}`,
+      })));
+
+      return {
+        success: true,
+        data: {
+          updatedCount: existingUsers.length,
+          status: nextStatus,
+        },
+      };
+    } catch (error) {
+      console.error('Error updating user status:', error);
+      return {
+        success: false,
+        error: error.message,
       };
     }
   }

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { useLocation } from "react-router-dom"
 import * as XLSX from "xlsx"
 import {
   createUser,
@@ -9,14 +10,100 @@ import {
   getAvailableOrganizations,
   getAvailableGeos,
   getAllUsers,
-  // Fetch users on mount and tab changes
-  useEffect(() => {
-    loadUsers()
-  }, [activeTab])
+  updateUserStatus,
+} from "../../services/userService"
+import { useAuth } from "../../context/AuthContext"
 
-  const tickets = fetchedUsers.filter((item) => item.status === "Pending")
-  const locked = fetchedUsers.filter((item) => item.status === "Locked")
-  const deactivated = fetchedUsers.filter((item) => item.status === "Deactivated")
+export default function UserManagement() {
+  const location = useLocation()
+  const { user } = useAuth()
+  const [activeTab, setActiveTab] = useState("users")
+  const [searchQuery, setSearchQuery] = useState("")
+  const [filterOU, setFilterOU] = useState("all")
+  const [filterRole, setFilterRole] = useState("all")
+  const [currentPage, setCurrentPage] = useState(1)
+  const [showAddUserModal, setShowAddUserModal] = useState(false)
+  const [addUserTab, setAddUserTab] = useState("individual")
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [showConfirmModal, setShowConfirmModal] = useState(false)
+  const [confirmText, setConfirmText] = useState("")
+  const [confirmAction, setConfirmAction] = useState(null)
+  const [selectedUser, setSelectedUser] = useState(null)
+  const [showNotification, setShowNotification] = useState(false)
+  const [notificationMessage, setNotificationMessage] = useState("")
+  const [selectedUsers, setSelectedUsers] = useState([])
+  const [showPasswordResetModal, setShowPasswordResetModal] = useState(false)
+  const [passwordConfig, setPasswordConfig] = useState({
+    basePassword: "",
+    isUnique: false,
+    uniqueCount: 3,
+    uniqueType: "numeric",
+  })
+  const [individualForm, setIndividualForm] = useState({
+    employeeId: "",
+    name: "",
+    email: "",
+    role: "",
+    geoId: "",
+    ou: "",
+    departmentId: "",
+  })
+  const [formErrors, setFormErrors] = useState({})
+  const [availableRoles, setAvailableRoles] = useState([])
+  const [availableOrganizations, setAvailableOrganizations] = useState([])
+  const [availableGeos, setAvailableGeos] = useState([])
+  const [isLoadingDropdowns, setIsLoadingDropdowns] = useState(false)
+  const [isSubmittingUser, setIsSubmittingUser] = useState(false)
+  const [fetchedUsers, setFetchedUsers] = useState([])
+  const [ticketsData, setTicketsData] = useState([])
+  const [lockedData, setLockedData] = useState([])
+  const [deactivatedData, setDeactivatedData] = useState([])
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false)
+  const [bulkFileName, setBulkFileName] = useState("")
+  const [bulkFileError, setBulkFileError] = useState("")
+  const [bulkValidRows, setBulkValidRows] = useState([])
+  const [bulkInvalidRows, setBulkInvalidRows] = useState([])
+  const [bulkActiveTab, setBulkActiveTab] = useState("valid")
+  const [isProcessingBulk, setIsProcessingBulk] = useState(false)
+  const [accountType, setAccountType] = useState("user")
+  const [adminRole, setAdminRole] = useState("")
+  const bulkFileInputRef = useRef(null)
+  const hasBulkReview =
+    addUserTab === "bulk" && (bulkValidRows.length > 0 || bulkInvalidRows.length > 0)
+
+  const normalizedAdminRole = (user?.role || "").toLowerCase()
+  const isSuperAdmin = normalizedAdminRole.includes("super admin")
+  const adminRoleOptions = [
+    { value: "Super Admin", label: "Super Admin" },
+    { value: "Company Admin", label: "Company Admin" },
+  ].filter((option) => (isSuperAdmin ? true : option.value !== "Super Admin"))
+
+  const ouOptions = availableOrganizations.filter((org) => !org.parent_org_id)
+
+  const departmentOptions = availableOrganizations.filter(
+    (org) => org.parent_org_id && org.parent_org_id === individualForm.ou
+  )
+
+  const sanitizeAscii = (value) => value.replace(/[^\t\x20-\x7E]/g, "")
+
+  const normalizeEmail = (value) => sanitizeAscii(value).trim()
+
+  const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+
+  useEffect(() => {
+    const loadDropdownData = async () => {
+      setIsLoadingDropdowns(true)
+      try {
+        const token = localStorage.getItem('authToken')
+
+        const [roles, orgs, geos] = await Promise.all([
+          getAvailableRoles(token),
+          getAvailableOrganizations(token),
+          getAvailableGeos(token),
+        ])
+        setAvailableRoles(roles)
+        setAvailableOrganizations(orgs)
+        setAvailableGeos(geos)
       } catch (error) {
         console.error('Error loading dropdown data:', error)
         setAvailableRoles([])
@@ -30,37 +117,59 @@ import {
     loadDropdownData()
   }, [])
 
-  const loadUsers = async () => {
+  const loadUsers = async (status = null) => {
     setIsLoadingUsers(true)
     try {
       const token = localStorage.getItem('authToken')
-      const users = await getAllUsers(token)
-      setFetchedUsers(users)
+      const users = await getAllUsers(token, status ? { status } : {})
+
+      if (!status) {
+        const normalized = users.filter((item) => {
+          const statusValue = (item.status || "").toString().toLowerCase()
+          return statusValue === "active" || statusValue === "first-time" || statusValue === "first_time"
+        })
+        setFetchedUsers(normalized)
+      } else if (status === "Pending") {
+        setTicketsData(users)
+      } else if (status === "Locked") {
+        setLockedData(users)
+      } else if (status === "Deactivated") {
+        setDeactivatedData(users)
+      }
     } catch (error) {
       console.error('Error fetching users:', error)
-      setFetchedUsers([])
+      if (!status) setFetchedUsers([])
+      if (status === "Pending") setTicketsData([])
+      if (status === "Locked") setLockedData([])
+      if (status === "Deactivated") setDeactivatedData([])
     } finally {
       setIsLoadingUsers(false)
     }
   }
 
-  // Fetch users on mount and tab changes
+  const loadUsersForTab = async (tabId) => {
+    await loadUsers()
+    await loadUsers("Pending")
+    await loadUsers("Locked")
+    await loadUsers("Deactivated")
+  }
+
   useEffect(() => {
-    loadUsers()
+    loadUsersForTab(activeTab)
   }, [activeTab])
 
-  const tickets = fetchedUsers.filter((item) => item.status === "Pending")
-  const locked = fetchedUsers.filter((item) => item.status === "Locked")
-  const deactivated = fetchedUsers.filter((item) => item.status === "Deactivated")
+  useEffect(() => {
+    loadUsersForTab(activeTab)
+  }, [location.key])
 
   const getCurrentData = () => {
     switch (activeTab) {
       case "tickets":
-        return tickets
+        return ticketsData
       case "locked":
-        return locked
+        return lockedData
       case "deactivated":
-        return deactivated
+        return deactivatedData
       default:
         return fetchedUsers
     }
@@ -87,6 +196,19 @@ import {
       setConfirmAction({ type: action, count: selectedUsers.length })
       setShowConfirmModal(true)
     }
+  }
+
+  const handleRowStatusAction = (item, action) => {
+    if (item.userType === 'admin') {
+      setNotificationMessage("✗ Error: Admin accounts cannot be updated here")
+      setShowNotification(true)
+      setTimeout(() => setShowNotification(false), 6000)
+      return
+    }
+
+    setSelectedUsers([item.id])
+    setConfirmAction({ type: action, count: 1 })
+    setShowConfirmModal(true)
   }
 
   const handlePasswordReset = () => {
@@ -357,7 +479,7 @@ import {
       setNotificationMessage(`✓ ${successCount} user${successCount > 1 ? "s" : ""} added successfully`)
       setShowNotification(true)
       setTimeout(() => setShowNotification(false), 5000)
-      await loadUsers()
+      await loadUsersForTab(activeTab)
     }
 
     if (failed.length > 0) {
@@ -408,7 +530,7 @@ import {
     }
 
     if (individualForm.name && individualForm.name.length > 50) newErrors.name = "Name must be 50 characters or less"
-    if (individualForm.employeeId && individualForm.employeeId.length > 50) newErrors.employeeId = "Employee ID must be 50 characters or less"
+    if (individualForm.employeeId && individualForm.employeeId.length > 15) newErrors.employeeId = "Employee ID must be 15 characters or less"
     if (individualForm.email && individualForm.email.length > 50) newErrors.email = "Email must be 50 characters or less"
     if (individualForm.email && !isValidEmail(individualForm.email)) newErrors.email = "Email format is invalid"
 
@@ -439,7 +561,7 @@ import {
       setNotificationMessage(`✓ ${successLabel} ${individualForm.name} added successfully!`)
       setShowNotification(true)
       
-      await loadUsers()
+      await loadUsersForTab(activeTab)
 
       // Close modal and reset form on success
       setShowAddUserModal(false)
@@ -530,12 +652,22 @@ import {
     document.body.removeChild(link)
   }
 
-  const handleConfirmAction = () => {
+  const handleConfirmAction = async () => {
     if (confirmText !== "CONFIRM") return
 
     const action = confirmAction.type
     const count = confirmAction.count
     let message = ""
+
+    if (action === "edit") {
+      setNotificationMessage("✗ Error: Edit is not available yet")
+      setShowNotification(true)
+      setShowConfirmModal(false)
+      setConfirmText("")
+      setSelectedUsers([])
+      setTimeout(() => setShowNotification(false), 6000)
+      return
+    }
 
     switch (action) {
       case "edit":
@@ -551,17 +683,38 @@ import {
         message = `Successfully unlocked ${count} user${count > 1 ? "s" : ""}`
         break
       case "reactivate":
-        message = `Successfully reactivated ${count} user${count > 1 ? "s" : ""}`
+        message = `Successfully activated ${count} user${count > 1 ? "s" : ""}`
         break
     }
 
-    setNotificationMessage(message)
-    setShowNotification(true)
-    setShowConfirmModal(false)
-    setConfirmText("")
-    setSelectedUsers([])
-    loadUsers()
-    setTimeout(() => setShowNotification(false), 5000)
+    try {
+      const token = localStorage.getItem('authToken')
+      const selectedData = getCurrentData().filter((item) => selectedUsers.includes(item.id))
+      const userIds = selectedData.filter((item) => item.userType !== 'admin').map((item) => item.id)
+
+      if (userIds.length === 0) {
+        setNotificationMessage("✗ Error: No eligible users selected")
+        setShowNotification(true)
+        setTimeout(() => setShowNotification(false), 6000)
+        return
+      }
+
+      await updateUserStatus(userIds, action, token)
+      setNotificationMessage(message)
+      setShowNotification(true)
+      setShowConfirmModal(false)
+      setConfirmText("")
+      setSelectedUsers([])
+      await loadUsersForTab(activeTab)
+      setTimeout(() => setShowNotification(false), 5000)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to update users"
+      setNotificationMessage(`✗ Error: ${errorMessage}`)
+      setShowNotification(true)
+      setShowConfirmModal(false)
+      setConfirmText("")
+      setTimeout(() => setShowNotification(false), 6000)
+    }
   }
 
   return (
@@ -570,9 +723,9 @@ import {
       {showNotification && (
         <div className="fixed top-4 left-4 right-4 z-50 max-w-md">
           {notificationMessage.startsWith('✗') ? (
-            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+            <div className="bg-red-600 text-white rounded-lg p-4 shadow-xl">
               <div className="flex items-center gap-3">
-                <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-white flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -580,13 +733,13 @@ import {
                     d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
                 </svg>
-                <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+                <p className="text-sm text-white flex-1">{notificationMessage}</p>
               </div>
             </div>
           ) : (
-            <div className="bg-emerald-500/20 border border-emerald-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+            <div className="bg-emerald-600 text-white rounded-lg p-4 shadow-xl">
               <div className="flex items-center gap-3">
-                <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-white flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -594,7 +747,7 @@ import {
                     d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
                 </svg>
-                <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+                <p className="text-sm text-white flex-1">{notificationMessage}</p>
               </div>
             </div>
           )}
@@ -675,9 +828,9 @@ import {
         <div className="flex gap-1">
           {[
             { id: "users", label: "Users", count: fetchedUsers.length },
-            { id: "tickets", label: "Tickets", count: tickets.length },
-            { id: "locked", label: "Locked", count: locked.length },
-            { id: "deactivated", label: "Deactivated", count: deactivated.length },
+            { id: "tickets", label: "Tickets", count: ticketsData.length },
+            { id: "locked", label: "Locked", count: lockedData.length },
+            { id: "deactivated", label: "Deactivated", count: deactivatedData.length },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -794,8 +947,7 @@ import {
                               </button>
                               <button
                                 onClick={() => {
-                                  setConfirmAction({ type: "lock", count: 1 })
-                                  setShowConfirmModal(true)
+                                  handleRowStatusAction(item, "lock")
                                 }}
                                 className="p-1.5 hover:bg-slate-700 rounded transition-colors"
                                 title="Lock"
@@ -816,8 +968,7 @@ import {
                               </button>
                               <button
                                 onClick={() => {
-                                  setConfirmAction({ type: "deactivate", count: 1 })
-                                  setShowConfirmModal(true)
+                                  handleRowStatusAction(item, "deactivate")
                                 }}
                                 className="p-1.5 hover:bg-slate-700 rounded transition-colors"
                                 title="Deactivate"
@@ -865,8 +1016,7 @@ import {
                           {activeTab === "locked" && (
                             <button
                               onClick={() => {
-                                setConfirmAction({ type: "unlock", count: 1 })
-                                setShowConfirmModal(true)
+                                handleRowStatusAction(item, "unlock")
                               }}
                               className="p-1.5 hover:bg-slate-700 rounded transition-colors"
                               title="Unlock"
@@ -889,11 +1039,10 @@ import {
                           {activeTab === "deactivated" && (
                             <button
                               onClick={() => {
-                                setConfirmAction({ type: "reactivate", count: 1 })
-                                setShowConfirmModal(true)
+                                handleRowStatusAction(item, "reactivate")
                               }}
                               className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                              title="Reactivate"
+                              title="Activate"
                             >
                               <svg
                                 className="w-4 h-4 text-emerald-400"
@@ -967,7 +1116,7 @@ import {
                     onClick={() => handleBulkAction("reactivate")}
                     className="px-3 py-1.5 bg-emerald-500/20 text-emerald-400 rounded text-sm hover:bg-emerald-500/30 transition-colors"
                   >
-                    Reactivate All ({selectedUsers.length})
+                    Activate All ({selectedUsers.length})
                   </button>
                 )}
               </>
@@ -1201,11 +1350,11 @@ import {
                           type="text"
                           value={individualForm.employeeId}
                           onChange={(e) => {
-                            const sanitized = sanitizeAscii(e.target.value).slice(0, 50)
+                            const sanitized = sanitizeAscii(e.target.value).slice(0, 15)
                             setIndividualForm({ ...individualForm, employeeId: sanitized })
                           }}
                           placeholder="Enter employee ID"
-                          maxLength={50}
+                          maxLength={15}
                           className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
                             formErrors.employeeId
                               ? "border-red-500 focus:ring-red-500"

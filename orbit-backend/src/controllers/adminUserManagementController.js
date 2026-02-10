@@ -187,4 +187,28 @@ export class AdminUserManagementController {
       sendError(res, { error: error.message }, 500);
     }
   }
+
+  /**
+   * PATCH /api/admin/users/status
+   * Update user status (lock/unlock/deactivate/reactivate)
+   */
+  static async updateUserStatus(req, res) {
+    try {
+      if (!AdminUserManagementController.ensureAdmin(req, res)) return;
+
+      const { userIds, action } = req.body || {};
+      const adminContext = req.user;
+
+      const result = await AdminUserManagementService.updateUserStatus(userIds, action, adminContext);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'User status updated successfully', 200);
+    } catch (error) {
+      console.error('Error in updateUserStatus:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
 }
