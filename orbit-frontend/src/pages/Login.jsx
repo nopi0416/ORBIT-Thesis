@@ -8,6 +8,7 @@ import { Eye, EyeOff, Lock, User, AlertCircle, Loader2, ArrowLeft } from '../com
 import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../utils/api';
 import { getDashboardRoute } from '../utils/roleRouting';
+import { sanitizeEmail, sanitizePassword, sanitizeOTP, handlePaste } from '../utils/inputSanitizer';
 
 const carouselSlides = [
   {
@@ -30,7 +31,8 @@ const carouselSlides = [
 export default function Login() {
   const navigate = useNavigate();
   const { login, completeLogin } = useAuth();
-  const [email, setEmail] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
+  const [email, setEmail] = useState(''); // Store email from login response for OTP
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [showPassword, setShowPassword] = useState(false);
@@ -68,13 +70,6 @@ export default function Login() {
 
     return () => clearInterval(carouselInterval);
   }, []);
-
-  // Initialize resend cooldown when OTP page is shown
-  useEffect(() => {
-    if (requiresOTP) {
-      setResendCooldown(120); // 2 minutes cooldown since OTP was just sent
-    }
-  }, [requiresOTP]);
 
   // Timer for resend cooldown
   useEffect(() => {
@@ -163,11 +158,11 @@ export default function Login() {
         errors.otp = 'Please enter the complete 6-digit code';
       }
     } else {
-      // Email validation
-      if (!email) {
-        errors.email = 'Username is required';
-      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        errors.email = 'Please enter a valid username';
+      // Username validation
+      if (!employeeId) {
+        errors.employeeId = 'Username is required';
+      } else if (employeeId.trim().length === 0) {
+        errors.employeeId = 'Please enter a valid username';
       }
 
       // Password validation
@@ -228,15 +223,17 @@ export default function Login() {
           setError(result.error || 'OTP verification failed. Please try again.');
         }
       } else {
-        // Step 1: Submit email and password
-        console.log('[LOGIN FORM] Submitting credentials for:', email);
-        const result = await login({ email, password });
+        // Step 1: Submit employee ID and password
+        console.log('[LOGIN FORM] Submitting credentials for:', employeeId);
+        const result = await login({ employeeId, password });
         
         console.log('[LOGIN FORM] Login result:', result);
 
         if (result.success) {
           console.log('[LOGIN FORM] Login success, requiresOTP:', result.requiresOTP);
           if (result.requiresOTP) {
+            // Store email from response for OTP verification
+            setEmail(result.email);
             // OTP required - show OTP entry form
             console.log('[LOGIN FORM] Showing OTP page');
             setRequiresOTP(true);
@@ -251,7 +248,7 @@ export default function Login() {
           }
         } else {
           console.log('[LOGIN FORM] Login failed:', result.error);
-          setError(result.error || 'Login failed. Please try again.');
+          setError('Invalid Username or Password');
         }
       }
     } catch (_error) {
@@ -388,37 +385,42 @@ export default function Login() {
 
                 {!requiresOTP ? (
                   <>
-                    {/* Email field */}
+                    {/* Username field */}
                     <div className="space-y-2">
-                      <Label htmlFor="email" className="text-sm font-medium">
+                      <Label htmlFor="username" className="text-sm font-medium">
                         Username
                       </Label>
                       <div className="relative">
                         <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5" style={{ color: 'oklch(0.65 0.03 280)' }} />
                         <Input
-                          id="email"
-                          type="email"
+                          id="username"
+                          type="text"
                           placeholder="Enter your username"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
+                          value={employeeId}
+                          onInput={(e) => setEmployeeId(e.target.value)}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const pastedText = e.clipboardData.getData('text');
+                            setEmployeeId(pastedText);
+                          }}
                           style={{
                             paddingLeft: '2.5rem',
                             height: '2.75rem',
                             backgroundColor: 'oklch(0.18 0.05 280)',
-                            borderColor: fieldErrors.email ? 'oklch(0.55 0.22 25)' : 'oklch(0.3 0.05 280)',
+                            borderColor: fieldErrors.employeeId ? 'oklch(0.55 0.22 25)' : 'oklch(0.3 0.05 280)',
                             color: 'oklch(0.95 0.02 280)',
                           }}
                           className="border rounded-md transition-colors"
                           disabled={isLoading}
-                          autoComplete="email"
+                          autoComplete="off"
                           autoFocus
-                          aria-invalid={!!fieldErrors.email}
-                          aria-describedby={fieldErrors.email ? 'email-error' : undefined}
+                          aria-invalid={!!fieldErrors.employeeId}
+                          aria-describedby={fieldErrors.employeeId ? 'username-error' : undefined}
                         />
                       </div>
-                      {fieldErrors.email && (
-                        <p id="email-error" className="text-sm animate-in fade-in slide-in-from-top-1" style={{ color: 'oklch(0.55 0.22 25)' }}>
-                          {fieldErrors.email}
+                      {fieldErrors.employeeId && (
+                        <p id="username-error" className="text-sm animate-in fade-in slide-in-from-top-1" style={{ color: 'oklch(0.55 0.22 25)' }}>
+                          {fieldErrors.employeeId}
                         </p>
                       )}
                     </div>
@@ -435,7 +437,8 @@ export default function Login() {
                           type={showPassword ? 'text' : 'password'}
                           placeholder="Enter your password"
                           value={password}
-                          onChange={(e) => setPassword(e.target.value)}
+                          onInput={(e) => setPassword(sanitizePassword(e.target.value))}
+                          onPaste={(e) => handlePaste(e, sanitizePassword)}
                           style={{
                             paddingLeft: '2.5rem',
                             paddingRight: '2.5rem',
@@ -507,9 +510,9 @@ export default function Login() {
                             inputMode="numeric"
                             maxLength={1}
                             value={digit}
-                            onChange={(e) => handleOtpChange(index, e.target.value)}
-                            onKeyDown={(e) => handleOtpKeyDown(index, e)}
+                            onInput={(e) => handleOtpChange(index, sanitizeOTP(e.target.value))}
                             onPaste={handleOtpPaste}
+                            onKeyDown={(e) => handleOtpKeyDown(index, e)}
                             autoFocus={index === 0}
                             style={{
                               width: '3rem',

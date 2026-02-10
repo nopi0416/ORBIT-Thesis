@@ -263,24 +263,30 @@ export function AuthProvider({ children }) {
     setLoading(true);
     try {
       const response = await axios.post(`${API_URL}/auth/login`, {
-        email: credentials.email,
+        employeeId: credentials.employeeId,
         password: credentials.password,
       });
 
       if (response.data.success) {
         // Check if OTP is required (2-step login)
         if (response.data.data?.requiresOTP) {
-          return { success: true, requiresOTP: true, email: response.data.data.email };
+          return { 
+            success: true, 
+            requiresOTP: true, 
+            email: response.data.data.email,
+            employeeId: response.data.data.employeeId 
+          };
         }
         
         // Direct login (fallback, in case backend doesn't require OTP)
-        const { token, userId, email, firstName, lastName, role } = response.data.data;
+        const { token, userId, email, employeeId, firstName, lastName, role } = response.data.data;
         
         localStorage.setItem('authToken', token);
         const userData = { 
           id: userId, 
           name: `${firstName} ${lastName}`,
           email,
+          employeeId,
           firstName,
           lastName,
           role 
@@ -289,7 +295,7 @@ export function AuthProvider({ children }) {
         // Use setUserWithStorage to save user and create auth_session + session_cache
         setUserWithStorage(userData);
         
-        return { success: true };
+        return { success: true, role };
       } else {
         return { success: false, error: response.data.error };
       }
@@ -403,7 +409,7 @@ export function AuthProvider({ children }) {
         // Use setUserWithStorage to save user and create auth_session + session_cache
         setUserWithStorage(userData);
         
-        return { success: true };
+        return { success: true, role: role || 'user' };
       } else {
         return { success: false, error: response.data.error };
       }

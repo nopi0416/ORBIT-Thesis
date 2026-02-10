@@ -55,22 +55,22 @@ export class AuthController {
 
   /**
    * POST /api/auth/login
-   * Login user with email and password - generates OTP
+   * Login user with credential (email or employee_id) and password
+   * Supports both admin (via tbladminusers) and regular users (via tblusers)
    */
   static async login(req, res) {
     try {
-      const { email, password } = req.body;
+      const { employeeId, password } = req.body;
 
       // Validate input
-      const validation = validateLogin(email, password);
-      if (!validation.isValid) {
-        return sendError(res, validation.errors, 400);
+      if (!employeeId || !password) {
+        return sendError(res, 'Username and password are required', 400);
       }
 
-      const result = await AuthService.loginUser(email, password);
+      const result = await AuthService.loginUser(employeeId, password);
 
       if (!result.success) {
-        return sendError(res, result.error, 401);
+        return sendError(res, result.error || 'Invalid Username or Password', 401);
       }
 
       // Include requiresOTP flag in response

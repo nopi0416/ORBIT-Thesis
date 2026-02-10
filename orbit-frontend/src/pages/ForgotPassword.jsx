@@ -6,6 +6,7 @@ import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { User, AlertCircle, Loader2, ArrowLeft } from '../components/icons';
 import { authAPI } from '../utils/api';
+import { sanitizeEmail, handlePaste } from '../utils/inputSanitizer';
 
 export default function ForgotPassword() {
   const navigate = useNavigate();
@@ -115,7 +116,8 @@ export default function ForgotPassword() {
                     type="email"
                     placeholder="Enter your username"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onInput={(e) => setEmail(sanitizeEmail(e.target.value))}
+                    onPaste={(e) => handlePaste(e, sanitizeEmail)}
                     style={{
                       paddingLeft: '2.5rem',
                       height: '2.75rem',

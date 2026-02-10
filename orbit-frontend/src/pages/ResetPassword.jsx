@@ -6,6 +6,7 @@ import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check, CheckCircle } from '../components/icons';
 import { authAPI } from '../utils/api';
+import { sanitizePassword, sanitizeText, handlePaste } from '../utils/inputSanitizer';
 
 export default function ResetPassword() {
   const navigate = useNavigate();
@@ -311,7 +312,8 @@ export default function ResetPassword() {
                         type="text"
                         placeholder="Enter your answer"
                         value={securityAnswer}
-                        onChange={(e) => setSecurityAnswer(e.target.value)}
+                        onInput={(e) => setSecurityAnswer(sanitizeText(e.target.value))}
+                        onPaste={(e) => handlePaste(e, sanitizeText)}
                         style={{
                           height: '2.75rem',
                           backgroundColor: 'oklch(0.18 0.05 280)',
@@ -376,7 +378,8 @@ export default function ResetPassword() {
                       type={showNewPassword ? 'text' : 'password'}
                       placeholder="Enter new password"
                       value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
+                      onInput={(e) => setNewPassword(sanitizePassword(e.target.value))}
+                      onPaste={(e) => handlePaste(e, sanitizePassword)}
                       style={{
                         paddingLeft: '2.5rem',
                         paddingRight: '2.5rem',
@@ -431,7 +434,8 @@ export default function ResetPassword() {
                       type={showConfirmPassword ? 'text' : 'password'}
                       placeholder="Confirm new password"
                       value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      onInput={(e) => setConfirmPassword(sanitizePassword(e.target.value))}
+                      onPaste={(e) => handlePaste(e, sanitizePassword)}
                       style={{
                         paddingLeft: '2.5rem',
                         paddingRight: '2.5rem',

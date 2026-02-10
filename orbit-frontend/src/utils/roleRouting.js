@@ -11,30 +11,27 @@
 export const getDashboardRoute = (role) => {
   if (!role) return '/dashboard'; // Default fallback
 
+  const normalizedRole = role.toLowerCase();
+
+  if (normalizedRole.includes('admin')) {
+    return '/admin/dashboard';
+  }
+
   const roleMap = {
     // Approval levels (L1, L2, L3)
     'l1': '/dashboard',
     'l2': '/dashboard',
     'l3': '/dashboard',
-    'L1': '/dashboard',
-    'L2': '/dashboard',
-    'L3': '/dashboard',
-    
+
     // Requestor role
     'requestor': '/dashboard',
-    'Requestor': '/dashboard',
-    
-    // Admin role
-    'admin': '/admin/dashboard',
-    'Admin': '/admin/dashboard',
-    
+
     // Payroll role
     'payroll': '/dashboard',
-    'Payroll': '/dashboard',
   };
 
   // Get route from map, default to /dashboard if role not found
-  return roleMap[role] || '/dashboard';
+  return roleMap[normalizedRole] || '/dashboard';
 };
 
 /**
@@ -124,6 +121,7 @@ export const getNavigationItems = (role) => {
  */
 export const canAccessRoute = (userRole, route) => {
   const normalizedRole = userRole?.toLowerCase() || 'requestor';
+  const isAdmin = normalizedRole.includes('admin');
 
   // Define route access by role
   const routeAccess = {
@@ -141,5 +139,9 @@ export const canAccessRoute = (userRole, route) => {
   };
 
   const allowedRoles = routeAccess[route] || [];
+  if (isAdmin && allowedRoles.includes('admin')) {
+    return true;
+  }
+
   return allowedRoles.includes(normalizedRole);
 };
