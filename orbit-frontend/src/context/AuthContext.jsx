@@ -295,7 +295,7 @@ export function AuthProvider({ children }) {
         // Use setUserWithStorage to save user and create auth_session + session_cache
         setUserWithStorage(userData);
         
-        return { success: true };
+        return { success: true, role };
       } else {
         return { success: false, error: response.data.error };
       }
@@ -409,7 +409,7 @@ export function AuthProvider({ children }) {
         // Use setUserWithStorage to save user and create auth_session + session_cache
         setUserWithStorage(userData);
         
-        return { success: true };
+        return { success: true, role: role || 'user' };
       } else {
         return { success: false, error: response.data.error };
       }
