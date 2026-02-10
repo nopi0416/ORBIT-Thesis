@@ -127,7 +127,6 @@ export default function ForgotPassword() {
                     value={email}
                     maxLength={50}
                     onInput={(e) => setEmail(sanitizeUsername(e.target.value.slice(0, 50)))}
-                    onPaste={(e) => handlePaste(e, sanitizeUsername)}
                     onKeyDown={handleUsernameKeyDown}
                     style={{
                       paddingLeft: '2.5rem',
