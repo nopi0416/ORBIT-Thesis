@@ -8,6 +8,7 @@ import { Textarea } from '../components/ui/textarea';
 import { Select } from '../components/ui/select';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { ArrowLeft, AlertCircle, Loader2, User, Mail, CheckCircle } from '../components/icons';
+import { sanitizeUsername, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 export default function SupportTicket() {
   const navigate = useNavigate();
@@ -188,7 +189,10 @@ export default function SupportTicket() {
                   type="text"
                   placeholder="John Doe"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  maxLength={50}
+                  onInput={(e) => setName(sanitizeUsername(e.target.value.slice(0, 50)))}
+                  onPaste={(e) => handlePaste(e, sanitizeUsername)}
+                  onKeyDown={handleRestrictedKeyDown}
                   className="pl-10 h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}
@@ -209,7 +213,10 @@ export default function SupportTicket() {
                   type="email"
                   placeholder="your.email@company.com"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  maxLength={50}
+                  onInput={(e) => setEmail(sanitizeUsername(e.target.value.slice(0, 50)))}
+                  onPaste={(e) => handlePaste(e, sanitizeUsername)}
+                  onKeyDown={handleRestrictedKeyDown}
                   className="pl-10 h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}
@@ -252,7 +259,10 @@ export default function SupportTicket() {
                 id="description"
                 placeholder="Please describe your issue in detail..."
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                maxLength={255}
+                onInput={(e) => setDescription(sanitizeUsername(e.target.value.slice(0, 255)))}
+                onPaste={(e) => handlePaste(e, sanitizeUsername)}
+                onKeyDown={handleRestrictedKeyDown}
                 className="min-h-[120px] resize-none"
                 style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                 disabled={isLoading}

@@ -8,7 +8,7 @@ import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check, X } from '../components/icons';
 import { getDashboardRoute } from '../utils/roleRouting';
-import { sanitizePassword, handlePaste } from '../utils/inputSanitizer';
+import { sanitizePassword, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 export default function FirstTimePassword() {
   const navigate = useNavigate();
@@ -130,8 +130,10 @@ export default function FirstTimePassword() {
                     type={showCurrentPassword ? 'text' : 'password'}
                     placeholder="Enter current password (demo123)"
                     value={currentPassword}
-                    onInput={(e) => setCurrentPassword(sanitizePassword(e.target.value))}
+                    maxLength={50}
+                    onInput={(e) => setCurrentPassword(sanitizePassword(e.target.value.slice(0, 50)))}
                     onPaste={(e) => handlePaste(e, sanitizePassword)}
+                    onKeyDown={handleRestrictedKeyDown}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
@@ -162,8 +164,10 @@ export default function FirstTimePassword() {
                     type={showNewPassword ? 'text' : 'password'}
                     placeholder="Enter new password"
                     value={newPassword}
-                    onInput={(e) => setNewPassword(sanitizePassword(e.target.value))}
+                    maxLength={50}
+                    onInput={(e) => setNewPassword(sanitizePassword(e.target.value.slice(0, 50)))}
                     onPaste={(e) => handlePaste(e, sanitizePassword)}
+                    onKeyDown={handleRestrictedKeyDown}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
@@ -193,8 +197,10 @@ export default function FirstTimePassword() {
                     type={showConfirmPassword ? 'text' : 'password'}
                     placeholder="Confirm new password"
                     value={confirmPassword}
-                    onInput={(e) => setConfirmPassword(sanitizePassword(e.target.value))}
+                    maxLength={50}
+                    onInput={(e) => setConfirmPassword(sanitizePassword(e.target.value.slice(0, 50)))}
                     onPaste={(e) => handlePaste(e, sanitizePassword)}
+                    onKeyDown={handleRestrictedKeyDown}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}

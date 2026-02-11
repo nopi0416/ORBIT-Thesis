@@ -1,1 +1,0 @@
-// Demo user switcher removed.

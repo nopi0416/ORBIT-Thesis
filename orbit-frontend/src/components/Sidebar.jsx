@@ -2,7 +2,15 @@ import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { cn } from '../utils/cn';
 import { LayoutDashboard, FileText, Building2, User, LogOut } from '../components/icons';
-import { Button } from '../components/ui/button';
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogTrigger,
+} from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
 
@@ -14,6 +22,8 @@ export function Sidebar({ userRole: userRoleProp }) {
   const resolvedRole = resolveUserRole(userRoleProp ? { role: userRoleProp } : user);
   const normalizedRole = (resolvedRole || '').toLowerCase();
   const isAdmin = normalizedRole.includes('admin');
+
+  const [showLogoutDialog, setShowLogoutDialog] = useState(false);
 
   const handleLogout = () => {
     logout();
@@ -144,19 +154,47 @@ export function Sidebar({ userRole: userRoleProp }) {
         )}
 
         {/* Logout Button */}
-        <Button
-          variant="ghost"
-          size={!isHovered ? "icon" : "default"}
-          onClick={handleLogout}
-          className={cn(
-            "w-full justify-start text-red-400 hover:bg-red-500/10 hover:text-red-300",
-            !isHovered && "justify-center",
-          )}
-          title={!isHovered ? "Logout" : undefined}
-        >
-          <LogOut className="h-5 w-5 shrink-0" />
-          {isHovered && <span className="ml-3">Logout</span>}
-        </Button>
+        <Dialog open={showLogoutDialog} onOpenChange={setShowLogoutDialog}>
+          <DialogTrigger asChild>
+            <Button
+              variant="ghost"
+              size={!isHovered ? "icon" : "default"}
+              className={cn(
+                "w-full justify-start text-red-400 hover:bg-red-500/10 hover:text-red-300",
+                !isHovered && "justify-center",
+              )}
+              title={!isHovered ? "Logout" : undefined}
+            >
+              <LogOut className="h-5 w-5 shrink-0" />
+              {isHovered && <span className="ml-3">Logout</span>}
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="bg-slate-800 border-slate-700">
+            <DialogHeader>
+              <DialogTitle className="text-white">Log out?</DialogTitle>
+              <DialogDescription className="text-slate-300">
+                You will be signed out of your account and returned to the login screen.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex gap-2 justify-end pt-2 border-t border-border">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowLogoutDialog(false)}
+                className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+                onClick={handleLogout}
+              >
+                Log out
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

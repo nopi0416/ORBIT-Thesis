@@ -9,7 +9,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { AlertCircle, Loader2, ArrowLeft } from '../components/icons';
 import { getDashboardRoute } from '../utils/roleRouting';
-import { sanitizeText, handlePaste } from '../utils/inputSanitizer';
+import { sanitizeSecurityAnswer, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 const SECURITY_QUESTIONS = [
   'What was the name of your first pet?',
@@ -39,6 +39,15 @@ export default function SecurityQuestions() {
   const [answer3, setAnswer3] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  const handleAnswerKeyDown = (event) => {
+    handleRestrictedKeyDown(event);
+    if (event.defaultPrevented) return;
+
+    if (event.key.length === 1 && !/^[a-zA-Z0-9.-]$/.test(event.key)) {
+      event.preventDefault();
+    }
+  };
 
   if (!email || !role || !userId) {
     navigate('/login');
@@ -246,8 +255,10 @@ export default function SecurityQuestions() {
                   type="text"
                   placeholder="Your answer"
                   value={answer1}
-                  onInput={(e) => setAnswer1(sanitizeText(e.target.value))}
-                  onPaste={(e) => handlePaste(e, sanitizeText)}
+                  maxLength={50}
+                  onInput={(e) => setAnswer1(sanitizeSecurityAnswer(e.target.value.slice(0, 50)))}
+                  onPaste={(e) => handlePaste(e, sanitizeSecurityAnswer)}
+                  onKeyDown={handleAnswerKeyDown}
                   className="h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}
@@ -277,8 +288,10 @@ export default function SecurityQuestions() {
                   type="text"
                   placeholder="Your answer"
                   value={answer2}
-                  onInput={(e) => setAnswer2(sanitizeText(e.target.value))}
-                  onPaste={(e) => handlePaste(e, sanitizeText)}
+                  maxLength={50}
+                  onInput={(e) => setAnswer2(sanitizeSecurityAnswer(e.target.value.slice(0, 50)))}
+                  onPaste={(e) => handlePaste(e, sanitizeSecurityAnswer)}
+                  onKeyDown={handleAnswerKeyDown}
                   className="h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}
@@ -307,8 +320,10 @@ export default function SecurityQuestions() {
                   type="text"
                   placeholder="Your answer"
                   value={answer3}
-                  onInput={(e) => setAnswer3(sanitizeText(e.target.value))}
-                  onPaste={(e) => handlePaste(e, sanitizeText)}
+                  maxLength={50}
+                  onInput={(e) => setAnswer3(sanitizeSecurityAnswer(e.target.value.slice(0, 50)))}
+                  onPaste={(e) => handlePaste(e, sanitizeSecurityAnswer)}
+                  onKeyDown={handleAnswerKeyDown}
                   className="h-11"
                   style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                   disabled={isLoading}

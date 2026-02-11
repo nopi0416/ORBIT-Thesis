@@ -1,11 +1,21 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { AuthGuard } from '../components/AuthGuard';
 import { useAuth } from '../context/AuthContext';
 import { Sidebar } from '../components/Sidebar';
 
 export default function DashboardLayout({ children }) {
   const { user } = useAuth();
-  const isAdminUser = user?.role === "admin";
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!user) return;
+    const isAdminRole = user.role?.toLowerCase().includes('admin');
+    if (isAdminRole && location.pathname === '/dashboard') {
+      navigate('/admin/dashboard', { replace: true });
+    }
+  }, [user, location.pathname, navigate]);
 
   return (
     <AuthGuard requireAuth>

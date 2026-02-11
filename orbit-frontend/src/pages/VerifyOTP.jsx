@@ -5,7 +5,7 @@ import { Input } from '../components/ui/input';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { AlertCircle, Loader2, ArrowLeft } from '../components/icons';
 import { authAPI } from '../utils/api';
-import { sanitizeOTP, handlePaste } from '../utils/inputSanitizer';
+import { sanitizeOTP, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 export default function VerifyOTP() {
   const navigate = useNavigate();
@@ -81,6 +81,9 @@ export default function VerifyOTP() {
   };
 
   const handleKeyDown = (index, e) => {
+    handleRestrictedKeyDown(e);
+    if (e.defaultPrevented) return;
+
     if (e.key === 'Backspace' && !otp[index] && index > 0) {
       inputRefs.current[index - 1]?.focus();
     }
