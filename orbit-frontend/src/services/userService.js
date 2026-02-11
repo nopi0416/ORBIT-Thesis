@@ -144,6 +144,9 @@ export const getAllUsers = async (token, filters = {}) => {
         role: user.tbluserroles?.[0]?.tblroles?.role_name || 'N/A',
         status: user.status || (user.user_type === 'admin' ? 'Active' : 'Unknown'),
         department: user.department_org?.org_name || user.department_name || (user.user_type === 'admin' ? '—' : 'Unassigned'),
+        orgId: user.org_id || null,
+        geoId: user.geo_id || null,
+        roleId: user.tbluserroles?.[0]?.role_id || null,
         departmentId: user.department_id || null,
         userType: user.user_type || 'user',
       }));
@@ -183,6 +186,77 @@ export const updateUserStatus = async (userIds, action, token) => {
     return data.data;
   } catch (error) {
     console.error('Error updating user status:', error);
+    throw error;
+  }
+};
+
+/**
+ * Update a single user
+ */
+export const updateUser = async (userId, userData, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify({
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        email: userData.email,
+        roleId: userData.roleId,
+        organizationId: userData.organizationId,
+        departmentId: userData.departmentId,
+        geoId: userData.geoId,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to update user';
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = JSON.stringify(data.error);
+        }
+      }
+      throw new Error(errorMessage);
+    }
+
+    return data.data;
+  } catch (error) {
+    console.error('Error updating user:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get admin logs
+ */
+export const getAdminLogs = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/logs`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to fetch admin logs';
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = JSON.stringify(data.error);
+        }
+      }
+      throw new Error(errorMessage);
+    }
+
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching admin logs:', error);
     throw error;
   }
 };

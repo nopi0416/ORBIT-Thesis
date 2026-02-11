@@ -211,4 +211,49 @@ export class AdminUserManagementController {
       sendError(res, { error: error.message }, 500);
     }
   }
+
+  /**
+   * PATCH /api/admin/users/:id
+   * Update a user
+   */
+  static async updateUser(req, res) {
+    try {
+      if (!AdminUserManagementController.ensureAdmin(req, res)) return;
+
+      const userId = req.params.id;
+      const payload = req.body || {};
+
+      const result = await AdminUserManagementService.updateUser(userId, payload, req.user);
+
+      if (!result.success) {
+        return sendError(res, { error: result.error }, 400);
+      }
+
+      sendSuccess(res, result.data, 'User updated successfully', 200);
+    } catch (error) {
+      console.error('Error in updateUser:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
+
+  /**
+   * GET /api/admin/logs
+   * Get admin logs
+   */
+  static async getAdminLogs(req, res) {
+    try {
+      if (!AdminUserManagementController.ensureAdmin(req, res)) return;
+
+      const result = await AdminUserManagementService.getAdminLogs(req.user);
+
+      if (!result.success) {
+        return sendError(res, { error: result.error }, 400);
+      }
+
+      sendSuccess(res, result.data, 'Admin logs fetched successfully', 200);
+    } catch (error) {
+      console.error('Error in getAdminLogs:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
 }

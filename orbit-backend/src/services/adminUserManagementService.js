@@ -57,6 +57,22 @@ export class AdminUserManagementService {
     return !!data;
   }
 
+  static async emailExistsForOtherUser(email, userId) {
+    const { data, error } = await supabase
+      .from('tblusers')
+      .select('user_id')
+      .eq('email', email)
+      .neq('user_id', userId)
+      .limit(1)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    return !!data;
+  }
+
   /**
    * Check if admin email already exists
    */
@@ -92,6 +108,32 @@ export class AdminUserManagementService {
 
     if (error) {
       console.error('Admin log insert error:', error);
+    }
+  }
+
+  static async getAdminLogs(adminContext) {
+    try {
+      const normalizedRole = (adminContext?.role || '').toLowerCase();
+      const isSuperAdmin = normalizedRole.includes('super admin');
+
+      let query = supabase
+        .from('tbladminlogs')
+        .select('admin_log_id, admin_id, action, target_table, target_id, description, created_at, tbladminusers (full_name, email)')
+        .order('created_at', { ascending: false });
+
+      if (!isSuperAdmin && adminContext?.id) {
+        query = query.eq('admin_id', adminContext.id);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      return { success: true, data: data || [] };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   }
 
@@ -738,6 +780,160 @@ export class AdminUserManagementService {
         error: error.message,
         data: [],
       };
+    }
+  }
+
+  static async updateUser(userId, payload, adminContext = {}) {
+    try {
+      const adminRole = adminContext?.role || '';
+      const adminOrgId = adminContext?.orgId || null;
+      const isSuperAdmin = this.isSuperAdmin(adminRole);
+      const isCompanyAdmin = this.isCompanyAdmin(adminRole);
+
+      const { data: existingUser, error: existingError } = await supabase
+        .from('tblusers')
+        .select('user_id, org_id, employee_id, email')
+        .eq('user_id', userId)
+        .single();
+
+      if (existingError) {
+        return { success: false, error: existingError.message };
+      }
+
+      if (!isSuperAdmin && !isCompanyAdmin) {
+        return { success: false, error: 'Admin role not authorized to update users' };
+      }
+
+      if (isCompanyAdmin && adminOrgId && existingUser?.org_id !== adminOrgId) {
+        return { success: false, error: 'Company Admin can only update users in their own OU' };
+      }
+
+      const {
+        firstName,
+        lastName,
+        email,
+        roleId,
+        organizationId,
+        departmentId,
+        geoId,
+      } = payload || {};
+
+      if (!firstName || !lastName || !email || !roleId || !geoId || !departmentId) {
+        return { success: false, error: 'Missing required fields' };
+      }
+      
+        if (isCompanyAdmin && organizationId && organizationId !== adminOrgId) {
+          return { success: false, error: 'Company Admin can only assign users to their own OU' };
+        }
+
+      if (email && email !== existingUser?.email) {
+        const emailDuplicate = await this.emailExistsForOtherUser(email, userId);
+        if (emailDuplicate) {
+          return { success: false, error: `Email "${email}" already exists in the system` };
+        }
+      }
+
+      const roleValid = await this.roleExists(roleId);
+      if (!roleValid) {
+        return { success: false, error: `Role with ID "${roleId}" does not exist` };
+      }
+
+      if (isCompanyAdmin) {
+        const { data: roleData, error: roleError } = await supabase
+          .from('tblroles')
+          .select('role_name')
+          .eq('role_id', roleId)
+          .single();
+
+        if (roleError) {
+          return { success: false, error: roleError.message };
+        }
+
+        if ((roleData?.role_name || '').toLowerCase().includes('super admin')) {
+          return { success: false, error: 'Company Admin cannot assign Super Admin role' };
+        }
+      }
+
+      const geoValid = await this.geoExists(geoId);
+      if (!geoValid) {
+        return { success: false, error: `Geo with ID "${geoId}" does not exist` };
+      }
+
+      if (organizationId) {
+        const orgValid = await this.organizationExists(organizationId);
+        if (!orgValid) {
+          return { success: false, error: `Organization with ID "${organizationId}" does not exist` };
+        }
+      }
+
+      const deptValid = await this.organizationExists(departmentId);
+      if (!deptValid) {
+        return { success: false, error: `Department with ID "${departmentId}" does not exist` };
+      }
+
+      if (organizationId && departmentId) {
+        const { data: departmentOrg, error: deptError } = await supabase
+          .from('tblorganization')
+          .select('org_id, parent_org_id')
+          .eq('org_id', departmentId)
+          .single();
+
+        if (deptError) {
+          return { success: false, error: deptError.message };
+        }
+
+        if (departmentOrg?.parent_org_id && departmentOrg.parent_org_id !== organizationId) {
+          return { success: false, error: 'Department does not belong to selected OU' };
+        }
+      }
+
+      const { error: updateError } = await supabase
+        .from('tblusers')
+        .update({
+          first_name: firstName,
+          last_name: lastName,
+          email,
+          org_id: organizationId || null,
+          department_id: departmentId,
+          geo_id: geoId,
+          updated_by: adminContext?.id || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', userId);
+
+      if (updateError) {
+        return { success: false, error: updateError.message };
+      }
+
+      const { error: roleDeleteError } = await supabase
+        .from('tbluserroles')
+        .delete()
+        .eq('user_id', userId);
+
+      if (roleDeleteError) {
+        return { success: false, error: roleDeleteError.message };
+      }
+
+      const { error: roleInsertError } = await supabase
+        .from('tbluserroles')
+        .insert([{ user_id: userId, role_id: roleId }]);
+
+      if (roleInsertError) {
+        return { success: false, error: roleInsertError.message };
+      }
+
+      await this.logAdminActions(adminContext?.id, [
+        {
+          action: 'USER_UPDATED',
+          targetTable: 'tblusers',
+          targetId: userId,
+          description: `Updated user ${email}`,
+        },
+      ]);
+
+      return { success: true, data: { user_id: userId } };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   }
 

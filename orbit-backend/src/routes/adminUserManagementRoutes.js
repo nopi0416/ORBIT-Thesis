@@ -31,6 +31,12 @@ router.post('/admin-users', authenticateToken, AdminUserManagementController.cre
 router.get('/users', authenticateToken, AdminUserManagementController.getAllAdminUsers);
 
 /**
+ * PATCH /api/admin/users/:id
+ * Update a user
+ */
+router.patch('/users/:id', authenticateToken, AdminUserManagementController.updateUser);
+
+/**
  * PATCH /api/admin/users/status
  * Update user status (lock/unlock/deactivate/reactivate)
  * Body: { userIds: [], action: "lock" | "unlock" | "deactivate" | "reactivate" }
@@ -54,5 +60,11 @@ router.get('/organizations', authenticateToken, AdminUserManagementController.ge
  * Get all available geos
  */
 router.get('/geos', authenticateToken, AdminUserManagementController.getAllGeos);
+
+/**
+ * GET /api/admin/logs
+ * Get admin logs
+ */
+router.get('/logs', authenticateToken, AdminUserManagementController.getAdminLogs);
 
 export default router;

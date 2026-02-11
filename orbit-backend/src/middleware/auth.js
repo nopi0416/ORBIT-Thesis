@@ -22,12 +22,18 @@ export const authenticateToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    const role = decoded.role || null;
+    const normalizedRole = (role || '').toString().toLowerCase();
+    const inferredUserType = decoded.userType || (normalizedRole.includes('admin') ? 'admin' : 'user');
+    const orgId = decoded.org_id || decoded.orgId || null;
+
     req.user = {
       id: decoded.userId || decoded.id || null,
       email: decoded.email || null,
-      role: decoded.role || null,
-      org_id: decoded.org_id || decoded.orgId || null,
-      userType: decoded.userType || null,
+      role,
+      org_id: orgId,
+      orgId,
+      userType: inferredUserType,
     };
     return next();
   } catch (error) {

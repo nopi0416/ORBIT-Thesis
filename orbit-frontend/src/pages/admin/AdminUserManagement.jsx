@@ -10,6 +10,7 @@ import {
   getAvailableOrganizations,
   getAvailableGeos,
   getAllUsers,
+  updateUser,
   updateUserStatus,
 } from "../../services/userService"
 import { useAuth } from "../../context/AuthContext"
@@ -28,7 +29,19 @@ export default function UserManagement() {
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [confirmText, setConfirmText] = useState("")
   const [confirmAction, setConfirmAction] = useState(null)
+  const [isConfirmingAction, setIsConfirmingAction] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
+  const [editForm, setEditForm] = useState({
+    employeeId: "",
+    name: "",
+    email: "",
+    roleId: "",
+    geoId: "",
+    ou: "",
+    departmentId: "",
+  })
+  const [editErrors, setEditErrors] = useState({})
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false)
   const [showNotification, setShowNotification] = useState(false)
   const [notificationMessage, setNotificationMessage] = useState("")
   const [selectedUsers, setSelectedUsers] = useState([])
@@ -40,8 +53,6 @@ export default function UserManagement() {
     uniqueType: "numeric",
   })
   const [individualForm, setIndividualForm] = useState({
-    employeeId: "",
-    name: "",
     email: "",
     role: "",
     geoId: "",
@@ -55,7 +66,6 @@ export default function UserManagement() {
   const [isLoadingDropdowns, setIsLoadingDropdowns] = useState(false)
   const [isSubmittingUser, setIsSubmittingUser] = useState(false)
   const [fetchedUsers, setFetchedUsers] = useState([])
-  const [ticketsData, setTicketsData] = useState([])
   const [lockedData, setLockedData] = useState([])
   const [deactivatedData, setDeactivatedData] = useState([])
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
@@ -64,6 +74,7 @@ export default function UserManagement() {
   const [bulkValidRows, setBulkValidRows] = useState([])
   const [bulkInvalidRows, setBulkInvalidRows] = useState([])
   const [bulkActiveTab, setBulkActiveTab] = useState("valid")
+  const [bulkPreviewPage, setBulkPreviewPage] = useState(1)
   const [isProcessingBulk, setIsProcessingBulk] = useState(false)
   const [accountType, setAccountType] = useState("user")
   const [adminRole, setAdminRole] = useState("")
@@ -73,6 +84,8 @@ export default function UserManagement() {
 
   const normalizedAdminRole = (user?.role || "").toLowerCase()
   const isSuperAdmin = normalizedAdminRole.includes("super admin")
+  const isCompanyAdmin = normalizedAdminRole.includes("company admin")
+  const adminOrgId = user?.org_id || user?.orgId || ""
   const adminRoleOptions = [
     { value: "Super Admin", label: "Super Admin" },
     { value: "Company Admin", label: "Company Admin" },
@@ -89,6 +102,32 @@ export default function UserManagement() {
   const normalizeEmail = (value) => sanitizeAscii(value).trim()
 
   const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+
+  const normalizeAccountType = (value) => {
+    const normalized = (value || "").toString().trim().toLowerCase()
+    if (!normalized) return "user"
+    if (["user", "standard user", "standard"].includes(normalized)) return "user"
+    if (["admin", "admin user", "administrator"].includes(normalized)) return "admin"
+    return null
+  }
+
+  const normalizeAdminRole = (value) => {
+    const normalized = (value || "").toString().trim().toLowerCase()
+    if (!normalized) return ""
+    if (["super admin", "superadmin"].includes(normalized)) return "Super Admin"
+    if (["company admin", "companyadmin"].includes(normalized)) return "Company Admin"
+    return null
+  }
+
+  const getRoleIdFromName = (roleName) => {
+    if (!roleName) return ""
+    const match = availableRoles.find((role) => (role.role_name || "").toLowerCase() === roleName.toLowerCase())
+    return match?.role_id || ""
+  }
+
+  const editDepartmentOptions = availableOrganizations.filter(
+    (org) => org.parent_org_id && org.parent_org_id === editForm.ou
+  )
 
   useEffect(() => {
     const loadDropdownData = async () => {
@@ -129,8 +168,6 @@ export default function UserManagement() {
           return statusValue === "active" || statusValue === "first-time" || statusValue === "first_time"
         })
         setFetchedUsers(normalized)
-      } else if (status === "Pending") {
-        setTicketsData(users)
       } else if (status === "Locked") {
         setLockedData(users)
       } else if (status === "Deactivated") {
@@ -139,7 +176,6 @@ export default function UserManagement() {
     } catch (error) {
       console.error('Error fetching users:', error)
       if (!status) setFetchedUsers([])
-      if (status === "Pending") setTicketsData([])
       if (status === "Locked") setLockedData([])
       if (status === "Deactivated") setDeactivatedData([])
     } finally {
@@ -149,7 +185,6 @@ export default function UserManagement() {
 
   const loadUsersForTab = async (tabId) => {
     await loadUsers()
-    await loadUsers("Pending")
     await loadUsers("Locked")
     await loadUsers("Deactivated")
   }
@@ -162,10 +197,12 @@ export default function UserManagement() {
     loadUsersForTab(activeTab)
   }, [location.key])
 
+  useEffect(() => {
+    setBulkPreviewPage(1)
+  }, [bulkActiveTab, bulkValidRows.length, bulkInvalidRows.length])
+
   const getCurrentData = () => {
     switch (activeTab) {
-      case "tickets":
-        return ticketsData
       case "locked":
         return lockedData
       case "deactivated":
@@ -176,6 +213,11 @@ export default function UserManagement() {
   }
 
   const totalPages = Math.ceil(getCurrentData().length / 10)
+  const bulkPageSize = 10
+  const bulkRows = bulkActiveTab === "valid" ? bulkValidRows : bulkInvalidRows
+  const bulkTotalPages = Math.max(1, Math.ceil(bulkRows.length / bulkPageSize))
+  const bulkPage = Math.min(bulkPreviewPage, bulkTotalPages)
+  const bulkPageRows = bulkRows.slice((bulkPage - 1) * bulkPageSize, bulkPage * bulkPageSize)
 
   const handleSelectAll = (e) => {
     if (e.target.checked) {
@@ -209,6 +251,87 @@ export default function UserManagement() {
     setSelectedUsers([item.id])
     setConfirmAction({ type: action, count: 1 })
     setShowConfirmModal(true)
+  }
+
+  const openEditModal = (item) => {
+    if (item.userType === 'admin') {
+      setNotificationMessage("✗ Error: Admin accounts cannot be edited here")
+      setShowNotification(true)
+      setTimeout(() => setShowNotification(false), 6000)
+      return
+    }
+
+    setSelectedUser(item)
+    setEditErrors({})
+    setEditForm({
+      employeeId: item.employeeId || "",
+      name: item.name || "",
+      email: item.email || "",
+      roleId: item.roleId || getRoleIdFromName(item.role),
+      geoId: item.geoId || "",
+      ou: item.orgId || "",
+      departmentId: item.departmentId || "",
+    })
+    setShowEditModal(true)
+  }
+
+  const handleEditUser = async () => {
+    if (!selectedUser) return
+
+    const errors = {}
+    if (!editForm.name) errors.name = "Name is required"
+    if (!editForm.email) errors.email = "Email is required"
+    if (editForm.email && !isValidEmail(editForm.email)) errors.email = "Invalid email"
+    if (!editForm.roleId) errors.roleId = "Role is required"
+    if (!editForm.geoId) errors.geoId = "Geo is required"
+    if (!editForm.ou) errors.ou = "OU is required"
+    if (!editForm.departmentId) errors.departmentId = "Department is required"
+
+    const selectedRole = availableRoles.find((role) => role.role_id === editForm.roleId)
+    if (isCompanyAdmin && selectedRole && (selectedRole.role_name || "").toLowerCase().includes("super admin")) {
+      errors.roleId = "Company Admin cannot assign Super Admin role"
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setEditErrors(errors)
+      return
+    }
+
+    setIsSubmittingEdit(true)
+    try {
+      const token = localStorage.getItem('authToken')
+      const trimmedName = editForm.name.trim()
+      const [firstName, ...rest] = trimmedName.split(" ")
+      const lastName = rest.join(" ") || firstName
+
+      await updateUser(
+        selectedUser.id,
+        {
+          firstName,
+          lastName,
+          email: editForm.email.trim(),
+          roleId: editForm.roleId,
+          organizationId: editForm.ou,
+          departmentId: editForm.departmentId,
+          geoId: editForm.geoId,
+        },
+        token,
+      )
+
+      setNotificationMessage("✓ User updated successfully")
+      setShowNotification(true)
+      setTimeout(() => setShowNotification(false), 5000)
+      setShowEditModal(false)
+      setSelectedUser(null)
+      await loadUsersForTab(activeTab)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to update user"
+      setNotificationMessage(`✗ Error: ${errorMessage}`)
+      setShowNotification(true)
+      setTimeout(() => setShowNotification(false), 6000)
+    } finally {
+      setIsSubmittingEdit(false)
+    }
   }
 
   const handlePasswordReset = () => {
@@ -275,6 +398,10 @@ export default function UserManagement() {
     }, {})
 
     const headerAliases = {
+      "account type": "account type",
+      "account": "account type",
+      "admin role": "admin role",
+      "adminrole": "admin role",
       "employee id": "employee id",
       "employeeid": "employee id",
       "name": "name",
@@ -293,7 +420,17 @@ export default function UserManagement() {
       return alias ? headerMap[alias] : undefined
     }
 
-    const requiredHeaders = ["employee id", "name", "email", "role", "geo", "organizational unit", "department"]
+    const requiredHeaders = [
+      "account type",
+      "admin role",
+      "employee id",
+      "name",
+      "email",
+      "role",
+      "geo",
+      "organizational unit",
+      "department",
+    ]
     const missingHeaders = requiredHeaders.filter((header) => getIndex(header) === undefined)
     if (missingHeaders.length > 0) {
       return { error: `Missing required columns: ${missingHeaders.join(", ")}` }
@@ -322,16 +459,38 @@ export default function UserManagement() {
       const geo = (row[getIndex("geo")] || "").toString().trim()
       const ou = (row[getIndex("organizational unit")] || "").toString().trim()
       const department = (row[getIndex("department")] || "").toString().trim()
+      const accountTypeRaw = (row[getIndex("account type")] || "").toString().trim()
+      const adminRoleRaw = (row[getIndex("admin role")] || "").toString().trim()
 
       const errors = []
 
-      if (!employeeId) errors.push("Missing Employee ID")
       if (!name) errors.push("Missing Name")
       if (!email) errors.push("Missing Email")
-      if (!role) errors.push("Missing Role")
-      if (!geo) errors.push("Missing Geo")
-      if (!ou) errors.push("Missing Organizational Unit")
-      if (!department) errors.push("Missing Department")
+
+      const normalizedAccountType = normalizeAccountType(accountTypeRaw)
+      if (!normalizedAccountType) {
+        errors.push("Account Type must be User or Admin")
+      }
+
+      const normalizedRowAdminRole = normalizeAdminRole(adminRoleRaw)
+
+      if (normalizedAccountType === "admin") {
+        if (!normalizedRowAdminRole) {
+          errors.push("Admin Role must be Super Admin or Company Admin")
+        }
+        if (normalizedRowAdminRole === "Super Admin" && !isSuperAdmin) {
+          errors.push("Only Super Admins can create Super Admin accounts")
+        }
+        if (normalizedRowAdminRole === "Company Admin" && !ou) {
+          errors.push("Missing Organizational Unit")
+        }
+      } else if (normalizedAccountType === "user") {
+        if (!employeeId) errors.push("Missing Employee ID")
+        if (!role) errors.push("Missing Role")
+        if (!geo) errors.push("Missing Geo")
+        if (!ou) errors.push("Missing Organizational Unit")
+        if (!department) errors.push("Missing Department")
+      }
 
       if (email && !emailRegex.test(email)) errors.push("Invalid Email")
 
@@ -347,6 +506,10 @@ export default function UserManagement() {
 
       const roleId = resolveByIdOrName(role, availableRoles, "role_id", "role_name")
       if (role && !roleId) errors.push("Role not found")
+
+      if (normalizedAccountType === "user" && role && role.toLowerCase().includes("admin")) {
+        errors.push("Admin roles require Account Type = Admin")
+      }
 
       const geoId = resolveByIdOrName(geo, availableGeos, "geo_id", "geo_name", "geo_code")
       if (geo && !geoId) errors.push("Geo not found")
@@ -364,8 +527,25 @@ export default function UserManagement() {
         }
       }
 
+      if (isCompanyAdmin && normalizedAccountType === "user") {
+        if (adminOrgId && orgId && orgId !== adminOrgId) {
+          errors.push("Company Admin can only add users to their own OU")
+        }
+      }
+
+      if (isCompanyAdmin && normalizedAccountType === "admin") {
+        if (normalizedRowAdminRole === "Super Admin") {
+          errors.push("Only Super Admins can create Super Admin accounts")
+        }
+        if (normalizedRowAdminRole === "Company Admin" && adminOrgId && orgId && orgId !== adminOrgId) {
+          errors.push("Company Admin can only create admins in their own OU")
+        }
+      }
+
       const entry = {
         rowNumber,
+        accountType: normalizedAccountType || accountTypeRaw,
+        adminRole: normalizedRowAdminRole || adminRoleRaw,
         employeeId,
         name,
         email,
@@ -453,21 +633,34 @@ export default function UserManagement() {
 
     for (const row of bulkValidRows) {
       try {
-        await createUser(
-          {
-            employeeId: row.employeeId,
-            name: row.name,
-            email: row.email,
-            role: row.roleId,
-            geoId: row.geoId,
-            ou: row.orgId,
-            departmentId: row.departmentId,
-          },
-          token
-        )
+        if ((row.accountType || "").toString().toLowerCase() === "admin") {
+          await createAdminUser(
+            {
+              fullName: row.name,
+              email: row.email,
+              adminRole: row.adminRole,
+              orgId: row.orgId,
+            },
+            token
+          )
+        } else {
+          await createUser(
+            {
+              employeeId: row.employeeId,
+              name: row.name,
+              email: row.email,
+              role: row.roleId,
+              geoId: row.geoId,
+              ou: row.orgId,
+              departmentId: row.departmentId,
+            },
+            token
+          )
+        }
         successCount += 1
       } catch (error) {
-        failed.push({ ...row, errors: ["Failed to create user"] })
+        const errorMessage = error instanceof Error ? error.message : "Failed to create user"
+        failed.push({ ...row, errors: [errorMessage] })
       }
     }
 
@@ -633,10 +826,21 @@ export default function UserManagement() {
     const dateTime = now.toISOString().replace(/[:.]/g, "-").slice(0, -5)
     const fileName = `user_template_${dateTime}.csv`
 
-    const headers = ["Employee ID", "Name", "Email", "Role", "Geo", "Organizational Unit", "Department"]
+    const headers = [
+      "Account Type",
+      "Admin Role",
+      "Employee ID",
+      "Name",
+      "Email",
+      "Role",
+      "Geo",
+      "Organizational Unit",
+      "Department",
+    ]
     const sampleRows = [
-      ["EMP001", "John Doe", "john@orbit.com", "Admin", "Asia Pacific", "Orbit Corp", "IT Department"],
-      ["EMP002", "Jane Smith", "jane@orbit.com", "Budget Officer", "Europe", "Orbit Corp", "HR Department"],
+      ["User", "", "EMP001", "John Doe", "john@orbit.com", "Admin", "Asia Pacific", "Orbit Corp", "IT Department"],
+      ["User", "", "EMP002", "Jane Smith", "jane@orbit.com", "Budget Officer", "Europe", "Orbit Corp", "HR Department"],
+      ["Admin", "Company Admin", "", "Alex Admin", "alex.admin@orbit.com", "", "", "Orbit Corp", ""],
     ]
 
     const csvContent = [headers, ...sampleRows].map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\n")
@@ -653,7 +857,8 @@ export default function UserManagement() {
   }
 
   const handleConfirmAction = async () => {
-    if (confirmText !== "CONFIRM") return
+    if (confirmText !== "CONFIRM" || isConfirmingAction) return
+    setIsConfirmingAction(true)
 
     const action = confirmAction.type
     const count = confirmAction.count
@@ -666,6 +871,7 @@ export default function UserManagement() {
       setConfirmText("")
       setSelectedUsers([])
       setTimeout(() => setShowNotification(false), 6000)
+      setIsConfirmingAction(false)
       return
     }
 
@@ -714,6 +920,8 @@ export default function UserManagement() {
       setShowConfirmModal(false)
       setConfirmText("")
       setTimeout(() => setShowNotification(false), 6000)
+    } finally {
+      setIsConfirmingAction(false)
     }
   }
 
@@ -721,9 +929,9 @@ export default function UserManagement() {
     <div className="flex-1 flex flex-col h-full overflow-hidden relative">
       {/* Notification - Fixed at top of viewport */}
       {showNotification && (
-        <div className="fixed top-4 left-4 right-4 z-50 max-w-md">
+        <div className="fixed top-4 right-4 z-50 w-full max-w-md">
           {notificationMessage.startsWith('✗') ? (
-            <div className="bg-red-600 text-white rounded-lg p-4 shadow-xl">
+            <div className="bg-red-600/90 text-white rounded-lg p-4 shadow-xl">
               <div className="flex items-center gap-3">
                 <svg className="w-5 h-5 text-white flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
@@ -737,7 +945,7 @@ export default function UserManagement() {
               </div>
             </div>
           ) : (
-            <div className="bg-emerald-600 text-white rounded-lg p-4 shadow-xl">
+            <div className="bg-emerald-600/90 text-white rounded-lg p-4 shadow-xl">
               <div className="flex items-center gap-3">
                 <svg className="w-5 h-5 text-white flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
@@ -828,7 +1036,6 @@ export default function UserManagement() {
         <div className="flex gap-1">
           {[
             { id: "users", label: "Users", count: fetchedUsers.length },
-            { id: "tickets", label: "Tickets", count: ticketsData.length },
             { id: "locked", label: "Locked", count: lockedData.length },
             { id: "deactivated", label: "Deactivated", count: deactivatedData.length },
           ].map((tab) => (
@@ -925,8 +1132,7 @@ export default function UserManagement() {
                             <>
                               <button
                                 onClick={() => {
-                                  setSelectedUser(item)
-                                  setShowEditModal(true)
+                                  openEditModal(item)
                                 }}
                                 className="p-1.5 hover:bg-slate-700 rounded transition-colors"
                                 title="Edit"
@@ -988,30 +1194,6 @@ export default function UserManagement() {
                                 </svg>
                               </button>
                             </>
-                          )}
-                          {activeTab === "tickets" && (
-                            <button
-                              onClick={() => {
-                                setSelectedUsers([item.id])
-                                setShowPasswordResetModal(true)
-                              }}
-                              className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                              title="Reset Password"
-                            >
-                              <svg
-                                className="w-4 h-4 text-blue-400"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                                />
-                              </svg>
-                            </button>
                           )}
                           {activeTab === "locked" && (
                             <button
@@ -1094,14 +1276,6 @@ export default function UserManagement() {
                       Deactivate All ({selectedUsers.length})
                     </button>
                   </>
-                )}
-                {activeTab === "tickets" && (
-                  <button
-                    onClick={() => handleBulkAction("reset")}
-                    className="px-3 py-1.5 bg-blue-500/20 text-blue-400 rounded text-sm hover:bg-blue-500/30 transition-colors"
-                  >
-                    Reset All ({selectedUsers.length})
-                  </button>
                 )}
                 {activeTab === "locked" && (
                   <button
@@ -1239,6 +1413,180 @@ export default function UserManagement() {
                 className="px-4 py-2 bg-fuchsia-600 text-white rounded-lg hover:bg-fuchsia-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Reset Passwords
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit User Modal */}
+      {showEditModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-800 rounded-lg border border-slate-700 w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-slate-700">
+              <h3 className="text-lg font-semibold text-white">Edit User</h3>
+              <button
+                onClick={() => {
+                  setShowEditModal(false)
+                  setSelectedUser(null)
+                  setEditErrors({})
+                }}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-hidden p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Employee ID</label>
+                  <input
+                    type="text"
+                    value={editForm.employeeId}
+                    disabled
+                    className="w-full px-3 py-2 bg-slate-700/60 border border-slate-600 rounded-lg text-white text-sm opacity-70 cursor-not-allowed"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Name</label>
+                  <input
+                    type="text"
+                    value={editForm.name}
+                    onChange={(e) => setEditForm({ ...editForm, name: sanitizeAscii(e.target.value).slice(0, 50) })}
+                    className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                      editErrors.name ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
+                    }`}
+                  />
+                  {editErrors.name && <p className="text-xs text-red-400 mt-1">{editErrors.name}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
+                  <input
+                    type="email"
+                    value={editForm.email}
+                    onChange={(e) => setEditForm({ ...editForm, email: normalizeEmail(e.target.value).slice(0, 50) })}
+                    className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                      editErrors.email ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
+                    }`}
+                  />
+                  {editErrors.email && <p className="text-xs text-red-400 mt-1">{editErrors.email}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Role</label>
+                  <select
+                    value={editForm.roleId}
+                    onChange={(e) => setEditForm({ ...editForm, roleId: e.target.value })}
+                    disabled={isLoadingDropdowns || availableRoles.length === 0}
+                    className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                      editErrors.roleId ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
+                    }`}
+                  >
+                    <option value="">Select role</option>
+                    {availableRoles.map((role) => {
+                      const isSuperAdminRole = (role.role_name || "").toLowerCase().includes("super admin")
+                      const isDisabled = isCompanyAdmin && isSuperAdminRole
+                      return (
+                        <option key={role.role_id} value={role.role_id} disabled={isDisabled}>
+                          {role.role_name}
+                        </option>
+                      )
+                    })}
+                  </select>
+                  {editErrors.roleId && <p className="text-xs text-red-400 mt-1">{editErrors.roleId}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Geo</label>
+                  <select
+                    value={editForm.geoId}
+                    onChange={(e) => setEditForm({ ...editForm, geoId: e.target.value })}
+                    disabled={isLoadingDropdowns || availableGeos.length === 0}
+                    className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                      editErrors.geoId ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
+                    }`}
+                  >
+                    <option value="">Select geo</option>
+                    {availableGeos.map((geo) => (
+                      <option key={geo.geo_id} value={geo.geo_id}>
+                        {geo.geo_name || geo.geo_code}
+                      </option>
+                    ))}
+                  </select>
+                  {editErrors.geoId && <p className="text-xs text-red-400 mt-1">{editErrors.geoId}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Organizational Unit</label>
+                  <select
+                    value={editForm.ou}
+                    onChange={(e) => setEditForm({ ...editForm, ou: e.target.value, departmentId: "" })}
+                    disabled={isLoadingDropdowns || ouOptions.length === 0}
+                    className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                      editErrors.ou ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
+                    }`}
+                  >
+                    <option value="">Select OU</option>
+                    {ouOptions.map((org) => (
+                      <option key={org.organization_id} value={org.organization_id}>
+                        {org.org_name}
+                      </option>
+                    ))}
+                  </select>
+                  {editErrors.ou && <p className="text-xs text-red-400 mt-1">{editErrors.ou}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Department</label>
+                  <select
+                    value={editForm.departmentId}
+                    onChange={(e) => setEditForm({ ...editForm, departmentId: e.target.value })}
+                    disabled={!editForm.ou || editDepartmentOptions.length === 0}
+                    className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                      editErrors.departmentId ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
+                    }`}
+                  >
+                    <option value="">{editForm.ou ? "Select Department" : "Select OU first"}</option>
+                    {editDepartmentOptions.map((org) => (
+                      <option key={org.organization_id} value={org.organization_id}>
+                        {org.org_name}
+                      </option>
+                    ))}
+                  </select>
+                  {editErrors.departmentId && <p className="text-xs text-red-400 mt-1">{editErrors.departmentId}</p>}
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-700 px-6 py-4 flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  setShowEditModal(false)
+                  setSelectedUser(null)
+                  setEditErrors({})
+                }}
+                disabled={isSubmittingEdit}
+                className="px-6 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleEditUser}
+                disabled={isSubmittingEdit}
+                className="px-6 py-2 bg-fuchsia-600 text-white rounded-lg hover:bg-fuchsia-700 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isSubmittingEdit && (
+                  <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                )}
+                {isSubmittingEdit ? "Saving..." : "Save Changes"}
               </button>
             </div>
           </div>
@@ -1563,7 +1911,7 @@ export default function UserManagement() {
                     <ul className="text-xs text-slate-400 space-y-1">
                       <li>• File must be in CSV or Excel format (.csv, .xlsx)</li>
                       <li>• File name must match: user_template_YYYY-MM-DDTHH-MM-SS</li>
-                      <li>• Required columns: Employee ID, Name, Email, Role, Geo, Organizational Unit, Department</li>
+                      <li>• Required columns: Account Type, Admin Role, Employee ID, Name, Email, Role, Geo, Organizational Unit, Department</li>
                       <li>• Ensure all email addresses are valid and unique</li>
                     </ul>
                   </div>
@@ -1670,7 +2018,7 @@ export default function UserManagement() {
             </div>
 
             {hasBulkReview && (
-              <div className="bg-slate-800 rounded-lg border border-slate-700 shadow-xl flex flex-col w-full max-w-2xl max-h-[90vh] overflow-hidden">
+              <div className="bg-slate-800 rounded-lg border border-slate-700 shadow-xl flex flex-col w-full max-w-3xl max-h-[90vh] overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
                   <h4 className="text-sm font-semibold text-white">Bulk Upload Review</h4>
                   <div className="flex gap-2">
@@ -1701,32 +2049,39 @@ export default function UserManagement() {
                   <table className="w-full text-xs">
                     <thead className="bg-slate-800/80 sticky top-0">
                       <tr className="border-b border-slate-700">
-                        <th className="text-left px-3 py-2 text-slate-300">Row</th>
-                        <th className="text-left px-3 py-2 text-slate-300">Employee ID</th>
-                        <th className="text-left px-3 py-2 text-slate-300">Name</th>
-                        <th className="text-left px-3 py-2 text-slate-300">Email</th>
-                        <th className="text-left px-3 py-2 text-slate-300">Role</th>
-                        <th className="text-left px-3 py-2 text-slate-300">Geo</th>
-                        <th className="text-left px-3 py-2 text-slate-300">OU</th>
-                        <th className="text-left px-3 py-2 text-slate-300">Department</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Row</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Account Type</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Admin Role</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Employee ID</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Name</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Email</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Role</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Geo</th>
+                        <th className="text-left px-3 py-3 text-slate-300">OU</th>
+                        <th className="text-left px-3 py-3 text-slate-300">Department</th>
                         {bulkActiveTab === "invalid" && (
-                          <th className="text-left px-3 py-2 text-slate-300">Issues</th>
+                          <th className="text-left px-3 py-3 text-slate-300">Issues</th>
                         )}
                       </tr>
                     </thead>
                     <tbody>
-                      {(bulkActiveTab === "valid" ? bulkValidRows : bulkInvalidRows).map((row) => (
+                      {bulkPageRows.map((row) => (
                         <tr key={`${bulkActiveTab}-${row.rowNumber}-${row.email}`} className="border-b border-slate-700/50">
-                          <td className="px-3 py-2 text-slate-300">{row.rowNumber}</td>
-                          <td className="px-3 py-2 text-slate-300">{row.employeeId}</td>
-                          <td className="px-3 py-2 text-slate-200">{row.name}</td>
-                          <td className="px-3 py-2 text-slate-300">{row.email}</td>
-                          <td className="px-3 py-2 text-slate-300">{row.role}</td>
-                          <td className="px-3 py-2 text-slate-300">{row.geo}</td>
-                          <td className="px-3 py-2 text-slate-300">{row.ou}</td>
-                          <td className="px-3 py-2 text-slate-300">{row.department}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.rowNumber}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.accountType || ""}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.adminRole || ""}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.employeeId}</td>
+                          <td className="px-3 py-3 text-slate-200">{row.name}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.email}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.role}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.geo}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.ou}</td>
+                          <td className="px-3 py-3 text-slate-300">{row.department}</td>
                           {bulkActiveTab === "invalid" && (
-                            <td className="px-3 py-2 text-red-400">
+                            <td
+                              className="px-3 py-3 text-red-400 max-w-[260px] truncate align-top"
+                              title={row.errors?.join(", ")}
+                            >
                               {row.errors?.join(", ")}
                             </td>
                           )}
@@ -1734,6 +2089,28 @@ export default function UserManagement() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+
+                <div className="border-t border-slate-700 px-4 py-3 flex items-center justify-between text-xs text-slate-400">
+                  <span>
+                    Page {bulkPage} of {bulkTotalPages}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setBulkPreviewPage((page) => Math.max(1, page - 1))}
+                      disabled={bulkPage <= 1}
+                      className="px-2 py-1 rounded bg-slate-700/60 text-slate-300 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      onClick={() => setBulkPreviewPage((page) => Math.min(bulkTotalPages, page + 1))}
+                      disabled={bulkPage >= bulkTotalPages}
+                      className="px-2 py-1 rounded bg-slate-700/60 text-slate-300 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Next
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -1773,10 +2150,16 @@ export default function UserManagement() {
               </button>
               <button
                 onClick={handleConfirmAction}
-                disabled={confirmText !== "CONFIRM"}
-                className="px-4 py-2 bg-fuchsia-600 text-white rounded-lg hover:bg-fuchsia-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={confirmText !== "CONFIRM" || isConfirmingAction}
+                className="px-4 py-2 bg-fuchsia-600 text-white rounded-lg hover:bg-fuchsia-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                Confirm
+                {isConfirmingAction && (
+                  <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                )}
+                {isConfirmingAction ? "Confirming..." : "Confirm"}
               </button>
             </div>
           </div>
