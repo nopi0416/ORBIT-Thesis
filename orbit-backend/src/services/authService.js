@@ -102,17 +102,14 @@ export class AuthService {
       
       if (!adminError && adminUser) {
         console.log(`[LOGIN] Found admin user: ${credential}`);
-        console.log(`[LOGIN] Admin user data:`, { email: adminUser.email, status: adminUser.status, has_status_field: 'status' in adminUser });
+        console.log(`[LOGIN] Admin user data:`, { email: adminUser.email, is_active: adminUser.is_active });
         
-        // Check if account status is Active or First_Time (case-insensitive)
-        const userStatus = String(adminUser.status || '').toLowerCase().trim();
-        const validStatuses = ['active', 'first_time'];
-        console.log(`[LOGIN] Admin status validation - raw: "${adminUser.status}", lowercased: "${userStatus}", valid: ${validStatuses.includes(userStatus)}`);
-        if (!validStatuses.includes(userStatus)) {
-          console.log(`[LOGIN] Admin account status not allowed for login, status: ${adminUser.status}`);
+        // Check if admin account is active
+        if (adminUser.is_active === false) {
+          console.log(`[LOGIN] Admin account is disabled (is_active: false)`);
           return {
             success: false,
-            error: userStatus ? `Your account is ${userStatus}. Please contact administrator.` : 'Your account is not properly configured. Please contact administrator.',
+            error: 'Your account is deactivated. Please contact administrator.',
           };
         }
         
