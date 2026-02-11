@@ -343,7 +343,12 @@ export class AuthService {
       if (adminUser) {
         console.log(`[COMPLETE LOGIN] Found admin user: ${email}`);
         // Generate JWT token for admin
-        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role);
+        const token = this.generateToken(
+          adminUser.admin_id,
+          adminUser.email,
+          adminUser.admin_role,
+          adminUser.org_id || null,
+        );
 
         // Update last login
         try {
