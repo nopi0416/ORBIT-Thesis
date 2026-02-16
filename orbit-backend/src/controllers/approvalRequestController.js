@@ -50,6 +50,53 @@ export class ApprovalRequestController {
       return sendError(res, error.message, 500);
     }
   }
+
+  /**
+   * PATCH /api/approval-requests/notifications/:notificationId/read
+   */
+  static async markNotificationRead(req, res) {
+    try {
+      const userId = req.user?.id;
+      const { notificationId } = req.params;
+
+      if (!userId) {
+        return sendError(res, 'User ID is required', 400);
+      }
+
+      const result = await ApprovalRequestService.markNotificationAsRead(notificationId, userId);
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      return sendSuccess(res, result.data, 'Notification marked as read', 200);
+    } catch (error) {
+      console.error('Error in markNotificationRead:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * PATCH /api/approval-requests/notifications/read-all
+   */
+  static async markAllNotificationsRead(req, res) {
+    try {
+      const userId = req.user?.id;
+
+      if (!userId) {
+        return sendError(res, 'User ID is required', 400);
+      }
+
+      const result = await ApprovalRequestService.markAllNotificationsAsRead(userId);
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      return sendSuccess(res, result.data, 'All notifications marked as read', 200);
+    } catch (error) {
+      console.error('Error in markAllNotificationsRead:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
   /**
    * Get employee by EID (company scoped)
    * GET /api/approval-requests/employees/:eid?company_id=uuid
@@ -112,7 +159,13 @@ export class ApprovalRequestController {
    */
   static async createApprovalRequest(req, res) {
     try {
-      const { budget_id, description, total_request_amount, client_sponsored } = req.body;
+      const {
+        budget_id,
+        description,
+        total_request_amount,
+        client_sponsored,
+        is_client_sponsored,
+      } = req.body;
       const userId = req.user?.id || req.body.submitted_by || req.body.created_by;
       const orgId = req.user?.org_id || null;
 
@@ -134,7 +187,7 @@ export class ApprovalRequestController {
         total_request_amount,
         submitted_by: userId,
         created_by: userId,
-        client_sponsored,
+        is_client_sponsored: is_client_sponsored ?? client_sponsored,
       });
 
       if (!result.success) {

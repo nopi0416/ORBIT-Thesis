@@ -42,6 +42,8 @@ router.get('/employees/:eid', authenticateToken, ApprovalRequestController.getEm
  * Get notification list for requestor/approver dashboards
  */
 router.get('/notifications', authenticateToken, ApprovalRequestController.getUserNotifications);
+router.patch('/notifications/read-all', authenticateToken, ApprovalRequestController.markAllNotificationsRead);
+router.patch('/notifications/:notificationId/read', authenticateToken, ApprovalRequestController.markNotificationRead);
 
 /**
  * GET /api/approval-requests/:id

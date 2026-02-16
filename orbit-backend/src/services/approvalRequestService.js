@@ -58,160 +58,379 @@ export class ApprovalRequestService {
 
   static async sendApprovalNotification({ recipients = [], subject, html, text }) {
     if (!recipients.length) return;
-    await sendApprovalNotificationEmail({
-      to: recipients,
-      subject,
-      html,
-      text,
+
+    const uniqueRecipients = Array.from(new Set((recipients || []).filter(Boolean)));
+    if (!uniqueRecipients.length) return;
+
+    const results = await Promise.allSettled(
+      uniqueRecipients.map((recipient) =>
+        sendApprovalNotificationEmail({
+          to: recipient,
+          subject,
+          html,
+          text,
+        })
+      )
+    );
+
+    const failedCount = results.filter((result) => result.status === 'rejected').length;
+    if (failedCount > 0) {
+      console.warn(`[email] ${failedCount} notification email(s) failed to send.`);
+    }
+  }
+
+  static formatRoleLabel(roleName) {
+    const value = String(roleName || '').trim();
+    if (!value) return 'User';
+    return value
+      .toLowerCase()
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  static resolveOrgRoot(orgId, orgMap) {
+    if (!orgId || !orgMap?.size) return null;
+
+    let current = orgId;
+    const visited = new Set();
+    while (current && !visited.has(current)) {
+      visited.add(current);
+      const row = orgMap.get(current);
+      if (!row?.parent_org_id) return current;
+      current = row.parent_org_id;
+    }
+
+    return current || null;
+  }
+
+  static async getOrganizationMap() {
+    const { data, error } = await supabase
+      .from('tblorganization')
+      .select('org_id, parent_org_id');
+
+    if (error) throw error;
+
+    return new Map((data || []).map((row) => [row.org_id, row]));
+  }
+
+  static async getUserProfileMap(userIds = []) {
+    const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return new Map();
+
+    const { data: users, error: usersError } = await supabase
+      .from('tblusers')
+      .select('user_id, first_name, last_name, email, org_id')
+      .in('user_id', uniqueIds);
+
+    if (usersError) throw usersError;
+
+    const { data: userRoles, error: roleError } = await supabase
+      .from('tbluserroles')
+      .select(`
+        user_id,
+        is_active,
+        tblroles:role_id ( role_name )
+      `)
+      .in('user_id', uniqueIds)
+      .eq('is_active', true);
+
+    if (roleError) throw roleError;
+
+    const rolesByUser = new Map();
+    (userRoles || []).forEach((row) => {
+      const roleName = row?.tblroles?.role_name;
+      if (!roleName) return;
+      const existing = rolesByUser.get(row.user_id) || [];
+      existing.push(roleName);
+      rolesByUser.set(row.user_id, existing);
     });
+
+    return new Map(
+      (users || []).map((user) => {
+        const roles = rolesByUser.get(user.user_id) || [];
+        const primaryRole = roles[0] || null;
+        return [
+          user.user_id,
+          {
+            user_id: user.user_id,
+            name: `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.email || user.user_id,
+            email: user.email || null,
+            org_id: user.org_id || null,
+            role_name: primaryRole,
+            roles,
+          },
+        ];
+      })
+    );
+  }
+
+  static async getPayrollUsersByParentOrg(parentOrgId, orgMap) {
+    if (!parentOrgId) return [];
+
+    const { data, error } = await supabase
+      .from('tbluserroles')
+      .select(`
+        user_id,
+        is_active,
+        tblroles!inner ( role_name ),
+        tblusers!inner ( user_id, first_name, last_name, email, org_id )
+      `)
+      .eq('is_active', true)
+      .ilike('tblroles.role_name', '%payroll%');
+
+    if (error) throw error;
+
+    const result = [];
+    (data || []).forEach((entry) => {
+      const userObj = Array.isArray(entry.tblusers) ? entry.tblusers[0] : entry.tblusers;
+      const roleObj = Array.isArray(entry.tblroles) ? entry.tblroles[0] : entry.tblroles;
+      if (!userObj?.user_id) return;
+
+      const userParent = this.resolveOrgRoot(userObj.org_id, orgMap);
+      if (userParent !== parentOrgId) return;
+
+      result.push({
+        user_id: userObj.user_id,
+        name: `${userObj.first_name || ''} ${userObj.last_name || ''}`.trim() || userObj.email || userObj.user_id,
+        email: userObj.email || null,
+        org_id: userObj.org_id || null,
+        role_name: roleObj?.role_name || 'PAYROLL',
+      });
+    });
+
+    return result;
+  }
+
+  static async insertNotificationRows({
+    requestId,
+    notificationType,
+    title,
+    message,
+    recipientIds = [],
+    profileMap,
+    relatedApprovalLevel = null,
+  }) {
+    const uniqueRecipientIds = Array.from(new Set((recipientIds || []).filter(Boolean)));
+    if (!uniqueRecipientIds.length) return;
+
+    const now = new Date().toISOString();
+    const rows = uniqueRecipientIds.map((recipientId) => ({
+      request_id: requestId,
+      notification_type: notificationType,
+      title,
+      message,
+      recipient_id: recipientId,
+      recipient_email: profileMap?.get(recipientId)?.email || null,
+      is_sent: true,
+      sent_date: now,
+      is_read: false,
+      related_approval_level: relatedApprovalLevel,
+      created_at: now,
+    }));
+
+    if (rows.length) {
+      const { error } = await supabase
+        .from('tblbudgetapprovalrequests_notifications')
+        .insert(rows);
+
+      if (error) throw error;
+    }
+  }
+
+  static async getNotificationContext(requestId) {
+    const { data: request, error: requestError } = await supabase
+      .from('tblbudgetapprovalrequests')
+      .select('request_id, request_number, budget_id, submitted_by, created_by, total_request_amount, description')
+      .eq('request_id', requestId)
+      .single();
+
+    if (requestError) throw requestError;
+
+    const { data: budget, error: budgetError } = await supabase
+      .from('tblbudgetconfiguration')
+      .select('budget_id, budget_name, created_by')
+      .eq('budget_id', request.budget_id)
+      .maybeSingle();
+
+    if (budgetError) throw budgetError;
+
+    const { data: approvers, error: approverError } = await supabase
+      .from('tblbudgetconfig_approvers')
+      .select('approval_level, primary_approver, backup_approver')
+      .eq('budget_id', request.budget_id);
+
+    if (approverError) throw approverError;
+
+    const recipientIds = new Set([
+      request.submitted_by,
+      request.created_by,
+      budget?.created_by,
+      ...(approvers || []).flatMap((row) => [row.primary_approver, row.backup_approver]),
+    ].filter(Boolean));
+
+    const profileMap = await this.getUserProfileMap(Array.from(recipientIds));
+    const orgMap = await this.getOrganizationMap();
+
+    const ownerProfile =
+      profileMap.get(request.submitted_by) ||
+      profileMap.get(request.created_by) ||
+      null;
+    const parentOrgId = this.resolveOrgRoot(ownerProfile?.org_id || null, orgMap);
+
+    const scopedRecipients = Array.from(recipientIds).filter((recipientId) => {
+      if (!parentOrgId) return true;
+      const profile = profileMap.get(recipientId);
+      const recipientParent = this.resolveOrgRoot(profile?.org_id || null, orgMap);
+      return recipientParent === parentOrgId;
+    });
+
+    return {
+      request,
+      budget,
+      approvers: approvers || [],
+      profileMap,
+      parentOrgId,
+      orgMap,
+      scopedRecipients,
+    };
   }
 
   static async sendSubmissionNotifications(requestId) {
     try {
-      const { data: request, error } = await supabase
-        .from('tblbudgetapprovalrequests')
-        .select('request_id, request_number, budget_id, description, total_request_amount, submitted_by')
-        .eq('request_id', requestId)
-        .single();
+      const context = await this.getNotificationContext(requestId);
+      const submittedBy = context.request?.submitted_by || context.request?.created_by;
+      const actor = context.profileMap.get(submittedBy);
+      const actorName = actor?.name || 'A user';
+      const actorRole = this.formatRoleLabel(actor?.role_name);
+      const budgetName = context.budget?.budget_name || 'Unknown Budget';
 
-      if (error) throw error;
+      const message = `${actorName} (${actorRole}) has submitted an approval request for budget configuration ${budgetName}.`;
 
-      const { data: approvals, error: approvalsError } = await supabase
-        .from('tblbudgetapprovalrequests_approvals')
-        .select('approval_level, assigned_to_primary, assigned_to_backup')
-        .eq('request_id', requestId)
-        .eq('approval_level', 1)
-        .maybeSingle();
+      await this.insertNotificationRows({
+        requestId,
+        notificationType: 'submitted',
+        title: 'Approval Request Submitted',
+        message,
+        recipientIds: context.scopedRecipients,
+        profileMap: context.profileMap,
+        relatedApprovalLevel: 1,
+      });
 
-      if (approvalsError) throw approvalsError;
-
-      const approverIds = [approvals?.assigned_to_primary, approvals?.assigned_to_backup].filter(Boolean);
-      const emailMap = await this.getUserEmailMap(approverIds);
-      const recipients = approverIds
-        .map((id) => emailMap.get(id)?.email)
+      const recipients = context.scopedRecipients
+        .map((id) => context.profileMap.get(id)?.email)
         .filter(Boolean);
 
       if (!recipients.length) return;
 
-      const subject = `ORBIT Approval Request ${request.request_number} awaiting L1 review`;
+      const subject = `ORBIT Approval Submitted: ${context.request?.request_number || requestId}`;
       const html = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #111827;">New Approval Request</h2>
-          <p>A new approval request is awaiting L1 review.</p>
-          <p><strong>Request #:</strong> ${request.request_number}</p>
-          <p><strong>Amount:</strong> ${this.formatCurrency(request.total_request_amount)}</p>
-          <p><strong>Description:</strong> ${request.description || '—'}</p>
+          <h2 style="color: #111827;">Approval Request Submitted</h2>
+          <p>${message}</p>
+          <p><strong>Request #:</strong> ${context.request?.request_number || '—'}</p>
+          <p><strong>Amount:</strong> ${this.formatCurrency(context.request?.total_request_amount)}</p>
+          <p><strong>Description:</strong> ${context.request?.description || '—'}</p>
         </div>
       `;
 
       await this.sendApprovalNotification({ recipients, subject, html });
-
-      const notifications = recipients.map((email, index) => ({
-        request_id: requestId,
-        notification_type: 'submission',
-        title: 'New Approval Request',
-        message: `Request ${request.request_number} is awaiting L1 review.`,
-        recipient_id: approverIds[index] || approverIds[0],
-        recipient_email: email,
-        is_sent: true,
-        sent_date: new Date().toISOString(),
-        related_approval_level: 1,
-      }));
-
-      if (notifications.length) {
-        await supabase.from('tblbudgetapprovalrequests_notifications').insert(notifications);
-      }
     } catch (error) {
       console.warn('[email] Failed to send submission notifications:', error?.message || error);
     }
   }
 
-  static async sendApprovalStepNotifications({ requestId, approvalLevel, payrollCycle, payrollCycleDate }) {
+  static async sendApprovalStepNotifications({ requestId, approvalLevel, payrollCycle, payrollCycleDate, approvedBy = null }) {
     try {
-      const { data: request, error } = await supabase
-        .from('tblbudgetapprovalrequests')
-        .select('request_id, request_number, description, total_request_amount, submitted_by')
-        .eq('request_id', requestId)
-        .single();
+      const context = await this.getNotificationContext(requestId);
+      const actor = approvedBy ? context.profileMap.get(approvedBy) : null;
+      const actorName = actor?.name || 'An approver';
+      const actorRole = this.formatRoleLabel(actor?.role_name);
+      const budgetName = context.budget?.budget_name || 'Unknown Budget';
 
-      if (error) throw error;
+      const message = `${actorName} (${actorRole}) has approved this approval request for budget configuration ${budgetName}.`;
 
-      const requestorMap = await this.getUserEmailMap([request.submitted_by]);
-      const requestor = requestorMap.get(request.submitted_by);
-      const requestorEmail = requestor?.email ? [requestor.email] : [];
+      await this.insertNotificationRows({
+        requestId,
+        notificationType: 'approved',
+        title: 'Approval Request Updated',
+        message,
+        recipientIds: context.scopedRecipients,
+        profileMap: context.profileMap,
+        relatedApprovalLevel: Number(approvalLevel),
+      });
 
-      const nextLevel = Number(approvalLevel) + 1;
-      let nextApproverRecipients = [];
-      if (nextLevel <= 4) {
-        const { data: nextApproval, error: nextError } = await supabase
-          .from('tblbudgetapprovalrequests_approvals')
-          .select('assigned_to_primary, assigned_to_backup')
-          .eq('request_id', requestId)
-          .eq('approval_level', nextLevel)
-          .maybeSingle();
-
-        if (!nextError && nextApproval) {
-          const nextApproverIds = [nextApproval.assigned_to_primary, nextApproval.assigned_to_backup].filter(Boolean);
-          const nextMap = await this.getUserEmailMap(nextApproverIds);
-          nextApproverRecipients = nextApproverIds
-            .map((id) => nextMap.get(id)?.email)
-            .filter(Boolean);
-        }
-      }
-
-      const subject = `ORBIT Approval Update: ${request.request_number}`;
+      const subject = `ORBIT Approval Update: ${context.request?.request_number || requestId}`;
       const payrollLine = payrollCycle
         ? `<p><strong>Payroll Cycle:</strong> ${payrollCycle} (${payrollCycleDate || '—'})</p>`
         : '';
       const html = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #111827;">Approval Update</h2>
-          <p>Your approval request has advanced to the next step.</p>
-          <p><strong>Request #:</strong> ${request.request_number}</p>
-          <p><strong>Amount:</strong> ${this.formatCurrency(request.total_request_amount)}</p>
+          <p>${message}</p>
+          <p><strong>Request #:</strong> ${context.request?.request_number || '—'}</p>
+          <p><strong>Amount:</strong> ${this.formatCurrency(context.request?.total_request_amount)}</p>
           ${payrollLine}
-          <p><strong>Description:</strong> ${request.description || '—'}</p>
+          <p><strong>Description:</strong> ${context.request?.description || '—'}</p>
         </div>
       `;
 
-      await Promise.allSettled([
-        this.sendApprovalNotification({ recipients: requestorEmail, subject, html }),
-        this.sendApprovalNotification({ recipients: nextApproverRecipients, subject, html }),
-      ]);
+      const recipients = context.scopedRecipients
+        .map((id) => context.profileMap.get(id)?.email)
+        .filter(Boolean);
 
-      const notificationRows = [];
-      if (requestorEmail.length && request.submitted_by) {
-        notificationRows.push({
-          request_id: requestId,
-          notification_type: 'approval_step',
-          title: 'Approval Update',
-          message: `Request ${request.request_number} advanced to the next step.`,
-          recipient_id: request.submitted_by,
-          recipient_email: requestorEmail[0],
-          is_sent: true,
-          sent_date: new Date().toISOString(),
-          related_approval_level: Number(approvalLevel),
-        });
+      if (recipients.length) {
+        await this.sendApprovalNotification({ recipients, subject, html });
       }
 
-      if (nextApproverRecipients.length) {
-        nextApproverRecipients.forEach((email) => {
-          notificationRows.push({
-            request_id: requestId,
-            notification_type: 'approval_step',
-            title: 'Approval Needed',
-            message: `Request ${request.request_number} is ready for your review.`,
-            recipient_id: null,
-            recipient_email: email,
-            is_sent: true,
-            sent_date: new Date().toISOString(),
-            related_approval_level: nextLevel,
-          });
-        });
-      }
+      const normalizedLevel = Number(approvalLevel);
+      if (normalizedLevel === 3 && context.parentOrgId) {
+        const { data: l1ToL3, error: approvalsError } = await supabase
+          .from('tblbudgetapprovalrequests_approvals')
+          .select('approval_level, status')
+          .eq('request_id', requestId)
+          .in('approval_level', [1, 2, 3]);
 
-      if (notificationRows.length) {
-        await supabase.from('tblbudgetapprovalrequests_notifications').insert(notificationRows);
+        if (approvalsError) throw approvalsError;
+
+        const allApproved = Array.isArray(l1ToL3)
+          && l1ToL3.length > 0
+          && l1ToL3.every((row) => String(row.status || '').toLowerCase() === 'approved');
+
+        if (allApproved) {
+          const payrollUsers = await this.getPayrollUsersByParentOrg(context.parentOrgId, context.orgMap);
+          const payrollIds = payrollUsers.map((user) => user.user_id).filter(Boolean);
+
+          if (payrollIds.length) {
+            const payrollProfileMap = new Map(payrollUsers.map((user) => [user.user_id, user]));
+            const payrollMessage = `All approvers have approved this approval request for budget configuration ${budgetName}. Payroll action is now required.`;
+
+            await this.insertNotificationRows({
+              requestId,
+              notificationType: 'payroll_action_required',
+              title: 'Payroll Action Required',
+              message: payrollMessage,
+              recipientIds: payrollIds,
+              profileMap: payrollProfileMap,
+              relatedApprovalLevel: 4,
+            });
+
+            const payrollRecipients = payrollUsers.map((row) => row.email).filter(Boolean);
+            if (payrollRecipients.length) {
+              await this.sendApprovalNotification({
+                recipients: payrollRecipients,
+                subject: `ORBIT Payroll Action Required: ${context.request?.request_number || requestId}`,
+                html: `
+                  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #111827;">Payroll Action Required</h2>
+                    <p>${payrollMessage}</p>
+                    <p><strong>Request #:</strong> ${context.request?.request_number || '—'}</p>
+                    <p><strong>Amount:</strong> ${this.formatCurrency(context.request?.total_request_amount)}</p>
+                  </div>
+                `,
+              });
+            }
+          }
+        }
       }
     } catch (error) {
       console.warn('[email] Failed to send approval step notifications:', error?.message || error);
@@ -437,6 +656,7 @@ export class ApprovalRequestService {
         submitted_by,
         created_by,
         client_sponsored,
+        is_client_sponsored,
       } = requestData;
 
       // Generate request number
@@ -453,7 +673,7 @@ export class ApprovalRequestService {
             total_request_amount: parseFloat(total_request_amount),
             submitted_by,
             created_by,
-            is_client_sponsored: client_sponsored ?? false,
+            is_client_sponsored: is_client_sponsored ?? client_sponsored ?? false,
             overall_status: 'draft',
             created_at: new Date().toISOString(),
           },
@@ -731,133 +951,28 @@ export class ApprovalRequestService {
         .order('created_at', { ascending: false });
 
       if (notificationError) throw notificationError;
-      if (Array.isArray(notificationRows) && notificationRows.length) {
-        return { success: true, data: notificationRows };
+
+      const requestIds = Array.from(new Set((notificationRows || []).map((row) => row.request_id).filter(Boolean)));
+      if (!requestIds.length) {
+        return { success: true, data: [] };
       }
 
-      const normalizedRole = String(role || 'requestor').toLowerCase();
-      const isApprover = normalizedRole.includes('l1') || normalizedRole.includes('l2') || normalizedRole.includes('l3');
-      const isRequestor = normalizedRole.includes('requestor');
+      const { data: requests, error: requestsError } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('request_id, request_number, budget_id, submitted_by, created_by, total_request_amount, overall_status, created_at, updated_at, is_client_sponsored, payroll_cycle, payroll_cycle_Date')
+        .in('request_id', requestIds);
 
-      const requestMap = new Map();
-      const contextMap = new Map();
-      const addContext = (requestId, label) => {
-        if (!requestId || !label) return;
-        const existing = contextMap.get(requestId) || new Set();
-        existing.add(label);
-        contextMap.set(requestId, existing);
-      };
+      if (requestsError) throw requestsError;
 
-      let createdBudgetIds = [];
-
-      if (isRequestor) {
-        const { data: createdBudgets, error: createdBudgetError } = await supabase
-          .from('tblbudgetconfiguration')
-          .select('budget_id')
-          .eq('created_by', userId);
-
-        if (createdBudgetError) throw createdBudgetError;
-
-        createdBudgetIds = (createdBudgets || []).map((row) => row.budget_id).filter(Boolean);
-
-        const { data: submittedRequests, error: submittedError } = await supabase
-          .from('tblbudgetapprovalrequests')
-          .select('*')
-          .or(`submitted_by.eq.${userId},created_by.eq.${userId}`)
-          .order('created_at', { ascending: false });
-
-        if (submittedError) throw submittedError;
-
-        (submittedRequests || []).forEach((request) => {
-          requestMap.set(request.request_id, request);
-          addContext(request.request_id, 'Your submission');
-        });
-
-        if (createdBudgetIds.length > 0) {
-          const { data: configRequests, error: configError } = await supabase
-            .from('tblbudgetapprovalrequests')
-            .select('*')
-            .in('budget_id', createdBudgetIds)
-            .order('created_at', { ascending: false });
-
-          if (configError) throw configError;
-
-          (configRequests || []).forEach((request) => {
-            requestMap.set(request.request_id, request);
-            addContext(request.request_id, 'Your configuration');
-          });
-        }
-      }
-
-      if (isApprover) {
-        const { data: assignedRows, error: assignedError } = await supabase
-          .from('tblbudgetapprovalrequests_approvals')
-          .select('request_id, approval_level, status, assigned_to_primary, assigned_to_backup, approved_by, updated_at, approval_date')
-          .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId}`)
-          .eq('status', 'pending')
-          .order('created_at', { ascending: false });
-
-        if (assignedError) throw assignedError;
-
-        const { data: approvedRows, error: approvedError } = await supabase
-          .from('tblbudgetapprovalrequests_approvals')
-          .select('request_id, approval_level, status, assigned_to_primary, assigned_to_backup, approved_by, updated_at, approval_date')
-          .eq('approved_by', userId)
-          .eq('status', 'approved')
-          .order('updated_at', { ascending: false });
-
-        if (approvedError) throw approvedError;
-
-        [...(assignedRows || []), ...(approvedRows || [])].forEach((row) => {
-          if (!row.request_id) return;
-          addContext(row.request_id, row.status === 'pending' ? 'Assigned to you' : 'Approved by you');
-        });
-
-        const requestIds = Array.from(new Set([...(assignedRows || []), ...(approvedRows || [])].map((row) => row.request_id).filter(Boolean)));
-
-        if (requestIds.length > 0) {
-          const { data: approverRequests, error: approverRequestsError } = await supabase
-            .from('tblbudgetapprovalrequests')
-            .select('*')
-            .in('request_id', requestIds)
-            .order('created_at', { ascending: false });
-
-          if (approverRequestsError) throw approverRequestsError;
-
-          (approverRequests || []).forEach((request) => {
-            requestMap.set(request.request_id, request);
-          });
-        }
-      }
-
-      let requests = Array.from(requestMap.values());
-
+      let scopedRequests = requests || [];
       if (Array.isArray(allowedBudgetIds)) {
-        if (!allowedBudgetIds.length) {
-          return { success: true, data: [] };
-        }
-        requests = requests.filter((request) => allowedBudgetIds.includes(request.budget_id));
+        if (!allowedBudgetIds.length) return { success: true, data: [] };
+        scopedRequests = scopedRequests.filter((request) => allowedBudgetIds.includes(request.budget_id));
       }
 
-      const requestIds = requests.map((request) => request.request_id).filter(Boolean);
-      const approvalsMap = new Map();
+      const requestMap = new Map((scopedRequests || []).map((request) => [request.request_id, request]));
 
-      if (requestIds.length > 0) {
-        const { data: approvalRows, error: approvalsError } = await supabase
-          .from('tblbudgetapprovalrequests_approvals')
-          .select('request_id, approval_level, status, approval_date, approver_name, approved_by, updated_at')
-          .in('request_id', requestIds);
-
-        if (approvalsError) throw approvalsError;
-
-        (approvalRows || []).forEach((row) => {
-          const existing = approvalsMap.get(row.request_id) || [];
-          existing.push(row);
-          approvalsMap.set(row.request_id, existing);
-        });
-      }
-
-      const budgetIds = [...new Set(requests.map((request) => request.budget_id).filter(Boolean))];
+      const budgetIds = [...new Set(scopedRequests.map((request) => request.budget_id).filter(Boolean))];
       let budgetConfigMap = {};
       if (budgetIds.length > 0) {
         const { data: budgetConfigs, error: budgetError } = await supabase
@@ -873,7 +988,7 @@ export class ApprovalRequestService {
         }, {});
       }
 
-      const userIds = requests.flatMap((request) => [request?.submitted_by, request?.created_by]).filter(Boolean);
+      const userIds = scopedRequests.flatMap((request) => [request?.submitted_by, request?.created_by]).filter(Boolean);
       let userNameMap = new Map();
       try {
         userNameMap = await this.getUserNameMap(userIds);
@@ -881,36 +996,46 @@ export class ApprovalRequestService {
         console.warn('[getUserNotifications] User lookup failed:', lookupError?.message || lookupError);
       }
 
-      const normalized = requests.map((request) => {
-        const approvalsForRequest = approvalsMap.get(request.request_id) || [];
-        const approvalStageStatus = this.computeApprovalStageStatus(approvalsForRequest, request?.overall_status);
-        const submitterId = request?.submitted_by || request?.created_by;
-        const submitterName = userNameMap.get(submitterId) || null;
-        const submitterDetails = submitterName ? { name: submitterName } : getUserDetailsFromUUID(submitterId);
+      const normalized = (notificationRows || [])
+        .map((row) => {
+          const request = requestMap.get(row.request_id);
+          if (!request) return null;
 
-        return {
-          request_id: request.request_id,
-          request_number: request.request_number,
-          budget_id: request.budget_id,
-          budget_name: budgetConfigMap[request.budget_id]?.budget_name || null,
-          budget_description: budgetConfigMap[request.budget_id]?.budget_description || null,
-          submitted_by: request.submitted_by,
-          submitted_by_name: submitterDetails?.name || request?.submitted_by,
-          total_request_amount: request.total_request_amount || 0,
-          overall_status: request.overall_status,
-          approval_stage_status: approvalStageStatus,
-          created_at: request.created_at,
-          updated_at: request.updated_at,
-          is_client_sponsored: request.is_client_sponsored ?? request.client_sponsored ?? null,
-          payroll_cycle: request.payroll_cycle || null,
-          payroll_cycle_Date: request.payroll_cycle_Date || request.payroll_cycle_date || null,
-          context_tags: Array.from(contextMap.get(request.request_id) || []),
-        };
-      });
+          const submitterId = request?.submitted_by || request?.created_by;
+          const submitterName = userNameMap.get(submitterId) || null;
+          const submitterDetails = submitterName ? { name: submitterName } : getUserDetailsFromUUID(submitterId);
+
+          return {
+            notification_id: row.notification_id,
+            request_id: request.request_id,
+            request_number: request.request_number,
+            budget_id: request.budget_id,
+            budget_name: budgetConfigMap[request.budget_id]?.budget_name || null,
+            budget_description: budgetConfigMap[request.budget_id]?.budget_description || null,
+            submitted_by: request.submitted_by,
+            submitted_by_name: submitterDetails?.name || request?.submitted_by,
+            total_request_amount: request.total_request_amount || 0,
+            overall_status: request.overall_status,
+            created_at: row.created_at || request.created_at,
+            updated_at: request.updated_at,
+            is_client_sponsored: request.is_client_sponsored ?? null,
+            payroll_cycle: request.payroll_cycle || null,
+            payroll_cycle_Date: request.payroll_cycle_Date || null,
+            context_tags: [String(row.notification_type || 'notification').replace(/_/g, ' ')],
+            notification_type: row.notification_type,
+            title: row.title,
+            message: row.message,
+            is_read: row.is_read ?? false,
+            read_date: row.read_date || null,
+            sent_date: row.sent_date || null,
+            related_approval_level: row.related_approval_level ?? null,
+          };
+        })
+        .filter(Boolean);
 
       normalized.sort((a, b) => {
-        const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
-        const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+        const aTime = new Date(a.created_at || a.updated_at || 0).getTime();
+        const bTime = new Date(b.created_at || b.updated_at || 0).getTime();
         return bTime - aTime;
       });
 
@@ -925,6 +1050,57 @@ export class ApprovalRequestService {
         error: error.message,
         data: [],
       };
+    }
+  }
+
+  static async markNotificationAsRead(notificationId, userId) {
+    try {
+      if (!notificationId || !userId) {
+        return { success: false, error: 'notificationId and userId are required' };
+      }
+
+      const { data, error } = await supabase
+        .from('tblbudgetapprovalrequests_notifications')
+        .update({
+          is_read: true,
+          read_date: new Date().toISOString(),
+        })
+        .eq('notification_id', notificationId)
+        .eq('recipient_id', userId)
+        .select()
+        .maybeSingle();
+
+      if (error) throw error;
+
+      return { success: true, data };
+    } catch (error) {
+      console.error('Error marking notification as read:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  static async markAllNotificationsAsRead(userId) {
+    try {
+      if (!userId) {
+        return { success: false, error: 'userId is required' };
+      }
+
+      const { data, error } = await supabase
+        .from('tblbudgetapprovalrequests_notifications')
+        .update({
+          is_read: true,
+          read_date: new Date().toISOString(),
+        })
+        .eq('recipient_id', userId)
+        .eq('is_read', false)
+        .select('notification_id');
+
+      if (error) throw error;
+
+      return { success: true, data: data || [] };
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error);
+      return { success: false, error: error.message, data: [] };
     }
   }
 
@@ -1469,6 +1645,7 @@ export class ApprovalRequestService {
         approvalLevel,
         payrollCycle: payroll_cycle,
         payrollCycleDate: payroll_cycle_date,
+        approvedBy: approved_by,
       });
 
       return {

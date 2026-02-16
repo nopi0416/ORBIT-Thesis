@@ -195,6 +195,24 @@ const getUserNotifications = async (filters = {}, token) => {
   return parseResponse(response);
 };
 
+const markNotificationRead = async (notificationId, token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/notifications/${notificationId}/read`, {
+    method: 'PATCH',
+    headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
+const markAllNotificationsRead = async (token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/notifications/read-all`, {
+    method: 'PATCH',
+    headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
 /**
  * Get multiple employees by EIDs in batch (optimized for bulk uploads)
  */
@@ -214,6 +232,8 @@ export default {
   getApprovalRequestDetails: getApprovalRequest, // Alias for compatibility
   getMySubmittedRequests,
   getUserNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
   getPendingApprovals,
   approveRequest,
   rejectRequest,

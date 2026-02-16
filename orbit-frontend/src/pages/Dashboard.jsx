@@ -29,7 +29,7 @@ export default function DashboardPage() {
   const notificationsCacheKey = `dashboardNotifications:${user?.id || 'anon'}:${userRole || 'role'}`;
   const requestorRequestsCacheKey = `requestorRequests:${user?.id || 'anon'}`;
   const requestorConfigsCacheKey = `requestorConfigs:${user?.id || 'anon'}`;
-  const showNotifications = ['requestor', 'l1', 'l2', 'l3'].includes(userRole);
+  const showNotifications = ['requestor', 'l1', 'l2', 'l3', 'payroll'].includes(userRole);
   const token = getToken();
   const isRequestor = userRole === 'requestor';
   const isL1 = userRole === 'l1';
@@ -59,6 +59,12 @@ export default function DashboardPage() {
 
   const requestorNotifications = React.useMemo(() => {
     if (!isRequestorLike) return notifications;
+
+    const hasBackendNotifications = Array.isArray(notifications)
+      && notifications.some((row) => Boolean(row?.notification_id));
+    if (hasBackendNotifications) {
+      return notifications;
+    }
 
     const merged = new Map();
     const addRow = (row) => {
@@ -385,6 +391,7 @@ export default function DashboardPage() {
 
 function ApprovalNotificationsTable({ items = [], role }) {
   const rows = Array.isArray(items) ? items : [];
+  const hasBackendNotificationRows = rows.some((row) => Boolean(row?.notification_id));
   const formatLabel = (value) => String(value || 'pending').replace(/_/g, ' ');
   const formatDate = (value) => {
     if (!value) return '—';
@@ -423,30 +430,55 @@ function ApprovalNotificationsTable({ items = [], role }) {
             <table className="w-full text-sm text-slate-300 border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Request #
-                  </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Budget
-                  </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Submitted By
-                  </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Stage
-                  </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Amount
-                  </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Updated
-                  </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
-                    Context
-                  </th>
+                  {hasBackendNotificationRows ? (
+                    <>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Notification
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Message
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Budget
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Request #
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Read
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Date
+                      </th>
+                    </>
+                  ) : (
+                    <>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Request #
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Budget
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Submitted By
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Status
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Stage
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Amount
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Updated
+                      </th>
+                      <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                        Context
+                      </th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700">
@@ -455,36 +487,61 @@ function ApprovalNotificationsTable({ items = [], role }) {
                     key={`${item.request_id || item.request_number || 'row'}-${item.updated_at || item.created_at || 'time'}-${index}`}
                     className="hover:bg-slate-700/50"
                   >
-                    <td className="px-4 py-3 text-xs text-slate-300">
-                      {item.request_number || item.requestNumber || '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="text-sm font-medium text-white">
-                        {item.budget_name || item.budgetName || item.budget || '—'}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-300">
-                      {item.submitted_by_name || item.submittedByName || item.submitted_by || item.submittedBy || '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200">
-                        {formatLabel(item.overall_status || item.status)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-300">
-                      {formatLabel(item.approval_stage_status || item.stage_status || item.stage)}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm font-semibold text-white">
-                      ₱{Number(item.total_request_amount || item.amount || 0).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-300">
-                      {formatDate(item.updated_at || item.updatedAt || item.created_at || item.createdAt)}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-300">
-                      {(item.context_tags || item.contextTags || []).length
-                        ? (item.context_tags || item.contextTags).join(' • ')
-                        : '—'}
-                    </td>
+                    {hasBackendNotificationRows ? (
+                      <>
+                        <td className="px-4 py-3 text-xs text-slate-100 font-medium">
+                          {item.title || 'Notification'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300 max-w-[520px]">
+                          {item.message || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-200">
+                          {item.budget_name || item.budgetName || item.budget || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {item.request_number || item.requestNumber || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {item.is_read ? 'Read' : 'Unread'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {formatDate(item.created_at || item.sent_date || item.updated_at)}
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {item.request_number || item.requestNumber || '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="text-sm font-medium text-white">
+                            {item.budget_name || item.budgetName || item.budget || '—'}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {item.submitted_by_name || item.submittedByName || item.submitted_by || item.submittedBy || '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200">
+                            {formatLabel(item.overall_status || item.status)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {formatLabel(item.approval_stage_status || item.stage_status || item.stage)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm font-semibold text-white">
+                          ₱{Number(item.total_request_amount || item.amount || 0).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {formatDate(item.updated_at || item.updatedAt || item.created_at || item.createdAt)}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-300">
+                          {(item.context_tags || item.contextTags || []).length
+                            ? (item.context_tags || item.contextTags).join(' • ')
+                            : '—'}
+                        </td>
+                      </>
+                    )}
                   </tr>
                 ))}
               </tbody>

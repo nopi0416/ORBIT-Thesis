@@ -1322,11 +1322,9 @@ export class BudgetConfigService {
    */
   static async getRequestLogsByBudgetId(budgetId) {
     try {
-      // This would query a requests/approvals table if it exists
-      // For now, returning empty array - implement when requests table is created
       const { data, error } = await supabase
-        .from('tblbudget_requests')
-        .select('*')
+        .from('tblbudgetconfigurationlogs')
+        .select('id, budget_id, action_type, description, performed_by, old_value, new_value, ip_address, user_agent, created_at')
         .eq('budget_id', budgetId)
         .order('created_at', { ascending: false });
 

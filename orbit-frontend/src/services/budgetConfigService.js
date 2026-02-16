@@ -179,6 +179,52 @@ export const getConfigurationsByUser = async (userId, token) => {
 };
 
 /**
+ * READ - Get budget history entries by budget configuration ID
+ */
+export const getBudgetHistory = async (budgetId, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/${budgetId}/history`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch budget history');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching budget history:', error);
+    throw error;
+  }
+};
+
+/**
+ * READ - Get budget configuration logs by budget configuration ID
+ */
+export const getBudgetConfigLogs = async (budgetId, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/${budgetId}/logs`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch budget logs');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching budget logs:', error);
+    throw error;
+  }
+};
+
+/**
  * READ - Get all users with roles
  */
 export const getUsersList = async (token) => {

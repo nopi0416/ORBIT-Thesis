@@ -15,6 +15,7 @@ import { useToast } from "../context/ToastContext";
 import { resolveUserRole } from "../utils/roleUtils";
 import { Search, Clock, CheckCircle2, XCircle, AlertCircle, Loader, Check } from "../components/icons";
 import * as budgetConfigService from "../services/budgetConfigService";
+import approvalRequestService from "../services/approvalRequestService";
 import { connectWebSocket, addWebSocketListener } from "../services/realtimeService";
 import { fetchWithCache, invalidateNamespace } from "../utils/dataCache";
 const parseStoredList = (value) => {
@@ -76,6 +77,80 @@ const getApprovalStatusInfo = (status) => {
     default:
       return { label: "Unknown", icon: AlertCircle, variant: "secondary", color: "text-gray-400" };
   }
+};
+
+const DATE_PRESET_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "last_7_days", label: "Last 7 days" },
+  { value: "last_15_days", label: "Last 15 days" },
+  { value: "last_30_days", label: "Last 30 days" },
+  { value: "custom", label: "Custom range" },
+];
+
+const toDateOnly = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const computeDateRange = (preset, customStart, customEnd) => {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  if (!preset || preset === "all") {
+    return { from: null, to: today, error: null };
+  }
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  if (preset === "last_7_days" || preset === "last_15_days" || preset === "last_30_days") {
+    const days = Number(String(preset).replace(/\D/g, ""));
+    const from = new Date(startOfToday);
+    from.setDate(from.getDate() - (days - 1));
+    return { from, to: today, error: null };
+  }
+
+  if (preset === "custom") {
+    if (!customStart || !customEnd) {
+      return { from: null, to: null, error: "Start and end date are required for custom range." };
+    }
+
+    const from = toDateOnly(customStart);
+    const toDate = toDateOnly(customEnd);
+    if (!from || !toDate) {
+      return { from: null, to: null, error: "Invalid custom date range." };
+    }
+
+    const normalizedTo = new Date(toDate);
+    normalizedTo.setHours(23, 59, 59, 999);
+
+    const now = new Date();
+    if (from > now || normalizedTo > now) {
+      return { from: null, to: null, error: "Dates cannot be greater than today." };
+    }
+    if (normalizedTo < from) {
+      return { from: null, to: null, error: "End date cannot be less than start date." };
+    }
+
+    return { from, to: normalizedTo, error: null };
+  }
+
+  return { from: null, to: today, error: null };
+};
+
+const isWithinDateRange = (value, range) => {
+  const date = toDateOnly(value);
+  if (!date) return false;
+  const timestamp = date.getTime();
+  const fromTs = range?.from ? range.from.getTime() : null;
+  const toTs = range?.to ? range.to.getTime() : null;
+
+  if (fromTs !== null && timestamp < fromTs) return false;
+  if (toTs !== null && timestamp > toTs) return false;
+  return true;
 };
 
 export default function BudgetConfigurationPage() {
@@ -142,6 +217,7 @@ function ConfigurationList({ userRole }) {
   const [loading, setLoading] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
+  const [detailsTab, setDetailsTab] = useState("edit");
   const [editConfig, setEditConfig] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
   const [approvalsL1, setApprovalsL1] = useState([]);
@@ -149,6 +225,18 @@ function ConfigurationList({ userRole }) {
   const [approvalsL3, setApprovalsL3] = useState([]);
   const [approvalsLoading, setApprovalsLoading] = useState(true);
   const [userNameMap, setUserNameMap] = useState(new Map());
+  const [configApprovalHistory, setConfigApprovalHistory] = useState([]);
+  const [configLogs, setConfigLogs] = useState([]);
+  const [historyLogsLoading, setHistoryLogsLoading] = useState(false);
+  const [listDatePreset, setListDatePreset] = useState("all");
+  const [listStartDate, setListStartDate] = useState("");
+  const [listEndDate, setListEndDate] = useState("");
+  const [modalDatePreset, setModalDatePreset] = useState("all");
+  const [modalStartDate, setModalStartDate] = useState("");
+  const [modalEndDate, setModalEndDate] = useState("");
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportTarget, setExportTarget] = useState("configurations");
+  const [exportLoading, setExportLoading] = useState(false);
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
@@ -210,6 +298,7 @@ function ConfigurationList({ userRole }) {
 
     return {
       id: config.budget_id || config.id,
+      createdAt: config.created_at || config.createdAt || null,
       name: config.budget_name || config.name || "Unnamed Configuration",
       description: config.description || config.budget_description || "No description provided",
       status: config.status || config.configuration_status || "active",
@@ -465,6 +554,51 @@ function ConfigurationList({ userRole }) {
   }, [detailsOpen, selectedConfig?.id, token, transformConfig]);
 
   useEffect(() => {
+    if (!detailsOpen || !selectedConfig?.id) {
+      setConfigApprovalHistory([]);
+      setConfigLogs([]);
+      return;
+    }
+
+    let active = true;
+    const loadHistoryAndLogs = async () => {
+      setHistoryLogsLoading(true);
+      try {
+        const [approvalRows, logRows] = await Promise.all([
+          approvalRequestService.getApprovalRequests({ budget_id: selectedConfig.id }, token),
+          budgetConfigService.getBudgetConfigLogs(selectedConfig.id, token).catch(() => []),
+        ]);
+
+        if (!active) return;
+        setConfigApprovalHistory(Array.isArray(approvalRows) ? approvalRows : []);
+        setConfigLogs(Array.isArray(logRows) ? logRows : (selectedConfig?.logs || []));
+      } catch (error) {
+        if (!active) return;
+        console.error("Failed to load configuration history/logs:", error);
+        setConfigApprovalHistory([]);
+        setConfigLogs(Array.isArray(selectedConfig?.logs) ? selectedConfig.logs : []);
+      } finally {
+        if (active) setHistoryLogsLoading(false);
+      }
+    };
+
+    loadHistoryAndLogs();
+
+    return () => {
+      active = false;
+    };
+  }, [detailsOpen, selectedConfig?.id, token]);
+
+  useEffect(() => {
+    if (!detailsOpen) {
+      setDetailsTab("edit");
+      setModalDatePreset("all");
+      setModalStartDate("");
+      setModalEndDate("");
+    }
+  }, [detailsOpen]);
+
+  useEffect(() => {
     if (!selectedConfig) {
       setEditConfig(null);
       return;
@@ -675,16 +809,38 @@ function ConfigurationList({ userRole }) {
     const matchesClient = filterClient === "all" || config.clients.includes(filterClient);
     const statusNormalized = String(config.status || "active").toLowerCase();
     const matchesStatus = statusFilter === "all" || statusNormalized === statusFilter;
-    return matchesSearch && matchesGeo && matchesLocation && matchesClient && matchesStatus;
+    const listRange = computeDateRange(listDatePreset, listStartDate, listEndDate);
+    const dateSource = config.createdAt || config.startDate || config.endDate;
+    const matchesDate = listRange.error ? true : isWithinDateRange(dateSource, listRange);
+    return matchesSearch && matchesGeo && matchesLocation && matchesClient && matchesStatus && matchesDate;
   });
 
-  const historyItems = selectedConfig?.history || [];
-  const logItems = selectedConfig?.logs || selectedConfig?.logEntries || [];
+  const historyItems = configApprovalHistory || [];
+  const logItems = configLogs || selectedConfig?.logs || selectedConfig?.logEntries || [];
   const isOwner = editConfig && String(editConfig.createdById || '') === String(user?.id || '');
   const canViewLogs = String((selectedConfig?.createdById || editConfig?.createdById) || '') === String(user?.id || '') || ['payroll', 'admin', 'super_admin'].includes(userRole);
   const normalizedStatus = String(editConfig?.status || 'active').toLowerCase();
   const isExpired = normalizedStatus === 'expired';
   const hasApprovalActivity = Boolean(editConfig?.hasApprovalActivity || editConfig?.has_approval_activity);
+
+  const listRange = computeDateRange(listDatePreset, listStartDate, listEndDate);
+  const modalRange = computeDateRange(modalDatePreset, modalStartDate, modalEndDate);
+  const isConfigExportDisabled =
+    listDatePreset === 'custom' && (!listStartDate || !listEndDate || Boolean(listRange.error));
+
+  const filteredHistoryItems = (historyItems || []).filter((item) => {
+    if (!item) return false;
+    if (modalRange.error) return true;
+    const dateSource = item.submitted_at || item.created_at || item.updated_at;
+    return isWithinDateRange(dateSource, modalRange);
+  });
+
+  const filteredLogItems = (logItems || []).filter((item) => {
+    const normalizedItem = typeof item === 'string' ? { description: item } : (item || {});
+    if (modalRange.error) return true;
+    const dateSource = normalizedItem?.created_at || normalizedItem?.timestamp || normalizedItem?.date || normalizedItem?.createdAt;
+    return isWithinDateRange(dateSource, modalRange);
+  });
 
   const normalizeLogItem = (item) => {
     if (!item) return {};
@@ -692,7 +848,7 @@ function ConfigurationList({ userRole }) {
     return item;
   };
 
-  const getLogValue = (item, fields, fallback = '—') => {
+  const getLogValue = (item, fields, fallback = '') => {
     const entry = normalizeLogItem(item);
     for (const field of fields) {
       const value = entry?.[field];
@@ -703,6 +859,174 @@ function ConfigurationList({ userRole }) {
     return fallback;
   };
 
+  const mapHistoryStatus = (item = {}) => {
+    const raw = String(
+      item.approval_stage_status ||
+      item.display_status ||
+      item.overall_status ||
+      item.status ||
+      'ongoing_approval'
+    ).toLowerCase();
+
+    if (raw.includes('reject')) return 'Rejected';
+    if (['approved', 'completed', 'pending_payment_completion'].includes(raw)) return 'Approved';
+    return 'Ongoing Approval';
+  };
+
+  const historyAmounts = (item = {}) => {
+    const lineItems = Array.isArray(item.line_items)
+      ? item.line_items
+      : Array.isArray(item.lineItems)
+        ? item.lineItems
+        : [];
+
+    const explicitDeduction = Number(item.deduction_amount ?? item.deductionAmount);
+    const explicitTotal = Number(item.total_request_amount ?? item.amount ?? 0);
+
+    const computedDeduction = lineItems
+      .filter((line) => {
+        const flag = line?.is_deduction ?? line?.isDeduction ?? line?.deduction;
+        if (typeof flag === 'string') {
+          return ['true', '1', 'yes', 'y'].includes(flag.trim().toLowerCase());
+        }
+        return Boolean(flag);
+      })
+      .reduce((sum, line) => sum + Number(line?.amount || line?.item_amount || 0), 0);
+
+    const total = Number.isFinite(explicitTotal) ? explicitTotal : 0;
+    const deduction = Number.isFinite(explicitDeduction) ? explicitDeduction : computedDeduction;
+    const payment = Number(item.net_to_pay ?? item.netPay ?? Math.max(0, total - deduction));
+
+    return {
+      total,
+      deduction: Number.isFinite(deduction) ? deduction : 0,
+      payment: Number.isFinite(payment) ? payment : Math.max(0, total - (Number.isFinite(deduction) ? deduction : 0)),
+    };
+  };
+
+  const emptyValue = (value) => {
+    if (value === null || value === undefined) return '';
+    const text = String(value).trim();
+    if (!text || text === '—' || text === '-') return '';
+    return text;
+  };
+
+  const openExportModal = (target) => {
+    setExportTarget(target);
+    setExportModalOpen(true);
+  };
+
+  const escapeCsv = (value) => {
+    const text = emptyValue(value);
+    if (!text) return '';
+    if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+    return text;
+  };
+
+  const buildExportRows = (target) => {
+    if (target === 'configurations') {
+      return filteredConfigurations.map((item) => ({
+        budget_name: emptyValue(item.name),
+        status: emptyValue(item.status),
+        created_by: emptyValue(item.createdByName),
+        created_at: emptyValue(item.createdAt),
+        start_date: emptyValue(item.startDate),
+        end_date: emptyValue(item.endDate),
+        min_limit: item.limitMin ?? '',
+        max_limit: item.limitMax ?? '',
+        approved_amount: Number(item.approvedAmount || 0),
+        ongoing_amount: Number(item.ongoingAmount || 0),
+      }));
+    }
+
+    if (target === 'history') {
+      return filteredHistoryItems.map((item) => ({
+        request_number: emptyValue(item.request_number),
+        status: mapHistoryStatus(item),
+        submitted_by: emptyValue(item.submitted_by_name || item.submitted_by),
+        submitted_at: emptyValue(item.submitted_at || item.created_at),
+        payment_amount: historyAmounts(item).payment,
+        deduction_amount: historyAmounts(item).deduction,
+        total_request_amount: historyAmounts(item).total,
+        description: emptyValue(item.description),
+      }));
+    }
+
+    return filteredLogItems.map((item) => ({
+      created_at: emptyValue(getLogValue(item, ['created_at', 'timestamp', 'createdAt', 'date'], '')),
+      action_type: emptyValue(getLogValue(item, ['action_type', 'action', 'event', 'type'], '')),
+      description: emptyValue(getLogValue(item, ['description', 'details', 'message', 'note'], '')),
+      performed_by: emptyValue(getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '')),
+    }));
+  };
+
+  const validateExportDateFilter = (target) => {
+    if (target === 'configurations') {
+      return null;
+    }
+
+    if (!modalDatePreset) return 'Date filter is required before export.';
+    if (modalRange.error) return modalRange.error;
+    return null;
+  };
+
+  const exportData = async (format) => {
+    if (exportTarget === 'configurations' && isConfigExportDisabled) {
+      return;
+    }
+
+    const validationError = validateExportDateFilter(exportTarget);
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
+
+    const rows = buildExportRows(exportTarget);
+    if (!rows.length) {
+      toast.error('No data available to export.');
+      return;
+    }
+
+    const fileBase = `${exportTarget}_${selectedConfig?.name || 'budget_configuration'}`
+      .replace(/\s+/g, '_')
+      .toLowerCase();
+
+    if (format === 'csv') {
+      const headers = Object.keys(rows[0]);
+      const body = rows.map((row) => headers.map((key) => escapeCsv(row[key])).join(','));
+      const csv = [headers.join(','), ...body].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${fileBase}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    const XLSXModule = await import('xlsx');
+    const XLSX = XLSXModule.default || XLSXModule;
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, exportTarget === 'configurations' ? 'Configurations' : exportTarget === 'history' ? 'History' : 'Logs');
+    XLSX.writeFile(wb, `${fileBase}.xlsx`);
+  };
+
+  const handleExport = async (format) => {
+    try {
+      setExportLoading(true);
+      await exportData(format);
+      setExportModalOpen(false);
+    } catch (error) {
+      toast.error(error?.message || 'Failed to export data.');
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <Card className="bg-slate-800 border-slate-700">
@@ -711,8 +1035,8 @@ function ConfigurationList({ userRole }) {
           <CardDescription className="text-gray-400">Search and filter budget configurations</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 md:grid-cols-12 items-end">
-            <div className="md:col-span-6 space-y-2">
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="min-w-[260px] flex-1 space-y-2">
               <Label htmlFor="search" className="text-white">Search</Label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -727,7 +1051,7 @@ function ConfigurationList({ userRole }) {
               </div>
             </div>
 
-            <div className="md:col-span-2 space-y-2">
+            <div className="min-w-[170px] space-y-2">
               <Label className="text-white">Geo</Label>
               <SearchableSelect
                 value={filterGeo}
@@ -741,7 +1065,7 @@ function ConfigurationList({ userRole }) {
               />
             </div>
 
-            <div className="md:col-span-2 space-y-2">
+            <div className="min-w-[170px] space-y-2">
               <Label className="text-white">Location</Label>
               <SearchableSelect
                 value={filterLocation}
@@ -755,7 +1079,7 @@ function ConfigurationList({ userRole }) {
               />
             </div>
 
-            <div className="md:col-span-2 space-y-2">
+            <div className="min-w-[170px] space-y-2">
               <Label className="text-white">Client</Label>
               <SearchableSelect
                 value={filterClient}
@@ -768,14 +1092,65 @@ function ConfigurationList({ userRole }) {
                 searchPlaceholder="Search client..."
               />
             </div>
+
+            <div className="min-w-[190px] space-y-2">
+              <Label className="text-white">Date Range</Label>
+              <SearchableSelect
+                value={listDatePreset}
+                onValueChange={setListDatePreset}
+                options={DATE_PRESET_OPTIONS}
+                placeholder="Select date range"
+                searchPlaceholder="Search range..."
+              />
+            </div>
+
+            {listDatePreset === "custom" && (
+              <>
+                <div className="space-y-2">
+                  <Label className="text-white">Start Date</Label>
+                  <Input
+                    type="date"
+                    value={listStartDate}
+                    onChange={(e) => setListStartDate(e.target.value)}
+                    max={new Date().toISOString().split("T")[0]}
+                    className="bg-slate-700 border-gray-300 text-white"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-white">End Date</Label>
+                  <Input
+                    type="date"
+                    value={listEndDate}
+                    onChange={(e) => setListEndDate(e.target.value)}
+                    min={listStartDate || undefined}
+                    max={new Date().toISOString().split("T")[0]}
+                    className="bg-slate-700 border-gray-300 text-white"
+                  />
+                </div>
+              </>
+            )}
+
+            <div className="min-w-[170px] ml-auto flex justify-end">
+              <Button
+                variant="outline"
+                className="border-slate-600 text-white hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={() => openExportModal('configurations')}
+                disabled={isConfigExportDisabled}
+              >
+                Export Data
+              </Button>
+            </div>
+
           </div>
         </CardContent>
       </Card>
 
       <Card className="bg-slate-800 border-slate-700">
         <CardHeader>
-          <CardTitle className="text-white">Configurations</CardTitle>
-          <CardDescription className="text-gray-400">All budget configurations</CardDescription>
+          <div>
+            <CardTitle className="text-white">Configurations</CardTitle>
+            <CardDescription className="text-gray-400">All budget configurations</CardDescription>
+          </div>
         </CardHeader>
         <CardContent>
           <Tabs value={statusFilter} onValueChange={setStatusFilter} className="mb-4">
@@ -971,7 +1346,7 @@ function ConfigurationList({ userRole }) {
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent
-          className="bg-slate-800 border-slate-600 text-white w-[95vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] 2xl:w-[50vw] max-w-[900px] max-h-[85vh] overflow-y-auto"
+          className="bg-slate-800 border-slate-600 text-white w-[98vw] md:w-[95vw] lg:w-[92vw] xl:w-[90vw] 2xl:w-[85vw] max-w-[1500px] max-h-[88vh] overflow-y-auto"
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
           <DialogHeader>
@@ -981,31 +1356,26 @@ function ConfigurationList({ userRole }) {
             </DialogDescription>
           </DialogHeader>
 
-          <Tabs defaultValue="edit" className="space-y-4">
+          <Tabs value={detailsTab} onValueChange={setDetailsTab} className="space-y-4">
             <TabsList className="bg-slate-700/60 border-slate-600 p-1">
-              {/* History & Logs Removed as per request */}
-              {/* <TabsTrigger
+              <TabsTrigger
                 value="edit"
                 className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
               >
                 Edit
               </TabsTrigger>
-              {canViewLogs && (
-                <>
-                  <TabsTrigger
-                    value="history"
-                    className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-                  >
-                    History
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="logs"
-                    className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
-                  >
-                    Logs
-                  </TabsTrigger>
-                </>
-              )} */}
+              <TabsTrigger
+                value="history"
+                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+              >
+                History
+              </TabsTrigger>
+              <TabsTrigger
+                value="logs"
+                className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
+              >
+                Logs
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="edit" className="space-y-4">
@@ -1019,7 +1389,7 @@ function ConfigurationList({ userRole }) {
                     </div>
                   ) : null}
 
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                     <div className="space-y-2">
                       <Label className="text-white">Status</Label>
                       <SearchableSelect
@@ -1158,7 +1528,7 @@ function ConfigurationList({ userRole }) {
                     />
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                     <div className="space-y-2">
                       <Label className="text-white">Approver L1</Label>
                       <SearchableSelect
@@ -1284,84 +1654,230 @@ function ConfigurationList({ userRole }) {
                 </div>
               )}
             </TabsContent>
-            {false && (
-              <>
-                <TabsContent value="history" className="space-y-2">
-                  {!canViewLogs ? (
-                    <p className="text-sm text-gray-400">Only the configuration creator can view history.</p>
-                  ) : historyItems.length === 0 ? (
-                    <p className="text-sm text-gray-400">No history available.</p>
-                  ) : (
-                    <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
-                      <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
-                        <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
-                          <tr>
-                            <th className="px-3 py-2 border-b border-slate-600">Date</th>
-                            <th className="px-3 py-2 border-b border-slate-600">Event</th>
-                            <th className="px-3 py-2 border-b border-slate-600">Details</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-700">
-                          {historyItems.map((item, index) => (
-                            <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
-                              <td className="px-3 py-2 text-xs text-slate-300">
-                                {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
-                              </td>
-                              <td className="px-3 py-2 text-xs text-slate-200">
-                                {getLogValue(item, ['event', 'action', 'action_type', 'type', 'message'], '—')}
-                              </td>
-                              <td className="px-3 py-2 text-xs text-slate-300">
-                                {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+            <TabsContent value="history" className="space-y-3">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-2 min-w-[180px]">
+                    <Label className="text-white">Date Range</Label>
+                    <SearchableSelect
+                      value={modalDatePreset}
+                      onValueChange={setModalDatePreset}
+                      options={DATE_PRESET_OPTIONS}
+                      placeholder="Select date range"
+                      searchPlaceholder="Search range..."
+                    />
+                  </div>
+                  {modalDatePreset === 'custom' && (
+                    <>
+                      <div className="space-y-2">
+                        <Label className="text-white">Start Date</Label>
+                        <Input
+                          type="date"
+                          value={modalStartDate}
+                          onChange={(e) => setModalStartDate(e.target.value)}
+                          max={new Date().toISOString().split('T')[0]}
+                          className="bg-slate-700 border-gray-300 text-white"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-white">End Date</Label>
+                        <Input
+                          type="date"
+                          value={modalEndDate}
+                          onChange={(e) => setModalEndDate(e.target.value)}
+                          min={modalStartDate || undefined}
+                          max={new Date().toISOString().split('T')[0]}
+                          className="bg-slate-700 border-gray-300 text-white"
+                        />
+                      </div>
+                    </>
                   )}
-                </TabsContent>
+                </div>
+                <Button
+                  variant="outline"
+                  className="border-slate-600 text-white hover:bg-slate-700"
+                  onClick={() => openExportModal('history')}
+                >
+                  Export Data
+                </Button>
+              </div>
+              {modalRange.error && (
+                <p className="text-xs text-rose-300">{modalRange.error}</p>
+              )}
+              {historyLogsLoading ? (
+                <p className="text-sm text-gray-400">Loading history...</p>
+              ) : filteredHistoryItems.length === 0 ? (
+                <p className="text-sm text-gray-400">No approval requests found for this configuration.</p>
+              ) : (
+                <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
+                  <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                    <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-3 py-2 border-b border-slate-600">Request #</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Requested By</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Status</th>
+                        <th className="px-3 py-2 border-b border-slate-600 text-right">Payment</th>
+                        <th className="px-3 py-2 border-b border-slate-600 text-right">Deduction</th>
+                        <th className="px-3 py-2 border-b border-slate-600 text-right">Total Amount</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {filteredHistoryItems.map((item, index) => {
+                        const statusLabel = mapHistoryStatus(item);
+                        const amounts = historyAmounts(item);
+                        const statusClass =
+                          statusLabel === 'Approved'
+                            ? 'bg-emerald-600 text-white'
+                            : statusLabel === 'Rejected'
+                              ? 'bg-rose-600 text-white'
+                              : 'bg-amber-600 text-white';
 
-                <TabsContent value="logs" className="space-y-2">
-                  {!canViewLogs ? (
-                    <p className="text-sm text-gray-400">Only the configuration creator can view logs.</p>
-                  ) : logItems.length === 0 ? (
-                    <p className="text-sm text-gray-400">No logs available.</p>
-                  ) : (
-                    <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
-                      <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
-                        <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
-                          <tr>
-                            <th className="px-3 py-2 border-b border-slate-600">Date</th>
-                            <th className="px-3 py-2 border-b border-slate-600">Action</th>
-                            <th className="px-3 py-2 border-b border-slate-600">Description</th>
-                            <th className="px-3 py-2 border-b border-slate-600">By</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-700">
-                          {logItems.map((item, index) => (
-                            <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
-                              <td className="px-3 py-2 text-xs text-slate-300">
-                                {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '—')}
-                              </td>
-                              <td className="px-3 py-2 text-xs text-slate-200">
-                                {getLogValue(item, ['action_type', 'action', 'event', 'type'], '—')}
-                              </td>
-                              <td className="px-3 py-2 text-xs text-slate-300">
-                                {getLogValue(item, ['description', 'details', 'message', 'note'], '—')}
-                              </td>
-                              <td className="px-3 py-2 text-xs text-slate-300">
-                                {getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '—')}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                        return (
+                        <tr key={`${item.request_id || item.request_number || index}`} className="hover:bg-slate-700/50">
+                          <td className="px-3 py-2 text-xs text-slate-200">{item.request_number || ''}</td>
+                          <td className="px-3 py-2 text-xs text-slate-300">{item.submitted_at || item.created_at || ''}</td>
+                          <td className="px-3 py-2 text-xs text-slate-300">{item.submitted_by_name || item.submitted_by || ''}</td>
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            <Badge className={statusClass}>{statusLabel}</Badge>
+                          </td>
+                          <td className="px-3 py-2 text-xs text-emerald-300 text-right">₱{amounts.payment.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-xs text-rose-300 text-right">₱{amounts.deduction.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-xs text-slate-200 text-right">₱{amounts.total.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-xs text-slate-300">{item.description || ''}</td>
+                        </tr>
+                      )})}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="logs" className="space-y-3">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-2 min-w-[180px]">
+                    <Label className="text-white">Date Range</Label>
+                    <SearchableSelect
+                      value={modalDatePreset}
+                      onValueChange={setModalDatePreset}
+                      options={DATE_PRESET_OPTIONS}
+                      placeholder="Select date range"
+                      searchPlaceholder="Search range..."
+                    />
+                  </div>
+                  {modalDatePreset === 'custom' && (
+                    <>
+                      <div className="space-y-2">
+                        <Label className="text-white">Start Date</Label>
+                        <Input
+                          type="date"
+                          value={modalStartDate}
+                          onChange={(e) => setModalStartDate(e.target.value)}
+                          max={new Date().toISOString().split('T')[0]}
+                          className="bg-slate-700 border-gray-300 text-white"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-white">End Date</Label>
+                        <Input
+                          type="date"
+                          value={modalEndDate}
+                          onChange={(e) => setModalEndDate(e.target.value)}
+                          min={modalStartDate || undefined}
+                          max={new Date().toISOString().split('T')[0]}
+                          className="bg-slate-700 border-gray-300 text-white"
+                        />
+                      </div>
+                    </>
                   )}
-                </TabsContent>
-              </>
-            )}
+                </div>
+                <Button
+                  variant="outline"
+                  className="border-slate-600 text-white hover:bg-slate-700"
+                  onClick={() => openExportModal('logs')}
+                >
+                  Export Data
+                </Button>
+              </div>
+              {modalRange.error && (
+                <p className="text-xs text-rose-300">{modalRange.error}</p>
+              )}
+              {historyLogsLoading ? (
+                <p className="text-sm text-gray-400">Loading logs...</p>
+              ) : filteredLogItems.length === 0 ? (
+                <p className="text-sm text-gray-400">No logs available for this configuration.</p>
+              ) : (
+                <div className="border border-slate-700 rounded-md overflow-auto max-h-[400px]">
+                  <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
+                    <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-3 py-2 border-b border-slate-600">Date</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Action</th>
+                        <th className="px-3 py-2 border-b border-slate-600">Description</th>
+                        <th className="px-3 py-2 border-b border-slate-600">By</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {filteredLogItems.map((item, index) => (
+                        <tr key={`${item.id || item.timestamp || index}`} className="hover:bg-slate-700/50">
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], '')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-200">
+                            {getLogValue(item, ['action_type', 'action', 'event', 'type'], '')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['description', 'details', 'message', 'note'], '')}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-300">
+                            {getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </TabsContent>
           </Tabs>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={exportModalOpen} onOpenChange={(open) => !exportLoading && setExportModalOpen(open)}>
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-white">Export Data</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              Choose your export format for {exportTarget === 'configurations' ? 'Configuration List' : exportTarget === 'history' ? 'Configuration History' : 'Configuration Logs'}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              className="border-slate-600 text-white hover:bg-slate-700"
+              onClick={() => setExportModalOpen(false)}
+              disabled={exportLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              className="border-blue-500 text-blue-300 hover:bg-blue-500/10"
+              onClick={() => handleExport('csv')}
+              disabled={exportLoading}
+            >
+              {exportLoading ? 'Exporting...' : 'Export CSV'}
+            </Button>
+            <Button
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              onClick={() => handleExport('excel')}
+              disabled={exportLoading}
+            >
+              {exportLoading ? 'Exporting...' : 'Export Excel'}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -19,6 +19,7 @@ import { connectWebSocket, addWebSocketListener } from '../services/realtimeServ
 import { resolveUserRole } from '../utils/roleUtils';
 import BulkUploadValidation from '../components/approval/BulkUploadValidation';
 import { fetchWithCache, invalidateNamespace } from '../utils/dataCache';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -327,6 +328,8 @@ const getStatusBadgeClass = (status) => {
 
 export default function ApprovalPage() {
   const { user } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const userRole = resolveUserRole(user);
   const [refreshKey, setRefreshKey] = useState(0);
   
@@ -337,6 +340,35 @@ export default function ApprovalPage() {
   const canSubmit = userRole === 'requestor' || userRole === 'l1' || userRole === 'payroll';
   const canViewRequests = userRole === 'l1' || userRole === 'l2' || userRole === 'l3' || userRole === 'payroll';
   const defaultTab = canSubmit ? 'submit' : canViewRequests ? 'requests' : 'history';
+  const [activeTab, setActiveTab] = useState(defaultTab);
+
+  const queryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const focusRequestId = queryParams.get('requestId');
+
+  useEffect(() => {
+    const requestedTab = queryParams.get('tab');
+    if (requestedTab === 'submit' && canSubmit) {
+      setActiveTab('submit');
+      return;
+    }
+    if (requestedTab === 'requests' && canViewRequests) {
+      setActiveTab('requests');
+      return;
+    }
+    if (requestedTab === 'history') {
+      setActiveTab('history');
+      return;
+    }
+    setActiveTab(defaultTab);
+  }, [queryParams, canSubmit, canViewRequests, defaultTab]);
+
+  const handleFocusRequestHandled = useCallback(() => {
+    if (!focusRequestId) return;
+    const params = new URLSearchParams(location.search);
+    params.delete('requestId');
+    const nextSearch = params.toString();
+    navigate(`${location.pathname}${nextSearch ? `?${nextSearch}` : ''}`, { replace: true });
+  }, [focusRequestId, location.pathname, location.search, navigate]);
 
   const handleRefresh = () => setRefreshKey((prev) => prev + 1);
 
@@ -348,7 +380,7 @@ export default function ApprovalPage() {
       />
 
       <div className="flex-1 p-6 overflow-hidden">
-        <Tabs defaultValue={defaultTab} className="flex flex-col h-full gap-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full gap-6">
           <TabsList className="bg-slate-800 border-slate-700 p-1 w-max flex-shrink-0">
             {canSubmit && (
               <TabsTrigger
@@ -382,12 +414,20 @@ export default function ApprovalPage() {
 
           {canViewRequests && (
             <TabsContent value="requests" className="flex-1 min-h-0">
-              <ApprovalRequests refreshKey={refreshKey} />
+              <ApprovalRequests
+                refreshKey={refreshKey}
+                focusRequestId={activeTab === 'requests' ? focusRequestId : null}
+                onFocusRequestHandled={handleFocusRequestHandled}
+              />
             </TabsContent>
           )}
 
           <TabsContent value="history" className="flex-1 min-h-0">
-            <ApprovalHistory refreshKey={refreshKey} />
+            <ApprovalHistory
+              refreshKey={refreshKey}
+              focusRequestId={activeTab === 'history' ? focusRequestId : null}
+              onFocusRequestHandled={handleFocusRequestHandled}
+            />
           </TabsContent>
         </Tabs>
       </div>
@@ -589,7 +629,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }
     if (successModalWasOpen.current && successMessage) {
       successModalWasOpen.current = false;
-      window.location.reload();
+      // Keep the user on the current tab after submit success.
     }
   }, [showSuccessModal, successMessage]);
 
@@ -3103,7 +3143,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         onOpenChange={(open) => {
           if (!open) {
             setShowSuccessModal(false);
-            window.location.reload();
           }
         }}
         modal={true}
@@ -3132,7 +3171,7 @@ const LoadingOverlay = () => (
   </div>
 );
 
-function ApprovalRequests({ refreshKey }) {
+function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHandled }) {
   const { user } = useAuth();
   const toast = useToast();
   const userRole = resolveUserRole(user);
@@ -3214,6 +3253,7 @@ function ApprovalRequests({ refreshKey }) {
   const [payrollCycle, setPayrollCycle] = useState('');
   const [payrollCycleDate, setPayrollCycleDate] = useState('');
   const [payrollCycleError, setPayrollCycleError] = useState(null);
+  const handledFocusRequestRef = useRef(null);
 
   const handlePayrollCycleContinue = () => {
     if (!payrollCycle || !payrollCycleDate) {
@@ -3472,6 +3512,57 @@ function ApprovalRequests({ refreshKey }) {
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
+
+  useEffect(() => {
+    if (!focusRequestId || loading) return;
+    if (handledFocusRequestRef.current === String(focusRequestId)) return;
+
+    handledFocusRequestRef.current = String(focusRequestId);
+
+    let cancelled = false;
+    const openFromFocus = async () => {
+      try {
+        const target = approvals.find((approval) => String(approval.id) === String(focusRequestId));
+
+        if (target) {
+          if (!cancelled) {
+            await handleOpenDetails(target);
+            if (typeof onFocusRequestHandled === 'function') {
+              onFocusRequestHandled();
+            }
+          }
+          return;
+        }
+
+        const data = await fetchWithCache(
+          'approvalRequestDetails',
+          focusRequestId,
+          () => approvalRequestService.getApprovalRequest(focusRequestId, getToken()),
+          60 * 1000,
+          true
+        );
+
+        if (!data || cancelled) {
+          handledFocusRequestRef.current = null;
+          return;
+        }
+
+        const normalized = normalizeRequest(data);
+        await handleOpenDetails(normalized);
+        if (typeof onFocusRequestHandled === 'function') {
+          onFocusRequestHandled();
+        }
+      } catch {
+        handledFocusRequestRef.current = null;
+      }
+    };
+
+    openFromFocus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [focusRequestId, loading, approvals]);
 
   const handleOpenDetails = async (approval) => {
     setSelectedRequest(approval);
@@ -3897,7 +3988,7 @@ function ApprovalRequests({ refreshKey }) {
                     Status
                   </th>
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
-                    Submitted By
+                    Requested By
                   </th>
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
                     Submitted When
@@ -4530,7 +4621,7 @@ function ApprovalRequests({ refreshKey }) {
   );
 }
 
-function ApprovalHistory({ refreshKey }) {
+function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHandled }) {
   const { user } = useAuth();
   const toast = useToast();
   const userRole = resolveUserRole(user);
@@ -4541,6 +4632,11 @@ function ApprovalHistory({ refreshKey }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState(null);
   const [historyConfigDetails, setHistoryConfigDetails] = useState(null);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportScope, setExportScope] = useState('history');
+  const [detailExportSection, setDetailExportSection] = useState('budget_details');
+  const [exportLoading, setExportLoading] = useState(false);
+  const handledFocusRequestRef = useRef(null);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -4604,6 +4700,50 @@ function ApprovalHistory({ refreshKey }) {
     }
   };
 
+  useEffect(() => {
+    if (!focusRequestId || loading) return;
+    if (handledFocusRequestRef.current === String(focusRequestId)) return;
+
+    handledFocusRequestRef.current = String(focusRequestId);
+
+    let cancelled = false;
+    const openFromFocus = async () => {
+      try {
+        const target = history.find((record) => String(record.id) === String(focusRequestId));
+
+        if (target) {
+          if (!cancelled) {
+            await handleViewHistory(target);
+            if (typeof onFocusRequestHandled === 'function') {
+              onFocusRequestHandled();
+            }
+          }
+          return;
+        }
+
+        const data = await approvalRequestService.getApprovalRequest(focusRequestId, getToken());
+        if (!data || cancelled) {
+          handledFocusRequestRef.current = null;
+          return;
+        }
+
+        const normalized = normalizeRequest(data);
+        await handleViewHistory(normalized);
+        if (typeof onFocusRequestHandled === 'function') {
+          onFocusRequestHandled();
+        }
+      } catch {
+        handledFocusRequestRef.current = null;
+      }
+    };
+
+    openFromFocus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [focusRequestId, loading, history]);
+
   const formatDate = (value) => {
     if (!value) return '—';
     try {
@@ -4640,31 +4780,166 @@ function ApprovalHistory({ refreshKey }) {
     userRole === 'payroll' ||
     String(detailData?.submitted_by || detailData?.submittedBy || '') === String(user?.id || '');
 
-  const handleExportData = () => {
-    if (!detailData) return;
-    
-    const headers = ['Request Number', 'Budget Name', 'Submitted By', 'Status', 'Total Amount', 'Deduction Total', 'Client Sponsored', 'Payroll Cycle'];
-    const row = [
-      detailData.request_number,
-      detailData.budget_name,
-      detailData.submitted_by_name,
-      detailData.overall_status,
-      totalAmount,
-      deductionTotal,
-      detailData.is_client_sponsored ? 'Yes' : 'No',
-      `${detailData.payroll_cycle || ''} ${detailData.payroll_cycle_Date || ''}`.trim()
-    ];
-    
-    const csvContent = "data:text/csv;charset=utf-8," 
-      + headers.join(",") + "\n" + row.join(",");
-      
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `approval_history_${detailData.request_number}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const escapeCsvValue = (value) => {
+    if (value === null || value === undefined) return '';
+    const text = String(value);
+    if (/[",\n\r]/.test(text)) {
+      return `"${text.replace(/"/g, '""')}"`;
+    }
+    return text;
+  };
+
+  const openExportModal = (scope) => {
+    setExportScope(scope);
+    if (scope === 'details') {
+      setDetailExportSection('all_sections');
+    }
+    setExportModalOpen(true);
+  };
+
+  const buildHistoryRows = () => {
+    return filteredHistory.map((record) => ({
+      request_number: record.requestNumber || '',
+      budget_name: record.budgetName || '',
+      status: formatStatusLabel(record.status || 'pending'),
+      amount: Number(record.amount || 0),
+      submitted_at: formatDate(record.submittedAt),
+      requested_by:
+        record.submittedByName ||
+        record.submitted_by_name ||
+        record.submittedBy ||
+        record.submitted_by ||
+        '',
+    }));
+  };
+
+  const buildDetailBudgetRows = () => {
+    if (!detailData) return [];
+    return [{
+      request_number: detailData.request_number || detailData.requestNumber || '',
+      budget_name: historyConfigDetails?.budget_name || detailData?.budget_name || '',
+      submitted_by:
+        detailData?.submittedByName ||
+        detailData?.submittedBy ||
+        detailData?.submitted_by_name ||
+        detailData?.submitted_by ||
+        '',
+      submitted_at: formatDate(detailData?.created_at || detailData?.submitted_at),
+      overall_status: formatStatusLabel(detailData?.overall_status || detailData?.status || 'pending'),
+      client_sponsored: detailData?.is_client_sponsored || detailData?.client_sponsored ? 'Yes' : 'No',
+      payroll_cycle: `${detailData?.payroll_cycle || ''} ${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date ? `(${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date})` : ''}`.trim(),
+      total_amount: Number(totalAmount || 0),
+      deduction_total: Number(deductionTotal || 0),
+      net_to_pay: Math.max(0, Number(totalAmount || 0) - Number(deductionTotal || 0)),
+    }];
+  };
+
+  const buildDetailApprovalRows = () => {
+    const approvals = detailData?.approvals || detailData?.approval_history || [];
+    return approvals.map((approval) => ({
+      level: getLevelLabel(approval.approval_level),
+      status: formatStatusLabel(approval.status),
+      approver: approval.approver_name || approval.approved_by || '',
+      date: formatDate(approval.approval_date || approval.updated_at),
+      notes: approval.approval_notes || approval.rejection_reason || '',
+    }));
+  };
+
+  const buildDetailLineItemRows = () => {
+    return historyLineItems.map((item) => ({
+      employee_id: item.employee_id || '',
+      employee_name: item.employee_name || '',
+      department: item.department || '',
+      position: item.position || '',
+      status: item.employee_status || '',
+      geo: item.geo || '',
+      location: item.location || item.Location || '',
+      amount: Number(item.amount || 0),
+      is_deduction: item.is_deduction ? 'Yes' : 'No',
+      notes: item.notes || item.item_description || '',
+    }));
+  };
+
+  const exportRows = async (format) => {
+    const isHistoryScope = exportScope === 'history';
+
+    if (!isHistoryScope && format === 'excel' && detailExportSection === 'all_sections') {
+      const XLSXModule = await import('xlsx');
+      const XLSX = XLSXModule.default || XLSXModule;
+      const workbook = XLSX.utils.book_new();
+
+      const budgetRows = buildDetailBudgetRows();
+      const approvalRows = buildDetailApprovalRows();
+      const lineRows = buildDetailLineItemRows();
+
+      const safeBudgetRows = budgetRows.length ? budgetRows : [{ message: 'No budget details available.' }];
+      const safeApprovalRows = approvalRows.length ? approvalRows : [{ message: 'No approval history available.' }];
+      const safeLineRows = lineRows.length ? lineRows : [{ message: 'No submitted line items available.' }];
+
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(safeBudgetRows), 'BudgetDetails');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(safeApprovalRows), 'ApprovalHistory');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(safeLineRows), 'SubmittedLineItems');
+
+      const baseName = `request_history_${detailData?.request_number || detailData?.requestNumber || 'details'}_all_sections`;
+      XLSX.writeFile(workbook, `${baseName}.xlsx`);
+      return;
+    }
+
+    const rows = isHistoryScope
+      ? buildHistoryRows()
+      : detailExportSection === 'budget_details'
+        ? buildDetailBudgetRows()
+        : detailExportSection === 'approval_history'
+          ? buildDetailApprovalRows()
+          : buildDetailLineItemRows();
+
+    if (!rows.length) {
+      toast.error('No data available to export.');
+      return;
+    }
+
+    const baseName = isHistoryScope
+      ? 'approval_history_logs'
+      : `request_history_${detailData?.request_number || detailData?.requestNumber || 'details'}_${detailExportSection}`;
+
+    if (format === 'csv') {
+      const headers = Object.keys(rows[0]);
+      const csvBody = rows.map((row) => headers.map((key) => escapeCsvValue(row[key])).join(','));
+      const csv = [headers.join(','), ...csvBody].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${baseName}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    const XLSXModule = await import('xlsx');
+    const XLSX = XLSXModule.default || XLSXModule;
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, isHistoryScope ? 'HistoryLogs' : 'RequestDetails');
+    XLSX.writeFile(workbook, `${baseName}.xlsx`);
+  };
+
+  const handleConfirmExport = async (format) => {
+    try {
+      if (exportScope === 'details' && detailExportSection === 'all_sections' && format === 'csv') {
+        toast.error('All Sections export is available for Excel only.');
+        return;
+      }
+      setExportLoading(true);
+      await exportRows(format);
+      setExportModalOpen(false);
+    } catch (error) {
+      toast.error(error?.message || 'Failed to export data.');
+    } finally {
+      setExportLoading(false);
+    }
   };
 
   return (
@@ -4676,14 +4951,23 @@ function ApprovalHistory({ refreshKey }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
-        <div className="max-w-md">
-          <Input
-            placeholder="Search by request number or configuration"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(sanitizeSingleLine(e.target.value))}
-            onKeyDown={blockShortcuts}
-            className="bg-slate-700 border-gray-300 text-white"
-          />
+        <div className="flex items-center justify-between gap-3">
+          <div className="w-full max-w-md">
+            <Input
+              placeholder="Search by request number or configuration"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(sanitizeSingleLine(e.target.value))}
+              onKeyDown={blockShortcuts}
+              className="bg-slate-700 border-gray-300 text-white"
+            />
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => openExportModal('history')}
+            className="border-slate-600 text-white hover:bg-slate-800"
+          >
+            Export Data
+          </Button>
         </div>
 
         {loading ? (
@@ -4710,6 +4994,9 @@ function ApprovalHistory({ refreshKey }) {
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Submitted
                   </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Requested By
+                  </th>
                   <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Action
                   </th>
@@ -4735,6 +5022,9 @@ function ApprovalHistory({ refreshKey }) {
                     <td className="px-4 py-3 text-xs text-slate-300">
                         {formatDate(record.submittedAt)}
                     </td>
+                    <td className="px-4 py-3 text-xs text-slate-300">
+                      {record.submittedByName || record.submitted_by_name || record.submittedBy || record.submitted_by || '—'}
+                    </td>
                     <td className="px-4 py-3 text-center">
                       <Button
                         variant="ghost"
@@ -4754,7 +5044,7 @@ function ApprovalHistory({ refreshKey }) {
       </CardContent>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[1100px] max-h-[85vh] overflow-y-auto flex flex-col">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[1200px] max-h-[85vh] overflow-y-auto flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request History Details</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -4767,33 +5057,37 @@ function ApprovalHistory({ refreshKey }) {
           ) : (
             <>
               <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-                <div className="grid gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <div className="text-xs uppercase tracking-wide text-slate-400">Budget</div>
-                    <div className="text-sm font-semibold text-white">
-                      {historyConfigDetails?.budget_name || detailData?.budget_name || '—'}
+                <div className="grid gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="space-y-2">
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Budget</div>
+                      <div className="text-sm font-semibold text-white">
+                        {historyConfigDetails?.budget_name || detailData?.budget_name || '—'}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {historyConfigDetails?.description || historyConfigDetails?.budget_description || detailData?.budget_description || 'No description.'}
+                      </div>
+                      <div className="pt-1">
+                        <div className="text-xs uppercase tracking-wide text-slate-400">Submitted By</div>
+                        <div className="text-sm text-slate-200">{detailData?.submittedByName || detailData?.submittedBy || detailData?.submitted_by_name || detailData?.submitted_by || '—'}</div>
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-400">
-                      {historyConfigDetails?.description || historyConfigDetails?.budget_description || detailData?.budget_description || 'No description.'}
+
+                    <div className="space-y-2 md:flex md:flex-col md:ml-8 md:min-w-[220px]">
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
+                        <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
+                          {formatStatusLabel(detailData?.overall_status)}
+                        </Badge>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-slate-400">Submitted</div>
+                        <div className="text-sm text-slate-200">{formatDate(detailData?.created_at || detailData?.submitted_at)}</div>
+                      </div>
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
-                    <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
-                      {formatStatusLabel(detailData?.overall_status)}
-                    </Badge>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="text-xs uppercase tracking-wide text-slate-400">Submitted By</div>
-                    <div className="text-sm text-slate-200">{detailData?.submittedByName || detailData?.submittedBy || detailData?.submitted_by_name || detailData?.submitted_by || '—'}</div>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="text-xs uppercase tracking-wide text-slate-400">Submitted</div>
-                    <div className="text-sm text-slate-200">{formatDate(detailData?.created_at || detailData?.submitted_at)}</div>
-                  </div>
-                  
-                  {/* Financial Details */}
-                  <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-slate-700 mt-2">
+
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-4 pt-3 border-t border-slate-700">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Total Amount</div>
                       <div className="text-lg font-semibold text-emerald-400">₱{totalAmount.toLocaleString()}</div>
@@ -4806,10 +5100,6 @@ function ApprovalHistory({ refreshKey }) {
                       <div className="text-xs uppercase tracking-wide text-slate-400">Net To Pay</div>
                       <div className="text-lg font-semibold text-blue-400">₱{Math.max(0, totalAmount - deductionTotal).toLocaleString()}</div>
                     </div>
-                  </div>
-
-                  {/* Additional Details */}
-                  <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-700 mt-2">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Client Sponsored</div>
                       <div className="text-sm text-slate-200">{detailData?.is_client_sponsored || detailData?.client_sponsored ? 'Yes' : 'No'}</div>
@@ -4905,13 +5195,71 @@ function ApprovalHistory({ refreshKey }) {
                   </div>
                 )}
               </div>
-              <DialogFooter className="mt-4 pt-4 border-t border-slate-800">
-                <Button variant="outline" onClick={handleExportData} className="border-slate-600 text-white hover:bg-slate-800 ml-auto">
-                  Export Data
-                </Button>
+              <DialogFooter className="mt-4 pt-4 border-t border-slate-800 flex justify-end gap-2">
+                {detailData && (
+                  <Button
+                    variant="outline"
+                    onClick={() => openExportModal('details')}
+                    className="border-slate-600 text-white hover:bg-slate-800"
+                  >
+                    Export Data
+                  </Button>
+                )}
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={exportModalOpen} onOpenChange={(open) => !exportLoading && setExportModalOpen(open)}>
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">Export Data</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              Choose your preferred export format for {exportScope === 'history' ? 'Approval History & Logs' : 'Request History Details'}.
+            </DialogDescription>
+          </DialogHeader>
+          {exportScope === 'details' && (
+            <div className="space-y-2">
+              <Label className="text-white">Section</Label>
+              <Select value={detailExportSection} onValueChange={setDetailExportSection}>
+                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                  <SelectValue placeholder="Select section" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700 text-white">
+                  <SelectItem value="budget_details">Budget Config Details</SelectItem>
+                  <SelectItem value="approval_history">Approval History</SelectItem>
+                  <SelectItem value="line_items">Submitted Line Items</SelectItem>
+                  <SelectItem value="all_sections">All Sections (Excel only)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <DialogFooter className="flex justify-end gap-3">
+            <Button
+              variant="outline"
+              className="border-slate-600 text-white hover:bg-slate-800"
+              onClick={() => setExportModalOpen(false)}
+              disabled={exportLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              className="border-blue-500 text-blue-300 hover:bg-blue-500/10"
+              onClick={() => handleConfirmExport('csv')}
+              disabled={exportLoading}
+            >
+              {exportLoading ? 'Exporting...' : 'Export CSV'}
+            </Button>
+            <Button
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              onClick={() => handleConfirmExport('excel')}
+              disabled={exportLoading}
+            >
+              {exportLoading ? 'Exporting...' : 'Export Excel'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </Card>
