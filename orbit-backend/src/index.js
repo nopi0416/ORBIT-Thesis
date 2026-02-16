@@ -5,7 +5,6 @@ import http from 'http';
 import { corsMiddleware } from './config/cors.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { enforceHTTPS, securityHeaders } from './middleware/httpsEnforcement.js';
-import { apiLimiter } from './middleware/rateLimiter.js';
 import apiRoutes from './routes/index.js';
 import { initWebSocketServer } from './realtime/websocketServer.js';
 
@@ -29,9 +28,6 @@ app.use(helmet());
 
 // CORS
 app.use(corsMiddleware);
-
-// General API Rate Limiting
-app.use(apiLimiter);
 
 // Body Parsing
 app.use(express.json());

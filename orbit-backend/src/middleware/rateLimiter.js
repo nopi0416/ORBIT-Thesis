@@ -69,22 +69,8 @@ export const passwordResetLimiter = rateLimit({
   },
 });
 
-/**
- * General API Rate Limiter
- * - 100 requests per 15 minutes per IP address
- * - Prevents general API abuse
- */
-export const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15-minute window
-  max: 100, // 100 requests per IP
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
 export default {
   loginLimiter,
   otpLimiter,
   passwordResetLimiter,
-  apiLimiter,
 };

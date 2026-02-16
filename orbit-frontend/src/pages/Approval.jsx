@@ -71,6 +71,33 @@ const parseStoredPaths = (value) => {
   return parsed.map((entry) => (Array.isArray(entry) ? entry : [entry]));
 };
 
+const normalizeLineItem = (item = {}) => {
+  const rawAmount = Number(item.amount ?? item.item_amount ?? item.total_amount ?? 0);
+  const rawDeduction = item.is_deduction ?? item.isDeduction ?? item.deduction ?? false;
+  const normalizedDeduction =
+    typeof rawDeduction === 'string'
+      ? ['true', '1', 'yes', 'y'].includes(rawDeduction.trim().toLowerCase())
+      : Boolean(rawDeduction);
+
+  return {
+    ...item,
+    employee_id: item.employee_id ?? item.employeeId ?? item.eid ?? null,
+    employee_name: item.employee_name ?? item.employeeName ?? item.name ?? null,
+    email: item.email ?? item.employee_email ?? item.employeeEmail ?? null,
+    position: item.position ?? item.job_title ?? item.jobTitle ?? null,
+    employee_status: item.employee_status ?? item.employeeStatus ?? item.status ?? null,
+    geo: item.geo ?? item.geo_name ?? item.geography ?? null,
+    location: item.location ?? item.Location ?? item.site_location ?? item.siteLocation ?? null,
+    Location: item.Location ?? item.location ?? item.site_location ?? item.siteLocation ?? null,
+    department: item.department ?? item.dept ?? null,
+    hire_date: item.hire_date ?? item.hireDate ?? null,
+    termination_date: item.termination_date ?? item.terminationDate ?? null,
+    amount: Number.isFinite(rawAmount) ? rawAmount : 0,
+    is_deduction: normalizedDeduction,
+    notes: item.notes ?? item.item_description ?? item.description ?? null,
+  };
+};
+
 const sanitizeTextInput = (value = '') =>
   String(value).replace(/[^A-Za-z0-9 _\-";:'\n\r.,;]/g, '');
 
@@ -175,7 +202,12 @@ const normalizeRequest = (request) => {
   const rawStatus = request.approval_stage_status || request.display_status || request.overall_status || request.status || request.submission_status || 'draft';
   const submittedAt = request.submitted_at || request.created_at || '';
   const status = rawStatus === 'draft' && submittedAt ? 'submitted' : rawStatus;
-  const lineItems = Array.isArray(request.line_items) ? request.line_items : [];
+  const rawLineItems = Array.isArray(request.line_items)
+    ? request.line_items
+    : Array.isArray(request.lineItems)
+      ? request.lineItems
+      : [];
+  const lineItems = rawLineItems.map(normalizeLineItem);
   const computedCounts = lineItems.length
     ? {
         lineItemsCount: lineItems.length,
@@ -445,10 +477,22 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   // Check if user can proceed with submission
   const canProceed = useMemo(() => {
     if (requestMode === 'individual') {
+      const amountValue = Number(individualRequest.amount || 0);
+      const minLimitValue = Number(selectedConfig?.minLimit || 0);
+      const maxLimitValue = Number(selectedConfig?.maxLimit || 0);
+      const hasLimits = maxLimitValue > 0 || minLimitValue > 0;
+      const isOutOfRange =
+        hasLimits &&
+        amountValue > 0 &&
+        ((minLimitValue > 0 && amountValue < minLimitValue) ||
+          (maxLimitValue > 0 && amountValue > maxLimitValue));
+      const hasRequiredNotes = !isOutOfRange || Boolean(individualRequest.notes?.trim());
+
       return (
         requestDetails.details?.trim().length > 0 &&
         individualRequest.employeeId?.trim().length > 0 &&
-        individualRequest.amount > 0
+        amountValue > 0 &&
+        hasRequiredNotes
       );
     } else {
       // For bulk: need shared approval description and at least one valid item
@@ -462,7 +506,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
       return hasApprovalDescription && hasValidItems;
     }
-  }, [requestMode, requestDetails, individualRequest, bulkItems]);
+  }, [requestMode, requestDetails, individualRequest, bulkItems, selectedConfig?.minLimit, selectedConfig?.maxLimit]);
 
   useEffect(() => {
     const fetchConfigs = async () => {
@@ -1657,12 +1701,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const handleSubmitIndividual = async () => {
     const commonError = validateCommon();
     if (commonError) {
+      setConfirmLoading(false);
       toast.error(commonError);
       setSubmitError(commonError);
       return;
     }
 
     if (!individualRequest.employeeId || !individualRequest.employeeName || !individualRequest.department || !individualRequest.position || !individualRequest.amount) {
+      setConfirmLoading(false);
       toast.error('Complete all required individual fields.');
       setSubmitError('Complete all required individual fields.');
       return;
@@ -1670,6 +1716,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
     const amountValue = Number(individualRequest.amount);
     if (!amountValue || Number.isNaN(amountValue)) {
+      setConfirmLoading(false);
       toast.error('Enter a valid amount.');
       setSubmitError('Enter a valid amount.');
       return;
@@ -1684,6 +1731,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         (maxLimitValue > 0 && amountValue > maxLimitValue));
 
     if (isOutOfRange && !individualRequest.notes?.trim()) {
+      setConfirmLoading(false);
       toast.error('Amount is outside the configured range. Please add notes to proceed.');
       setSubmitError('Amount is outside the configured range. Please add notes to proceed.');
       return;
@@ -1706,8 +1754,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           item_number: 1,
           employee_id: individualRequest.employeeId,
           employee_name: individualRequest.employeeName,
+          email: individualRequest.email,
+          employee_status: individualRequest.employeeStatus,
+          geo: individualRequest.geo,
+          location: individualRequest.location,
           department: individualRequest.department,
           position: individualRequest.position,
+          hire_date: individualRequest.hireDate || null,
+          termination_date: individualRequest.terminationDate || null,
           item_type: 'other',
           item_description: individualRequest.notes?.trim() || null,
           amount: amountValue,
@@ -1759,9 +1813,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setConfirmAction(null);
       setConfirmLoading(false);
       
+      setSubmitError(errorMsg);
       toast.error(errorMsg);
     } finally {
       setSubmitting(false);
+      setConfirmLoading(false);
     }
   };
 
@@ -1775,18 +1831,21 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     const commonError = validateCommon();
     if (commonError) {
       console.log('[handleSubmitBulk] Common validation failed:', commonError);
+      setConfirmLoading(false);
       setSubmitError(commonError);
       return;
     }
     
     if (bulkParseError) {
       console.log('[handleSubmitBulk] Parse error exists:', bulkParseError);
+      setConfirmLoading(false);
       setSubmitError(bulkParseError);
       return;
     }
     
     if (!bulkItems.length) {
       console.log('[handleSubmitBulk] No bulk items');
+      setConfirmLoading(false);
       setSubmitError('Upload the template with at least one line item.');
       return;
     }
@@ -1806,6 +1865,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     });
     
     if (!validItems.length) {
+      setConfirmLoading(false);
       setSubmitError('No valid items to submit. Ensure at least one employee has valid data and is in scope.');
       return;
     }
@@ -2828,9 +2888,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                         <th className="px-3 py-2 text-left text-slate-300">Department</th>
                         <th className="px-3 py-2 text-left text-slate-300">Hire Date</th>
                         <th className="px-3 py-2 text-left text-slate-300">Term. Date</th>
-                        {(userRole === 'payroll' || detailRecord?.is_self_request) && (
-                          <th className="px-3 py-2 text-right text-slate-300">Amount</th>
-                        )}
+                        <th className="px-3 py-2 text-right text-slate-300">Amount</th>
                         <th className="px-3 py-2 text-center text-slate-300">Deduction</th>
                         <th className="px-3 py-2 text-left text-slate-300">Notes</th>
                       </tr>
@@ -2858,11 +2916,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                               <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.hire_date || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.termination_date || '—'}</td>
-                              {(userRole === 'payroll' || detailRecord?.is_self_request) && (
-                                <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                  ₱{Math.abs(amountValue).toLocaleString()}
-                                </td>
-                              )}
+                              <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                ₱{Math.abs(amountValue).toLocaleString()}
+                              </td>
                               <td className="px-3 py-2 text-center">
                                 {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
                               </td>
@@ -3019,13 +3075,18 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               <Button 
                 onClick={async () => {
                   setConfirmLoading(true);
-                  // Don't close the modal yet - keep confirmAction
-                  if (confirmAction === 'submit-individual') {
-                    await handleSubmitIndividual();
-                  } else if (confirmAction === 'submit-bulk') {
-                    await handleSubmitBulk();
+                  try {
+                    // Don't close the modal yet - keep confirmAction
+                    if (confirmAction === 'submit-individual') {
+                      await handleSubmitIndividual();
+                    } else if (confirmAction === 'submit-bulk') {
+                      await handleSubmitBulk();
+                    }
+                    // Modal will be closed by success/error handler
+                  } catch (error) {
+                    setSubmitError(extractErrorMessage(error));
+                    setConfirmLoading(false);
                   }
-                  // Modal will be closed by success/error handler
                 }}
                 className="bg-blue-600 hover:bg-blue-700 text-white"
               >
@@ -4572,7 +4633,9 @@ function ApprovalHistory({ refreshKey }) {
     .reduce((sum, item) => sum + Number(item.amount || 0), 0);
   
   const totalAmount = Number(detailData?.total_request_amount || 0);
-  const historyLineItems = detailData?.line_items || [];
+  const historyLineItems = Array.isArray(detailData?.line_items)
+    ? detailData.line_items.map(normalizeLineItem)
+    : [];
   const canViewHistoryLineItems =
     userRole === 'payroll' ||
     String(detailData?.submitted_by || detailData?.submittedBy || '') === String(user?.id || '');
@@ -4812,6 +4875,9 @@ function ApprovalHistory({ refreshKey }) {
                               <th className="px-3 py-2 border-b border-slate-600">Name</th>
                               <th className="px-3 py-2 border-b border-slate-600">Department</th>
                               <th className="px-3 py-2 border-b border-slate-600">Position</th>
+                              <th className="px-3 py-2 border-b border-slate-600">Status</th>
+                              <th className="px-3 py-2 border-b border-slate-600">Geo</th>
+                              <th className="px-3 py-2 border-b border-slate-600">Location</th>
                               <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
                               <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
                               <th className="px-3 py-2 border-b border-slate-600">Notes</th>
@@ -4824,6 +4890,9 @@ function ApprovalHistory({ refreshKey }) {
                                 <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
                                 <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
                                 <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
+                                <td className="px-3 py-2 text-slate-300">{item.employee_status || '—'}</td>
+                                <td className="px-3 py-2 text-slate-300">{item.geo || '—'}</td>
+                                <td className="px-3 py-2 text-slate-300">{item.location || item.Location || '—'}</td>
                                 <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString()}</td>
                                 <td className="px-3 py-2 text-center text-slate-300">{item.is_deduction ? 'Yes' : 'No'}</td>
                                 <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
