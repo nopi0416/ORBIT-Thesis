@@ -367,12 +367,7 @@ export class AuthService {
       if (adminUser) {
         console.log(`[COMPLETE LOGIN] Found admin user: ${email}`);
         // Generate JWT token for admin
-        const token = this.generateToken(
-          adminUser.admin_id,
-          adminUser.email,
-          adminUser.admin_role,
-          adminUser.org_id || null,
-        );
+        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role);
 
         // Update last login
         try {
@@ -393,7 +388,6 @@ export class AuthService {
             firstName: adminUser.full_name || '',
             lastName: '',
             role: adminUser.admin_role,
-            orgId: adminUser.org_id || null,
             userType: 'admin',
           },
           message: 'Login successful',
@@ -783,6 +777,7 @@ export class AuthService {
         .update({
           password_hash: hashedPassword,
           is_first_login: false, // Mark as no longer first-time user
+          status: 'Active', // Update status from First_Time to Active
           updated_at: new Date().toISOString(),
         })
         .eq('email', email)
@@ -797,7 +792,7 @@ export class AuthService {
         };
       }
 
-      console.log(`[PASSWORD CHANGE] User ${email} has changed password and is_first_login set to false`);
+      console.log(`[PASSWORD CHANGE] User ${email} has changed password, is_first_login set to false, and status updated to Active`);
 
       return {
         success: true,
@@ -857,13 +852,14 @@ export class AuthService {
         .from('tblusers')
         .update({
           is_first_login: false,
+          status: 'Active', // Update status from First_Time to Active
           updated_at: new Date().toISOString(),
         })
         .eq('user_id', userId);
 
       if (updateError) throw updateError;
 
-      console.log(`[SECURITY QUESTIONS] User ${userId} completed first-time setup`);
+      console.log(`[SECURITY QUESTIONS] User ${userId} completed first-time setup with status updated to Active`);
 
       return {
         success: true,
