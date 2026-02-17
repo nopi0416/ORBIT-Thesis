@@ -1239,6 +1239,59 @@ export class AuthService {
       };
     }
   }
+
+  /**
+   * Log login attempt to audit trail
+   */
+  static async logLoginAttempt(email, loginStatus, userType, ipAddress = null, userAgent = null, userId = null) {
+    try {
+      console.log(`[LOGIN AUDIT] Logging ${loginStatus} login for ${email} (${userType})`);
+      
+      // If userId not provided, try to look it up
+      let actualUserId = userId;
+      if (!actualUserId && email) {
+        if (userType === 'admin') {
+          const { data: adminUser } = await supabase
+            .from('tbladminusers')
+            .select('admin_id')
+            .eq('email', email)
+            .single();
+          actualUserId = adminUser?.admin_id;
+        } else if (userType === 'user') {
+          const { data: regularUser } = await supabase
+            .from('tblusers')
+            .select('user_id')
+            .eq('email', email)
+            .single();
+          actualUserId = regularUser?.user_id;
+        }
+      }
+      
+      const { error } = await supabase
+        .from('tbllogin_audit')
+        .insert([
+          {
+            email,
+            user_id: actualUserId,
+            login_status: loginStatus, // 'success', 'pending', or 'failed'
+            user_type: userType, // 'admin', 'user', or 'unknown'
+            ip_address: ipAddress,
+            user_agent: userAgent,
+            logged_at: new Date().toISOString(),
+          },
+        ]);
+
+      if (error) {
+        console.error('[LOGIN AUDIT] Error logging login attempt:', error);
+        // Don't throw - logging failure shouldn't break login
+      } else {
+        console.log(`[LOGIN AUDIT] ${loginStatus} login logged for ${email}`);
+      }
+    } catch (error) {
+      console.error('[LOGIN AUDIT] Exception logging login attempt:', error);
+      // Silently fail - logging shouldn't prevent login
+    }
+  }
 }
 
 export default AuthService;
