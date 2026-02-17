@@ -148,20 +148,30 @@ export class AuthService {
           // Increment failed attempts and lock account if needed
           const newFailedAttempts = (adminUser.failed_login_attempts || 0) + 1;
           const shouldLock = newFailedAttempts >= 3;
+          const lockoutDuration = 30; // 30 minutes
           
           await supabase
             .from('tbladminusers')
             .update({
               failed_login_attempts: newFailedAttempts,
-              account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
+              account_locked_until: shouldLock ? new Date(Date.now() + lockoutDuration * 60 * 1000).toISOString() : null
             })
             .eq('admin_id', adminUser.admin_id);
           
           console.log(`[LOGIN] Admin failed attempts: ${newFailedAttempts}`);
-          return {
-            success: false,
-            error: 'Invalid Username or Password',
-          };
+          
+          // Provide informative error message
+          if (shouldLock) {
+            return {
+              success: false,
+              error: `Account locked due to multiple failed login attempts. Please try again in ${lockoutDuration} minutes.`,
+            };
+          } else {
+            return {
+              success: false,
+              error: 'Invalid login credentials. Please try again.\nFor security reasons, your account may be temporarily locked after multiple failed attempts.',
+            };
+          }
         }
 
         // Reset failed attempts on successful admin login
@@ -286,20 +296,30 @@ export class AuthService {
         // Increment failed attempts and lock account if needed
         const newFailedAttempts = (user.failed_login_attempts || 0) + 1;
         const shouldLock = newFailedAttempts >= 3;
+        const lockoutDuration = 30; // 30 minutes
         
         await supabase
           .from('tblusers')
           .update({
             failed_login_attempts: newFailedAttempts,
-            account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
+            account_locked_until: shouldLock ? new Date(Date.now() + lockoutDuration * 60 * 1000).toISOString() : null
           })
           .eq('user_id', user.user_id);
         
         console.log(`[LOGIN] User failed attempts: ${newFailedAttempts}`);
-        return {
-          success: false,
-          error: 'Invalid Username or Password',
-        };
+        
+        // Provide informative error message
+        if (shouldLock) {
+          return {
+            success: false,
+            error: `Account locked due to multiple failed login attempts. Please try again in ${lockoutDuration} minutes.`,
+          };
+        } else {
+          return {
+            success: false,
+            error: 'Invalid login credentials. Please try again.\nFor security reasons, your account may be temporarily locked after multiple failed attempts.',
+          };
+        }
       }
 
       // Reset failed attempts on successful login
