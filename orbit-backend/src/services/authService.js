@@ -557,6 +557,22 @@ export class AuthService {
 
       console.log(`[OTP] User found: ${email}, generating OTP`);
 
+      // Invalidate all previous unused OTPs for this email and type
+      console.log(`[OTP] Invalidating previous unused OTPs for ${email}, type: ${type}`);
+      const { error: invalidateError } = await supabase
+        .from('tblotp')
+        .update({ is_used: true })
+        .eq('email', email)
+        .eq('type', type)
+        .eq('is_used', false);
+
+      if (invalidateError) {
+        console.log(`[OTP] Warning: Failed to invalidate previous OTPs:`, invalidateError);
+        // Continue anyway, just log the warning
+      } else {
+        console.log(`[OTP] Previous OTPs have been invalidated`);
+      }
+
       // Generate 6-digit OTP
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes, with Z

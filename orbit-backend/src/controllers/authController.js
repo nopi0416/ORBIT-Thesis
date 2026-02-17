@@ -540,6 +540,34 @@ export class AuthController {
       sendError(res, 'Token verification failed', 500);
     }
   }
+
+  /**
+   * POST /api/auth/test-email
+   * Test email sending (development only)
+   */
+  static async testEmail(req, res) {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return sendError(res, 'Email is required', 400);
+      }
+
+      // Import here to avoid circular dependency at top
+      const { sendOTPEmail } = await import('../config/email.js');
+
+      const result = await sendOTPEmail(email, '123456');
+
+      if (!result.success) {
+        return sendError(res, result.error || 'Failed to send email', 500);
+      }
+
+      return sendSuccess(res, { message: 'Test email sent successfully' }, 'Check your inbox');
+    } catch (error) {
+      console.error('Error in testEmail:', error);
+      sendError(res, error.message, 500);
+    }
+  }
 }
 
 export default AuthController;
