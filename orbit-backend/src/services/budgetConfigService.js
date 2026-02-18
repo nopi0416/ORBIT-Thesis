@@ -1324,15 +1324,31 @@ export class BudgetConfigService {
     try {
       const { data, error } = await supabase
         .from('tblbudgetconfigurationlogs')
-        .select('id, budget_id, action_type, description, performed_by, old_value, new_value, ip_address, user_agent, created_at')
+        .select('log_id, budget_id, action_type, description, performed_by, old_value, new_value, ip_address, user_agent, performed_at')
         .eq('budget_id', budgetId)
-        .order('created_at', { ascending: false });
+        .order('performed_at', { ascending: false });
 
       if (error) throw error;
 
+      const performerIds = Array.from(new Set((data || []).map((row) => row?.performed_by).filter(Boolean)));
+      let userNameMap = new Map();
+      try {
+        userNameMap = await this.getUserNameMap(performerIds);
+      } catch (lookupError) {
+        console.warn('[getRequestLogsByBudgetId] User lookup failed:', lookupError?.message || lookupError);
+      }
+
+      const normalizedLogs = (data || []).map((row) => ({
+        ...row,
+        id: row.log_id,
+        timestamp: row.performed_at,
+        created_at: row.performed_at,
+        performed_by_name: userNameMap.get(row.performed_by) || row.performed_by || null,
+      }));
+
       return {
         success: true,
-        data,
+        data: normalizedLogs,
       };
     } catch (error) {
       console.error('Error fetching request logs:', error);

@@ -122,6 +122,34 @@ const blockShortcuts = (event) => {
   event.preventDefault();
 };
 
+const formatDateTimeCompact = (value) => {
+  if (!value) return '—';
+  try {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    const datePart = date.toLocaleDateString('en-US', {
+      timeZone: 'Asia/Manila',
+      month: 'numeric',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    const timePart = date
+      .toLocaleTimeString('en-US', {
+        timeZone: 'Asia/Manila',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      })
+      .replace(/\s/g, '');
+
+    return `${datePart}-${timePart}`;
+  } catch {
+    return String(value);
+  }
+};
+
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
   createdBy: config.created_by || config.createdBy || null,
@@ -286,21 +314,7 @@ const normalizeRequest = (request) => {
 };
 
 const formatDatePHT = (dateString) => {
-  if (!dateString) return '—';
-  try {
-    const date = new Date(dateString);
-    return date.toLocaleString('en-PH', {
-      timeZone: 'Asia/Manila',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
-  } catch (error) {
-    return dateString;
-  }
+  return formatDateTimeCompact(dateString);
 };
 
 const getStatusBadgeClass = (status) => {
@@ -2830,15 +2844,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     </Badge>
                     <span className="text-xs text-slate-300">{detailRequestNumber}</span>
                     <span className="text-xs text-slate-500">
-                      Submitted: {detailSubmittedAt ? new Date(detailSubmittedAt).toLocaleString('en-US', {
-                        timeZone: 'Asia/Manila',
-                        month: 'numeric',
-                        day: 'numeric',
-                        year: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                        hour12: true
-                      }).replace(', ', '-').replace(' ', '') : '—'}
+                      Submitted: {formatDatePHT(detailSubmittedAt)}
                     </span>
                   </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Configuration Name</div>
@@ -3199,21 +3205,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const detailTableRef = useRef(null);
 
   const formatDatePHT = (dateString) => {
-    if (!dateString) return '—';
-    try {
-      const date = new Date(dateString);
-      return date.toLocaleString('en-PH', {
-        timeZone: 'Asia/Manila',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      });
-    } catch (error) {
-      return dateString;
-    }
+    return formatDateTimeCompact(dateString);
   };
 
   const getApprovalBadgeClass = (status, isSelfRequest = false) => {
@@ -4141,15 +4133,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     </Badge>
                     <span className="text-xs text-slate-300">{detailRequestNumber}</span>
                     <span className="text-xs text-slate-500">
-                      Submitted: {detailSubmittedAt ? new Date(detailSubmittedAt).toLocaleString('en-US', {
-                        timeZone: 'Asia/Manila',
-                        month: 'numeric',
-                        day: 'numeric',
-                        year: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                        hour12: true
-                      }).replace(', ', '-').replace(' ', '') : '—'}
+                      Submitted: {formatDatePHT(detailSubmittedAt)}
                     </span>
                   </div>
                   <div className="text-lg font-semibold text-white">{requestConfigDetails?.name || requestConfigDetails?.budget_name || detailRecord.budgetName || detailRecord.budget_name || 'Budget Configuration'}</div>
@@ -4745,20 +4729,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   }, [focusRequestId, loading, history]);
 
   const formatDate = (value) => {
-    if (!value) return '—';
-    try {
-      return new Date(value).toLocaleString('en-PH', {
-        timeZone: 'Asia/Manila',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-      });
-    } catch {
-      return value;
-    }
+    return formatDateTimeCompact(value);
   };
 
   const formatStatusLabel = (value) => String(value || 'pending').replace(/_/g, ' ');

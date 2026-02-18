@@ -451,7 +451,7 @@ export class BudgetConfigController {
     try {
       const { budgetId } = req.params;
       const { approval_level, primary_approver, backup_approver } = req.body;
-      const { userId } = req.user || {}; // Assumes auth middleware sets req.user
+      const userId = req.user?.id || req.user?.userId; // Assumes auth middleware sets req.user
 
       if (!budgetId) {
         return sendError(res, 'Budget ID is required', 400);
@@ -555,7 +555,7 @@ export class BudgetConfigController {
     try {
       const { budgetId } = req.params;
       const { scope_type, scope_value } = req.body;
-      const { userId } = req.user || {}; // Assumes auth middleware sets req.user
+      const userId = req.user?.id || req.user?.userId; // Assumes auth middleware sets req.user
 
       if (!budgetId) {
         return sendError(res, 'Budget ID is required', 400);
