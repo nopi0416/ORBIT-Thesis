@@ -3,7 +3,7 @@
  * Handles all API calls for budget configuration CRUD operations
  */
 
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 /**
  * Get authorization headers with token

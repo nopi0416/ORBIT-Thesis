@@ -3,7 +3,7 @@
  * Handles API calls for approval requests and line items
  */
 
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 const getHeaders = (token) => ({
   'Content-Type': 'application/json',
