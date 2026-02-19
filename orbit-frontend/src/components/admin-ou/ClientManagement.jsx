@@ -379,7 +379,7 @@ export function ClientManagement({ role }) {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+    <div className="flex flex-col h-full gap-3 min-h-0">
       {showNotification && (
         <div className="fixed top-4 right-4 z-50 w-full max-w-md">
           {notificationVariant === 'error' ? (
@@ -413,18 +413,12 @@ export function ClientManagement({ role }) {
           )}
         </div>
       )}
-      <div className="lg:col-span-2">
-        <Card
-          className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white"
-          style={{ height: totalClients > 7 ? Math.min(totalClients, 7) * 64 + 115 : 'fit-content' }}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <div className="min-w-0">
-              <h3 className="font-semibold text-base">Client Management</h3>
-              <p className="text-xs text-muted-foreground truncate">
-                {currentOrgLabel}
-              </p>
-            </div>
+      <Card
+        className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white flex-1 overflow-y-auto min-h-0">
+        <div className="flex items-center justify-between mb-2">
+          <div className="min-w-0">
+            <h3 className="font-semibold text-base">Clients</h3>
+          </div>
             <Dialog
               open={showCreateDialog}
               onOpenChange={(open) => {
@@ -619,12 +613,10 @@ export function ClientManagement({ role }) {
             </div>
           )}
         </Card>
-      </div>
 
-      <div>
-        <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ height: 'fit-content' }}>
-          {selectedClient ? (
-            <div className="space-y-3">
+      {selectedClient ? (
+        <Card className="p-0 bg-slate-800/80 border-slate-700 text-white" style={{ maxHeight: '300px', display: 'flex', flexDirection: 'column' }}>
+          <div className="p-3 flex-1 overflow-y-auto space-y-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <h3 className="font-semibold text-base truncate">{selectedClient.client_name}</h3>
@@ -670,19 +662,20 @@ export function ClientManagement({ role }) {
                   </div>
                 )}
               </div>
+          </div>
 
-              <div className="border-t pt-2 space-y-1">
-                <Dialog
-                  open={showEditDialog}
-                  onOpenChange={(open) => {
-                    if (isEditingClient) return;
+          <div className="p-3 flex items-center justify-end gap-2 bg-slate-800/80 border-t border-slate-700/50">
+            <Dialog
+              open={showEditDialog}
+              onOpenChange={(open) => {
+                if (isEditingClient) return;
                     setShowEditDialog(open);
                   }}
                 >
                   <DialogTrigger asChild>
                     <Button
                       size="sm"
-                      className="w-full gap-1 text-xs bg-blue-500/80 hover:bg-blue-500 text-white"
+                      className="gap-1 bg-blue-500/80 hover:bg-blue-500 text-white"
                       onClick={() => openEditDialog(selectedClient)}
                     >
                       <Edit3 className="h-3 w-3" />
@@ -755,7 +748,7 @@ export function ClientManagement({ role }) {
                     }}
                   >
                     <DialogTrigger asChild>
-                      <Button size="sm" className="w-full gap-1 text-xs !bg-red-500/80 hover:!bg-red-500 !text-white">
+                      <Button size="sm" className="gap-1 !bg-red-500/80 hover:!bg-red-500 !text-white">
                         <Power className="h-3 w-3" />
                         Deactivate
                       </Button>
@@ -820,7 +813,7 @@ export function ClientManagement({ role }) {
                     <DialogTrigger asChild>
                       <Button
                         size="sm"
-                        className="w-full gap-1 text-xs !bg-emerald-500/80 hover:!bg-emerald-500 !text-white"
+                        className="gap-1 !bg-emerald-500/80 hover:!bg-emerald-500 !text-white"
                       >
                         <Power className="h-3 w-3" />
                         Reactivate
@@ -873,20 +866,17 @@ export function ClientManagement({ role }) {
                     </DialogContent>
                   </Dialog>
                 )}
-              </div>
             </div>
-          ) : (
-            <div className="flex items-center justify-center h-full">
-              <p className="text-center text-muted-foreground text-xs">Select a client</p>
-            </div>
-          )}
         </Card>
-      </div>
+      ) : (
+        <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <p className="text-slate-400 text-xs">Select a client to view details</p>
+        </Card>
+      )}
 
       <Dialog
         open={showBulkDeleteDialog}
         onOpenChange={(open) => {
-          if (isBulkUpdating) return;
           setShowBulkDeleteDialog(open);
           if (!open) {
             setBulkDeleteConfirmText('');
