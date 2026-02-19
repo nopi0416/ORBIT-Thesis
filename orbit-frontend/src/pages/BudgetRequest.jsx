@@ -931,6 +931,10 @@ function ConfigurationList({ userRole }) {
   const logItems = configLogs || selectedConfig?.logs || selectedConfig?.logEntries || [];
   const isOwner = editConfig && String(editConfig.createdById || '') === String(user?.id || '');
   const canViewLogs = String((selectedConfig?.createdById || editConfig?.createdById) || '') === String(user?.id || '') || ['payroll', 'admin', 'super_admin'].includes(userRole);
+  const isModalConfigCreator =
+    String((selectedConfig?.createdById || editConfig?.createdById || '')).trim() !== '' &&
+    String(selectedConfig?.createdById || editConfig?.createdById || '') === String(user?.id || '');
+  const canExportHistoryAndLogs = isModalConfigCreator;
   const normalizedStatus = String(editConfig?.status || 'active').toLowerCase();
   const isExpired = normalizedStatus === 'expired';
   const hasApprovalActivity = Boolean(editConfig?.hasApprovalActivity || editConfig?.has_approval_activity);
@@ -1084,6 +1088,11 @@ function ConfigurationList({ userRole }) {
 
   const exportData = async (format) => {
     if (exportTarget === 'configurations' && isConfigExportDisabled) {
+      return;
+    }
+
+    if ((exportTarget === 'history' || exportTarget === 'logs') && !canExportHistoryAndLogs) {
+      toast.error('Only the configuration creator can export History and Logs data.');
       return;
     }
 
@@ -1887,21 +1896,23 @@ function ConfigurationList({ userRole }) {
                     </>
                   )}
                 </div>
-                <Button
-                  variant="outline"
-                  className="border-slate-600 text-white hover:bg-slate-700"
-                  onClick={() => openExportModal('history')}
-                  disabled={exportLoading}
-                >
-                  {exportLoading ? (
-                    <>
-                      <Loader className="mr-2 h-4 w-4 animate-spin" />
-                      Exporting...
-                    </>
-                  ) : (
-                    'Export Data'
-                  )}
-                </Button>
+                {canExportHistoryAndLogs && (
+                  <Button
+                    variant="outline"
+                    className="border-slate-600 text-white hover:bg-slate-700"
+                    onClick={() => openExportModal('history')}
+                    disabled={exportLoading}
+                  >
+                    {exportLoading ? (
+                      <>
+                        <Loader className="mr-2 h-4 w-4 animate-spin" />
+                        Exporting...
+                      </>
+                    ) : (
+                      'Export Data'
+                    )}
+                  </Button>
+                )}
               </div>
               {modalRange.error && (
                 <p className="text-xs text-rose-300">{modalRange.error}</p>
@@ -1997,21 +2008,23 @@ function ConfigurationList({ userRole }) {
                     </>
                   )}
                 </div>
-                <Button
-                  variant="outline"
-                  className="border-slate-600 text-white hover:bg-slate-700"
-                  onClick={() => openExportModal('logs')}
-                  disabled={exportLoading}
-                >
-                  {exportLoading ? (
-                    <>
-                      <Loader className="mr-2 h-4 w-4 animate-spin" />
-                      Exporting...
-                    </>
-                  ) : (
-                    'Export Data'
-                  )}
-                </Button>
+                {canExportHistoryAndLogs && (
+                  <Button
+                    variant="outline"
+                    className="border-slate-600 text-white hover:bg-slate-700"
+                    onClick={() => openExportModal('logs')}
+                    disabled={exportLoading}
+                  >
+                    {exportLoading ? (
+                      <>
+                        <Loader className="mr-2 h-4 w-4 animate-spin" />
+                        Exporting...
+                      </>
+                    ) : (
+                      'Export Data'
+                    )}
+                  </Button>
+                )}
               </div>
               {modalRange.error && (
                 <p className="text-xs text-rose-300">{modalRange.error}</p>
@@ -2066,6 +2079,9 @@ function ConfigurationList({ userRole }) {
             <DialogDescription className="text-gray-400">
               Choose your export format for {exportTarget === 'configurations' ? 'Configuration List' : exportTarget === 'history' ? 'Configuration History' : 'Configuration Logs'}.
             </DialogDescription>
+            {(exportTarget === 'history' || exportTarget === 'logs') && !canExportHistoryAndLogs && (
+              <p className="text-xs text-amber-300 mt-2">Only the configuration creator can export data from this tab.</p>
+            )}
           </DialogHeader>
           <div className="flex justify-end gap-2">
             <Button
@@ -2080,7 +2096,7 @@ function ConfigurationList({ userRole }) {
               variant="outline"
               className="border-blue-500 text-blue-300 hover:bg-blue-500/10"
               onClick={() => handleExport('csv')}
-              disabled={exportLoading}
+              disabled={exportLoading || ((exportTarget === 'history' || exportTarget === 'logs') && !canExportHistoryAndLogs)}
             >
               {exportLoading ? (
                 <>
@@ -2094,7 +2110,7 @@ function ConfigurationList({ userRole }) {
             <Button
               className="bg-blue-600 hover:bg-blue-700 text-white"
               onClick={() => handleExport('excel')}
-              disabled={exportLoading}
+              disabled={exportLoading || ((exportTarget === 'history' || exportTarget === 'logs') && !canExportHistoryAndLogs)}
             >
               {exportLoading ? (
                 <>

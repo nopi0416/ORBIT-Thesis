@@ -592,6 +592,63 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   }, [token, refreshKey]);
 
   useEffect(() => {
+    connectWebSocket();
+    const unsubscribe = addWebSocketListener(async (message) => {
+      if (message?.event !== 'budget_config_updated') return;
+
+      const payload = message?.payload || {};
+      const budgetId = payload.budget_id;
+      if (!budgetId) return;
+
+      if (payload.action === 'deleted') {
+        setConfigurations((prev) => prev.filter((config) => String(config.id) !== String(budgetId)));
+        setSelectedConfig((prev) => {
+          if (!prev || String(prev.id) !== String(budgetId)) return prev;
+          setShowModal(false);
+          return null;
+        });
+        return;
+      }
+
+      try {
+        const updated = await getBudgetConfigurationById(budgetId, token);
+        if (!updated) return;
+
+        const normalized = normalizeConfig(updated);
+        const isActive = String(normalized.status || '').toLowerCase() === 'active';
+        const isVisibleToUser = userRole === 'payroll'
+          ? isActive && String(normalized.createdBy || '') === String(user?.id || '')
+          : isActive;
+
+        setConfigurations((prev) => {
+          if (!isVisibleToUser) {
+            return prev.filter((config) => String(config.id) !== String(normalized.id));
+          }
+
+          const exists = prev.some((config) => String(config.id) === String(normalized.id));
+          if (!exists) return [normalized, ...prev];
+          return prev.map((config) => (String(config.id) === String(normalized.id) ? normalized : config));
+        });
+
+        setSelectedConfig((prev) => {
+          if (!prev || String(prev.id) !== String(normalized.id)) return prev;
+          if (!isVisibleToUser) {
+            setShowModal(false);
+            return null;
+          }
+          return normalized;
+        });
+      } catch (error) {
+        console.error('Realtime budget config sync failed:', error);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [token, userRole, user?.id]);
+
+  useEffect(() => {
     const fetchApprovers = async () => {
       try {
         const [l1Data, l2Data, l3Data] = await Promise.all([
@@ -4638,6 +4695,101 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
     fetchHistory();
   }, [refreshKey]);
+
+  const isUserInvolvedInRecord = useCallback(
+    (record) => {
+      const userId = user?.id;
+      if (!userId || !record) return false;
+
+      const isSubmitter =
+        String(record.submittedBy || record.submitted_by || '') === String(userId);
+
+      const isApprover = Array.isArray(record.approvals)
+        ? record.approvals.some(
+            (approval) =>
+              String(approval?.assigned_to_primary || '') === String(userId) ||
+              String(approval?.assigned_to_backup || '') === String(userId) ||
+              String(approval?.approved_by || '') === String(userId) ||
+              String(approval?.user_id || '') === String(userId) ||
+              (user?.name && String(approval?.approver_name || '') === String(user.name))
+          )
+        : false;
+
+      return isSubmitter || isApprover;
+    },
+    [user?.id, user?.name]
+  );
+
+  const applyHistoryRealtimeUpdate = useCallback(
+    async (requestId, action) => {
+      if (!requestId) return;
+
+      if (action === 'deleted') {
+        invalidateNamespace('approvalRequests');
+        invalidateNamespace('approvalRequestDetails');
+        setHistory((prev) => prev.filter((record) => String(record.id) !== String(requestId)));
+
+        if (String(detailData?.id || '') === String(requestId)) {
+          setDetailOpen(false);
+          setDetailData(null);
+          setHistoryConfigDetails(null);
+        }
+        return;
+      }
+
+      try {
+        invalidateNamespace('approvalRequests');
+        invalidateNamespace('approvalRequestDetails');
+
+        const data = await approvalRequestService.getApprovalRequest(requestId, getToken());
+        if (!data) return;
+
+        const normalized = normalizeRequest(data);
+        const involved = isUserInvolvedInRecord(normalized);
+
+        setHistory((prev) => {
+          if (!involved) {
+            return prev.filter((record) => String(record.id) !== String(requestId));
+          }
+
+          const exists = prev.some((record) => String(record.id) === String(normalized.id));
+          if (!exists) return [normalized, ...prev];
+          return prev.map((record) => (String(record.id) === String(normalized.id) ? normalized : record));
+        });
+
+        if (String(detailData?.id || '') === String(requestId)) {
+          if (!involved) {
+            setDetailOpen(false);
+            setDetailData(null);
+            setHistoryConfigDetails(null);
+            return;
+          }
+
+          setDetailData(normalized);
+          if (normalized.budgetId) {
+            const config = await getBudgetConfigurationById(normalized.budgetId, getToken());
+            setHistoryConfigDetails(config || null);
+          }
+        }
+      } catch (error) {
+        console.error('Realtime history update failed:', error);
+      }
+    },
+    [detailData?.id, isUserInvolvedInRecord]
+  );
+
+  useEffect(() => {
+    connectWebSocket();
+    const unsubscribe = addWebSocketListener((message) => {
+      if (message?.event !== 'approval_request_updated') return;
+      const payload = message?.payload || {};
+      applyHistoryRealtimeUpdate(payload.request_id, payload.action);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [applyHistoryRealtimeUpdate]);
 
   const filteredHistory = history.filter((record) => {
     // Personalization Filter: Only show records where user is involved
