@@ -437,6 +437,53 @@ export class ApprovalRequestService {
     }
   }
 
+  static async sendCompletionNotifications({ requestId, completedBy = null, completionNotes = '' }) {
+    try {
+      const context = await this.getNotificationContext(requestId);
+      const actor = completedBy ? context.profileMap.get(completedBy) : null;
+      const actorName = actor?.name || 'Payroll';
+      const actorRole = this.formatRoleLabel(actor?.role_name || 'payroll');
+      const budgetName = context.budget?.budget_name || 'Unknown Budget';
+
+      const message = `${actorName} (${actorRole}) has marked this approval request as payment completed for budget configuration ${budgetName}.`;
+
+      await this.insertNotificationRows({
+        requestId,
+        notificationType: 'completed',
+        title: 'Payment Completed',
+        message,
+        recipientIds: context.scopedRecipients,
+        profileMap: context.profileMap,
+        relatedApprovalLevel: 4,
+      });
+
+      const recipients = context.scopedRecipients
+        .map((id) => context.profileMap.get(id)?.email)
+        .filter(Boolean);
+
+      if (!recipients.length) return;
+
+      const subject = `ORBIT Payment Completed: ${context.request?.request_number || requestId}`;
+      const notesLine = completionNotes
+        ? `<p><strong>Completion Notes:</strong> ${completionNotes}</p>`
+        : '';
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #111827;">Payment Completed</h2>
+          <p>${message}</p>
+          <p><strong>Request #:</strong> ${context.request?.request_number || '—'}</p>
+          <p><strong>Amount:</strong> ${this.formatCurrency(context.request?.total_request_amount)}</p>
+          ${notesLine}
+          <p><strong>Description:</strong> ${context.request?.description || '—'}</p>
+        </div>
+      `;
+
+      await this.sendApprovalNotification({ recipients, subject, html });
+    } catch (error) {
+      console.warn('[email] Failed to send completion notifications:', error?.message || error);
+    }
+  }
+
   static computeLineItemCounts(lineItems = []) {
     const lineItemsCount = Array.isArray(lineItems) ? lineItems.length : 0;
     const deductionCount = Array.isArray(lineItems)
@@ -479,6 +526,124 @@ export class ApprovalRequestService {
     if (normalizedOverall === 'draft') return 'draft';
 
     return 'ongoing_approval';
+  }
+
+  static parseStoredList(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      try {
+        const parsed = JSON.parse(trimmed);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        return trimmed.split(',').map((item) => item.trim()).filter(Boolean);
+      }
+    }
+    return [value];
+  }
+
+  static normalizeTenureGroup(value = '') {
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/_/g, '')
+      .replace(/\+/g, 'plus')
+      .replace(/[^a-z0-9\-]/g, '');
+
+    if (!normalized) return '';
+    if (normalized.includes('0-6')) return '0-6months';
+    if (normalized.includes('6-12')) return '6-12months';
+    if (normalized.includes('1-2')) return '1-2years';
+    if (normalized.includes('2-5')) return '2-5years';
+    if (normalized.includes('5plus') || normalized.includes('5-plus')) return '5plus-years';
+    return normalized;
+  }
+
+  static getTenureGroupFromHireDate(hireDateValue) {
+    if (!hireDateValue) return null;
+    const hireDate = new Date(hireDateValue);
+    if (Number.isNaN(hireDate.getTime())) return null;
+
+    const now = new Date();
+    const months = (now.getFullYear() - hireDate.getFullYear()) * 12 + (now.getMonth() - hireDate.getMonth());
+
+    if (months < 6) return '0-6months';
+    if (months < 12) return '6-12months';
+    if (months < 24) return '1-2years';
+    if (months < 60) return '2-5years';
+    return '5plus-years';
+  }
+
+  static async validateRequestTenureScope(requestId) {
+    const { data: requestData, error: requestError } = await supabase
+      .from('tblbudgetapprovalrequests')
+      .select('request_id, budget_id')
+      .eq('request_id', requestId)
+      .maybeSingle();
+
+    if (requestError) throw requestError;
+    if (!requestData?.budget_id) {
+      return { success: false, error: 'Budget configuration is missing for this request.' };
+    }
+
+    const { data: configData, error: configError } = await supabase
+      .from('tblbudgetconfiguration')
+      .select('tenure_group')
+      .eq('budget_id', requestData.budget_id)
+      .maybeSingle();
+
+    if (configError) throw configError;
+
+    const allowedTenureGroups = Array.from(
+      new Set(
+        this.parseStoredList(configData?.tenure_group)
+          .map((item) => this.normalizeTenureGroup(item))
+          .filter(Boolean)
+      )
+    );
+
+    if (!allowedTenureGroups.length) {
+      return { success: true, valid: true };
+    }
+
+    const { data: lineItems, error: lineItemsError } = await supabase
+      .from('tblbudgetapprovalrequests_line_items')
+      .select('item_number, employee_id, hire_date')
+      .eq('request_id', requestId)
+      .order('item_number', { ascending: true });
+
+    if (lineItemsError) throw lineItemsError;
+
+    const invalidItems = (lineItems || [])
+      .map((item) => {
+        const resolvedGroup = this.getTenureGroupFromHireDate(item?.hire_date);
+        const valid = Boolean(resolvedGroup && allowedTenureGroups.includes(resolvedGroup));
+        return {
+          employeeId: item?.employee_id || `Item ${item?.item_number || 'N/A'}`,
+          resolvedGroup,
+          valid,
+          hireDate: item?.hire_date || null,
+        };
+      })
+      .filter((item) => !item.valid);
+
+    if (!invalidItems.length) {
+      return { success: true, valid: true };
+    }
+
+    const preview = invalidItems
+      .slice(0, 5)
+      .map((item) => `${item.employeeId} (${item.resolvedGroup || 'invalid/missing hire date'})`)
+      .join(', ');
+
+    return {
+      success: true,
+      valid: false,
+      error: `Tenure group validation failed. Employees out of scope: ${preview}${invalidItems.length > 5 ? '...' : ''}`,
+    };
   }
 
   /**
@@ -1180,6 +1345,20 @@ export class ApprovalRequestService {
   static async submitApprovalRequest(requestId, submittedBy) {
     try {
       console.log('[submitApprovalRequest] Starting submission for request:', requestId, 'by:', submittedBy);
+
+      const tenureValidation = await this.validateRequestTenureScope(requestId);
+      if (!tenureValidation.success) {
+        return {
+          success: false,
+          error: tenureValidation.error || 'Failed tenure group validation.',
+        };
+      }
+      if (!tenureValidation.valid) {
+        return {
+          success: false,
+          error: tenureValidation.error || 'Tenure group validation failed.',
+        };
+      }
       
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests')
@@ -1746,10 +1925,16 @@ export class ApprovalRequestService {
 
       await this.addActivityLog(
         requestId,
-        'payment_completed',
+        'completed',
         completed_by,
         'Payroll payment completed'
       );
+
+      await this.sendCompletionNotifications({
+        requestId,
+        completedBy: completed_by,
+        completionNotes: approval_notes || '',
+      });
 
       return {
         success: true,

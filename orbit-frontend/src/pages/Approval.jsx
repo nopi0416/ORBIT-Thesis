@@ -72,6 +72,69 @@ const parseStoredPaths = (value) => {
   return parsed.map((entry) => (Array.isArray(entry) ? entry : [entry]));
 };
 
+const normalizeTenureGroup = (value = '') => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/_/g, '')
+    .replace(/\+/g, 'plus')
+    .replace(/[^a-z0-9\-]/g, '');
+
+  if (!normalized) return '';
+  if (normalized.includes('0-6')) return '0-6months';
+  if (normalized.includes('6-12')) return '6-12months';
+  if (normalized.includes('1-2')) return '1-2years';
+  if (normalized.includes('2-5')) return '2-5years';
+  if (normalized.includes('5plus') || normalized.includes('5-plus')) return '5plus-years';
+  return normalized;
+};
+
+const parseTenureGroups = (value) =>
+  parseStoredList(value)
+    .map((group) => normalizeTenureGroup(group))
+    .filter(Boolean);
+
+const getTenureGroupFromHireDate = (hireDateValue) => {
+  if (!hireDateValue) return null;
+  const hireDate = new Date(hireDateValue);
+  if (Number.isNaN(hireDate.getTime())) return null;
+
+  const now = new Date();
+  const months = (now.getFullYear() - hireDate.getFullYear()) * 12 + (now.getMonth() - hireDate.getMonth());
+
+  if (months < 6) return '0-6months';
+  if (months < 12) return '6-12months';
+  if (months < 24) return '1-2years';
+  if (months < 60) return '2-5years';
+  return '5plus-years';
+};
+
+const validateTenureScope = (hireDateValue, allowedTenureGroups = []) => {
+  const normalizedAllowed = Array.from(new Set((allowedTenureGroups || []).map((value) => normalizeTenureGroup(value)).filter(Boolean)));
+  if (!normalizedAllowed.length) {
+    return { tenureAllowed: true, employeeTenureGroup: null, reason: '' };
+  }
+
+  const employeeTenureGroup = getTenureGroupFromHireDate(hireDateValue);
+  if (!employeeTenureGroup) {
+    return {
+      tenureAllowed: false,
+      employeeTenureGroup: null,
+      reason: 'Hire date is missing or invalid for tenure group validation.',
+    };
+  }
+
+  const tenureAllowed = normalizedAllowed.includes(employeeTenureGroup);
+  return {
+    tenureAllowed,
+    employeeTenureGroup,
+    reason: tenureAllowed
+      ? ''
+      : `Employee tenure '${employeeTenureGroup}' is not within allowed tenure groups (${normalizedAllowed.join(', ')}).`,
+  };
+};
+
 const normalizeLineItem = (item = {}) => {
   const rawAmount = Number(item.amount ?? item.item_amount ?? item.total_amount ?? 0);
   const rawDeduction = item.is_deduction ?? item.isDeduction ?? item.deduction ?? false;
@@ -150,6 +213,8 @@ const formatDateTimeCompact = (value) => {
   }
 };
 
+const formatCurrencyValue = (value) => `₱${Number(value || 0).toLocaleString()}`;
+
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
   createdBy: config.created_by || config.createdBy || null,
@@ -164,6 +229,12 @@ const normalizeConfig = (config) => ({
   ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
   minLimit: config.min_limit || config.limitMin || 0,
   maxLimit: config.max_limit || config.limitMax || config.maxAmount || 0,
+  clientSponsoredAmount:
+    config.client_sponsored_amount ??
+    config.clientSponsoredAmount ??
+    config.client_sponsored_budget ??
+    config.clientSponsoredBudget ??
+    0,
   clients: parseStoredList(config.client || config.clients),
   clientSponsored: config.is_client_sponsored ?? config.client_sponsored ?? config.clientSponsored ?? null,
   approvers: Array.isArray(config.approvers) ? config.approvers : [],
@@ -171,6 +242,7 @@ const normalizeConfig = (config) => ({
   status: config.status,
   geo: parseStoredList(config.geo || config.geos),
   location: parseStoredList(config.location || config.locations),
+  tenureGroups: parseTenureGroups(config.tenure_group || config.tenureGroup || config.selectedTenureGroups),
 });
 
 const computeStageStatus = (approvals = [], overallStatus = '') => {
@@ -562,34 +634,40 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }
   }, [requestMode, requestDetails, individualRequest, bulkItems, selectedConfig?.minLimit, selectedConfig?.maxLimit]);
 
-  useEffect(() => {
-    const fetchConfigs = async () => {
-      setConfigLoading(true);
-      setConfigError(null);
-      try {
-        const data = await fetchWithCache(
-          'budgetConfigs',
-          `org_${user?.org_id || 'all'}`,
-          () => getBudgetConfigurations({ org_id: user?.org_id }, token),
-          5 * 60 * 1000 // 5 minutes TTL
-        );
-        setConfigurations((data || []).map(normalizeConfig).filter(config => {
-          const isActive = String(config.status || '').toLowerCase() === 'active';
-          if (userRole === 'payroll') {
-            return isActive && config.createdBy === user.id;
-          }
-          return isActive;
-        }));
-      } catch (error) {
-        setConfigError(error.message || 'Failed to load configurations');
-        setConfigurations([]);
-      } finally {
-        setConfigLoading(false);
+  const refreshBudgetConfigs = useCallback(async (forceRefresh = false) => {
+    setConfigLoading(true);
+    setConfigError(null);
+    try {
+      if (forceRefresh) {
+        invalidateNamespace('budgetConfigs');
       }
-    };
 
-    fetchConfigs();
-  }, [token, refreshKey]);
+      const data = await fetchWithCache(
+        'budgetConfigs',
+        `org_${user?.org_id || 'all'}`,
+        () => getBudgetConfigurations({ org_id: user?.org_id }, token),
+        5 * 60 * 1000,
+        forceRefresh
+      );
+
+      setConfigurations((data || []).map(normalizeConfig).filter(config => {
+        const isActive = String(config.status || '').toLowerCase() === 'active';
+        if (userRole === 'payroll') {
+          return isActive && config.createdBy === user.id;
+        }
+        return isActive;
+      }));
+    } catch (error) {
+      setConfigError(error.message || 'Failed to load configurations');
+      setConfigurations([]);
+    } finally {
+      setConfigLoading(false);
+    }
+  }, [token, user?.org_id, user?.id, userRole]);
+
+  useEffect(() => {
+    refreshBudgetConfigs(false);
+  }, [refreshKey, refreshBudgetConfigs]);
 
   useEffect(() => {
     connectWebSocket();
@@ -834,12 +912,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       if (message?.event !== 'approval_request_updated') return;
       const payload = message?.payload || {};
       applyRequestUpdate(payload.request_id, payload.action, payload.submitted_by);
+
+      if (['submitted', 'approved', 'rejected', 'payment_completed', 'completed', 'deleted'].includes(String(payload.action || '').toLowerCase())) {
+        refreshBudgetConfigs(true);
+      }
     });
 
     return () => {
       unsubscribe();
     };
-  }, [userId, token, selectedRequest?.id]);
+  }, [userId, token, selectedRequest?.id, refreshBudgetConfigs]);
 
   const getOrgName = (orgId) => {
     const org = organizations.find((item) => item.org_id === orgId || item.id === orgId);
@@ -1006,17 +1088,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             rejectionReason = `Scope Mismatch. Employee Company Code: '${empCompanyCode}' (Allowed: ${Array.from(allowedCompanyCodes).join(', ')}). Employee Department: '${empDepartment}' (Allowed: ${Array.from(allowedDeptNames).join(', ')})`;
           }
 
-          console.log('[Strict Scope Debug]', {
-            empCompanyCode,
-            empDepartment,
-            allowedOrgsCount: allowedOrgs.length,
-            allowedCompanyCodes: Array.from(allowedCompanyCodes),
-            allowedDeptNames: Array.from(allowedDeptNames),
-            companyMatch,
-            deptMatch,
-            isScopeAllowed
-          });
-
         } else {
            // Fallback: If no specific OUs selected, check loosely against generic department field
            const rawConfigDepartments =
@@ -1040,6 +1111,26 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         if (!isScopeAllowed) {
           console.warn('[Employee Lookup] Validation Failed:', rejectionReason);
           setEmployeeLookupError('Employee is not within the selected budget scope.');
+          setIndividualRequest((prev) => ({
+            ...prev,
+            employeeName: '',
+            email: '',
+            position: '',
+            employeeStatus: '',
+            geo: '',
+            location: '',
+            department: '',
+            hireDate: '',
+            terminationDate: '',
+          }));
+          return;
+        }
+
+        const hireDateValue = data?.hire_date || data?.date_hired || data?.start_date || '';
+        const tenureValidation = validateTenureScope(hireDateValue, selectedConfig?.tenureGroups || []);
+        if (!tenureValidation.tenureAllowed) {
+          console.warn('[Employee Lookup] Tenure validation failed:', tenureValidation.reason);
+          setEmployeeLookupError(tenureValidation.reason || 'Employee hire date is not within the selected tenure group scope.');
           setIndividualRequest((prev) => ({
             ...prev,
             employeeName: '',
@@ -1098,6 +1189,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     selectedConfig?.budget_department,
     selectedConfig?.affectedOUPaths,
     selectedConfig?.affected_ou,
+    selectedConfig?.tenureGroups,
     organizations,
   ]);
 
@@ -1585,6 +1677,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         );
 
         const hasOuFilter = configOuIds.size > 0;
+        const hireDateValue = data?.hire_date || data?.date_hired || data?.start_date || '';
+        const tenureValidation = validateTenureScope(hireDateValue, selectedConfig?.tenureGroups || []);
 
         if (hasOuFilter) {
           const allowedOrgs = organizations.filter((org) =>
@@ -1606,7 +1700,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           return {
             departmentAllowed: deptMatch,
             ouAllowed: companyMatch,
-            isValid: companyMatch && deptMatch,
+            tenureAllowed: tenureValidation.tenureAllowed,
+            employeeTenureGroup: tenureValidation.employeeTenureGroup,
+            tenureReason: tenureValidation.reason,
+            isValid: companyMatch && deptMatch && tenureValidation.tenureAllowed,
             employeeDepartment,
             employeeOrgName,
           };
@@ -1618,7 +1715,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         return {
           departmentAllowed,
           ouAllowed: true,
-          isValid: departmentAllowed,
+          tenureAllowed: tenureValidation.tenureAllowed,
+          employeeTenureGroup: tenureValidation.employeeTenureGroup,
+          tenureReason: tenureValidation.reason,
+          isValid: departmentAllowed && tenureValidation.tenureAllowed,
           employeeDepartment,
           employeeOrgName,
         };
@@ -1639,14 +1739,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           const batchData = await approvalRequestService.getEmployeesBatch(employeeIds, companyId, token);
           
           // The API returns { found: [...], notFound: [...] }
-          console.log('[Bulk Upload] Batch API result:', {
-            batchNumber: Math.floor(i / batchSize) + 1,
-            requestedIds: employeeIds,
-            foundCount: batchData?.found?.length || 0,
-            notFoundCount: batchData?.notFound?.length || 0,
-            notFoundIds: batchData?.notFound || [],
-            rawResponse: batchData,
-          });
           
           if (batchData && (batchData.found || batchData.notFound !== undefined)) {
             // Create a map of employee data by EID for quick lookup
@@ -1663,14 +1755,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               if (employeeData) {
                 // Validate employee scope (same as individual validation)
                 const validation = validateEmployeeScope(employeeData);
-                
-                console.log(`[Bulk Upload] Employee ${item.employee_id} scope validation:`, {
-                  departmentAllowed: validation.departmentAllowed,
-                  ouAllowed: validation.ouAllowed,
-                  isValid: validation.isValid,
-                  employeeDepartment: validation.employeeDepartment,
-                  employeeOrgName: validation.employeeOrgName,
-                });
                 
                 return {
                   ...item,
@@ -1700,54 +1784,28 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         }
       }
 
-      // Count valid and warning rows with detailed logging
+      // Count valid and warning rows
       let validCount = 0;
       let warningCount = 0;
       let invalidCount = 0;
-
-      console.log('[Bulk Upload Validation] Starting validation of enriched items:', enrichedItems.length);
 
       enrichedItems.forEach((item, idx) => {
         const hasEmployeeData = item.employee_id && item.employeeData;
         const hasValidAmount = item.amount && item.amount > 0;
         const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
         
-        // Detailed logging for each item
-        console.log(`[Item ${idx + 1}] Employee ${item.employee_id}:`, {
-          hasEmployeeData,
-          hasValidAmount,
-          amount: item.amount,
-          scopeValidation: item.scopeValidation,
-          isInScope,
-          employeeData: item.employeeData ? 'Found' : 'Not Found',
-        });
-        
         // Valid: has employee data, valid amount, and is in scope
         if (hasEmployeeData && hasValidAmount && isInScope) {
           validCount++;
-          console.log(`[Item ${idx + 1}] ✓ VALID`);
         } 
         // Invalid: missing critical data or out of scope
         else if (!hasEmployeeData || !hasValidAmount || !isInScope) {
           invalidCount++;
-          console.log(`[Item ${idx + 1}] ✗ INVALID - Reasons:`, {
-            missingEmployee: !hasEmployeeData,
-            invalidAmount: !hasValidAmount,
-            outOfScope: !isInScope,
-          });
         }
         // Warning: has some data but incomplete
         else {
           warningCount++;
-          console.log(`[Item ${idx + 1}] ⚠ WARNING`);
         }
-      });
-
-      console.log('[Bulk Upload Validation] Summary:', {
-        total: enrichedItems.length,
-        valid: validCount,
-        warning: warningCount,
-        invalid: invalidCount,
       });
 
       // Only reject if ALL rows are completely invalid
@@ -1756,7 +1814,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         throw new Error('File contains only invalid data. At least one employee must be found with a valid amount and be in the budget scope.');
       }
 
-      console.log('[Bulk Upload Validation] File accepted with', validCount, 'valid and', warningCount, 'warning items');
       setBulkItems(enrichedItems);
     } catch (error) {
       console.error('Error parsing bulk template:', error);
@@ -1786,6 +1843,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       }
       if (!item.scopeValidation.ouAllowed) {
         errors.push('Employee OU/organization not in budget scope');
+      }
+      if (item.scopeValidation.tenureAllowed === false) {
+        errors.push(item.scopeValidation.tenureReason || 'Employee tenure group is not in budget scope');
       }
     }
     
@@ -1933,29 +1993,20 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   };
 
   const handleSubmitBulk = async () => {
-    console.log('[handleSubmitBulk] Starting submission...', {
-      bulkItemsCount: bulkItems.length,
-      selectedConfigId: selectedConfig?.id,
-      approvalDescription: bulkItems[0]?.approval_description
-    });
-    
     const commonError = validateCommon();
     if (commonError) {
-      console.log('[handleSubmitBulk] Common validation failed:', commonError);
       setConfirmLoading(false);
       setSubmitError(commonError);
       return;
     }
     
     if (bulkParseError) {
-      console.log('[handleSubmitBulk] Parse error exists:', bulkParseError);
       setConfirmLoading(false);
       setSubmitError(bulkParseError);
       return;
     }
     
     if (!bulkItems.length) {
-      console.log('[handleSubmitBulk] No bulk items');
       setConfirmLoading(false);
       setSubmitError('Upload the template with at least one line item.');
       return;
@@ -1969,12 +2020,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return hasEmployeeData && hasValidAmount && isInScope;
     });
     
-    console.log('[handleSubmitBulk] Valid items filtered:', {
-      totalItems: bulkItems.length,
-      validItemsCount: validItems.length,
-      invalidItemsCount: bulkItems.length - validItems.length
-    });
-    
     if (!validItems.length) {
       setConfirmLoading(false);
       setSubmitError('No valid items to submit. Ensure at least one employee has valid data and is in scope.');
@@ -1984,20 +2029,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     // Calculate total from valid items only
     const totalAmount = validItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
     
-    console.log('[handleSubmitBulk] Proceeding with submission:', {
-      validItemsCount: validItems.length,
-      totalAmount,
-      skippedInvalidCount: bulkItems.length - validItems.length
-    });
-
     setSubmitting(true);
     setSubmitError(null);
     setSubmitSuccess(null);
 
     try {
-      console.log('[handleSubmitBulk] Creating approval request...');
       const created = await approvalRequestService.createApprovalRequest(buildCreatePayload(totalAmount), token);
-      console.log('[handleSubmitBulk] Created response:', created);
       
       const requestId = created?.id || created?.request_id || created?.approval_request_id;
       if (!requestId) throw new Error('Approval request ID not returned.');
@@ -2023,9 +2060,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         notes: item.notes || null,
       }));
 
-      console.log('[handleSubmitBulk] Transformed line items:', lineItemsForBackend);
-      console.log('[handleSubmitBulk] Adding line items...');
-      
       await approvalRequestService.addLineItemsBulk(
         requestId,
         {
@@ -2034,9 +2068,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         token
       );
 
-      console.log('[handleSubmitBulk] Submitting request...');
       const submitResult = await approvalRequestService.submitApprovalRequest(requestId, token);
-      console.log('[handleSubmitBulk] Submit result:', submitResult);
 
       invalidateNamespace('myRequests');
       invalidateNamespace('approvalRequests');
@@ -2253,6 +2285,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   return (
     <>
       <div className="flex flex-col gap-6 h-full min-h-0">
+        {(submitting || confirmLoading) && <LoadingLine />}
         <Card className="bg-slate-800 border-slate-700 flex flex-col w-full flex-1 min-h-0 overflow-hidden">
         <CardHeader className="pb-3 border-b border-slate-700/50">
           <div className="flex items-center justify-between gap-4">
@@ -2282,7 +2315,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           ) : filteredConfigs.length === 0 ? (
             <div className="p-8 text-center text-gray-400">No active budget configurations found.</div>
           ) : (
-            <table className="w-full text-left text-sm text-gray-300">
+            <div className="overflow-x-auto">
+            <table className="min-w-[1400px] w-full text-left text-sm text-gray-300 border-collapse">
               <thead className="text-xs uppercase bg-slate-900/50 text-gray-400 sticky top-0 z-10 backdrop-blur-sm">
                 <tr>
                   <th className="px-4 py-3 font-medium">Budget Name</th>
@@ -2291,16 +2325,18 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   <th className="px-4 py-3 font-medium">Location</th>
                   <th className="px-4 py-3 font-medium">Clients</th>
                   <th className="px-4 py-3 font-medium">Departments</th>
+                  <th className="px-4 py-3 font-medium text-right">Client Sponsored Amount</th>
                   <th className="px-4 py-3 font-medium text-right">Used Amount</th>
                   <th className="px-4 py-3 font-medium text-right">Ongoing Amount</th>
                   <th className="px-4 py-3 font-medium text-right">Remaining</th>
-                  <th className="px-4 py-3 font-medium text-center">Action</th>
+                  <th className="px-4 py-3 font-medium text-center sticky right-0 z-30 bg-slate-900/95 border-l border-slate-700 whitespace-nowrap">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
                 {filteredConfigs.map((config) => {
                   const used = Number(config.approvedAmount ?? config.usedAmount ?? 0);
                   const ongoing = Number(config.ongoingAmount ?? 0);
+                    const clientSponsoredAmount = Number(config.clientSponsoredAmount ?? 0);
                   const limitValue = Number(config.totalBudget || config.budgetLimit || 0);
                   const formattedRemaining = limitValue > 0 
                       ? (limitValue - used).toLocaleString() 
@@ -2326,16 +2362,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       <td className="px-4 py-3 max-w-[200px] truncate" title={pathsText}>
                         {pathsText}
                       </td>
+                      <td className="px-4 py-3 text-right text-fuchsia-300 font-medium">
+                        {formatCurrencyValue(clientSponsoredAmount)}
+                      </td>
                       <td className="px-4 py-3 text-right text-emerald-400 font-medium">
-                        ₱{used.toLocaleString()}
+                        {formatCurrencyValue(used)}
                       </td>
                       <td className="px-4 py-3 text-right text-amber-400 font-medium">
-                        ₱{ongoing.toLocaleString()}
+                        {formatCurrencyValue(ongoing)}
                       </td>
                       <td className="px-4 py-3 text-right text-blue-400 font-medium">
                         {limitValue > 0 ? `₱${formattedRemaining}` : '∞'}
                       </td>
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-4 py-3 text-center sticky right-0 z-20 bg-slate-800 border-l border-slate-700/60 whitespace-nowrap">
                         <Button
                           size="sm"
                           className="h-8 bg-blue-600 hover:bg-blue-700 text-white"
@@ -2349,6 +2388,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -3234,6 +3274,12 @@ const LoadingOverlay = () => (
   </div>
 );
 
+const LoadingLine = () => (
+  <div className="h-1 w-full overflow-hidden rounded bg-slate-700/70">
+    <div className="h-full w-2/5 bg-gradient-to-r from-blue-500 via-cyan-400 to-blue-500 animate-pulse" />
+  </div>
+);
+
 function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHandled }) {
   const { user } = useAuth();
   const toast = useToast();
@@ -3300,7 +3346,23 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const successModalWasOpen = useRef(false);
   const [payrollCycleModalOpen, setPayrollCycleModalOpen] = useState(false);
   const [payrollCycle, setPayrollCycle] = useState('');
-  const [payrollCycleDate, setPayrollCycleDate] = useState('');
+  const [payrollCycleMonth, setPayrollCycleMonth] = useState('');
+  const payrollCycleYear = String(new Date().getFullYear());
+  const payrollCycleDate = payrollCycleMonth ? `${payrollCycleMonth} ${payrollCycleYear}` : '';
+  const payrollMonthOptions = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
   const [payrollCycleError, setPayrollCycleError] = useState(null);
   const handledFocusRequestRef = useRef(null);
 
@@ -3335,7 +3397,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         setDetailsOpen(false);
         setDecisionNotes('');
         setPayrollCycle('');
-        setPayrollCycleDate('');
+        setPayrollCycleMonth('');
         fetchApprovals();
       }
     }, 1000);
@@ -3959,6 +4021,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
   return (
     <Card className="bg-slate-800 border-slate-700 flex flex-col h-full min-h-0">
+      {(actionSubmitting || loading) && <LoadingLine />}
       <CardHeader>
         <CardTitle className="text-white">Approval Requests</CardTitle>
         <CardDescription className="text-gray-400">
@@ -4000,7 +4063,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
           <div className="text-sm text-gray-400">No approval requests found.</div>
         ) : (
           <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
-            <table className="w-full border-collapse">
+            <table className="min-w-[1400px] w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
@@ -4042,7 +4105,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
                     Submitted When
                   </th>
-                  <th className="border-b border-slate-600 px-3 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                  <th className="border-b border-slate-600 px-3 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap sticky right-0 z-30 bg-slate-700 border-l border-slate-600">
                     Actions
                   </th>
                 </tr>
@@ -4138,7 +4201,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                       <td className="px-3 py-3 text-xs text-slate-400">
                         {approval.submittedAt ? formatDatePHT(approval.submittedAt) : '—'}
                       </td>
-                      <td className="px-3 py-3 text-center">
+                      <td className="px-3 py-3 text-center sticky right-0 z-20 bg-slate-800 border-l border-slate-700 group-hover:bg-slate-700/70 transition-colors">
                         <Button
                           size="sm"
                           onClick={() => handleOpenDetails(approval)}
@@ -4445,7 +4508,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
                   {/* Payroll Cycle Selection (Visible only for Payroll during approval phase) */}
                   {userRole === 'payroll' && currentApprovalLevel === 4 && payrollApprovalStatus === 'pending' && (
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div className="space-y-2">
                         <Label className="text-white">Payroll Cycle *</Label>
                         <Select value={payrollCycle} onValueChange={setPayrollCycle}>
@@ -4459,21 +4522,26 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                         </Select>
                       </div>
                       <div className="space-y-2">
-                        <Label className="text-white">Payroll Cycle Date *</Label>
-                        <Select value={payrollCycleDate} onValueChange={setPayrollCycleDate}>
+                        <Label className="text-white">Payroll Month *</Label>
+                        <Select value={payrollCycleMonth} onValueChange={setPayrollCycleMonth}>
                           <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                            <SelectValue placeholder="Select date" />
+                            <SelectValue placeholder="Select month" />
                           </SelectTrigger>
                           <SelectContent className="bg-slate-800 border-slate-600 text-white max-h-[200px]">
-                            {/* Generate next 12 months dynamically */}
-                            {Array.from({ length: 12 }).map((_, i) => {
-                              const d = new Date();
-                              d.setMonth(d.getMonth() + i);
-                              const value = d.toLocaleString('default', { month: 'long', year: 'numeric' });
-                              return (
-                                <SelectItem key={value} value={value}>{value}</SelectItem>
-                              );
-                            })}
+                            {payrollMonthOptions.map((month) => (
+                              <SelectItem key={month} value={month}>{month}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-white">Payroll Year *</Label>
+                        <Select value={payrollCycleYear} disabled>
+                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
+                            <SelectValue placeholder="Select year" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-800 border-slate-600 text-white">
+                            <SelectItem value={payrollCycleYear}>{payrollCycleYear}</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -4558,24 +4626,30 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               </Select>
             </div>
             <div className="space-y-2">
-              <Label className="text-white">Payroll Cycle Date *</Label>
-              <Select value={payrollCycleDate} onValueChange={setPayrollCycleDate}>
+              <Label className="text-white">Payroll Month *</Label>
+              <Select value={payrollCycleMonth} onValueChange={setPayrollCycleMonth}>
                 <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
-                  <SelectValue placeholder="Select date" />
+                  <SelectValue placeholder="Select month" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-[200px]">
-                  {Array.from({ length: 12 }, (_, i) => {
-                    const date = new Date();
-                    date.setMonth(i);
-                    const monthName = date.toLocaleString('default', { month: 'long' });
-                    const year = new Date().getFullYear();
-                    const value = `${monthName} ${year}`;
-                    return (
-                      <SelectItem key={value} value={value} className="text-white">
-                        {value}
-                      </SelectItem>
-                    );
-                  })}
+                  {payrollMonthOptions.map((month) => (
+                    <SelectItem key={month} value={month} className="text-white">
+                      {month}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-white">Payroll Year *</Label>
+              <Select value={payrollCycleYear} disabled>
+                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                  <SelectValue placeholder="Select year" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700 text-white">
+                  <SelectItem value={payrollCycleYear} className="text-white">
+                    {payrollCycleYear}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -4683,7 +4757,12 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     const fetchHistory = async () => {
       setLoading(true);
       try {
-        const data = await approvalRequestService.getApprovalRequests({}, getToken());
+        const data = await fetchWithCache(
+          'approvalRequests',
+          `history_${user?.id || 'all'}`,
+          () => approvalRequestService.getApprovalRequests({}, getToken()),
+          60 * 1000
+        );
         setHistory((data || []).map(normalizeRequest));
       } catch (error) {
         toast.error(error.message || 'Failed to load history');
@@ -4694,7 +4773,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     };
 
     fetchHistory();
-  }, [refreshKey]);
+  }, [refreshKey, user?.id]);
 
   const isUserInvolvedInRecord = useCallback(
     (record) => {
@@ -4741,7 +4820,12 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
         invalidateNamespace('approvalRequests');
         invalidateNamespace('approvalRequestDetails');
 
-        const data = await approvalRequestService.getApprovalRequest(requestId, getToken());
+        const data = await fetchWithCache(
+          'approvalRequestDetails',
+          String(requestId),
+          () => approvalRequestService.getApprovalRequest(requestId, getToken()),
+          60 * 1000
+        );
         if (!data) return;
 
         const normalized = normalizeRequest(data);
@@ -4767,7 +4851,12 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
           setDetailData(normalized);
           if (normalized.budgetId) {
-            const config = await getBudgetConfigurationById(normalized.budgetId, getToken());
+            const config = await fetchWithCache(
+              'budgetConfigById',
+              String(normalized.budgetId),
+              () => getBudgetConfigurationById(normalized.budgetId, getToken()),
+              5 * 60 * 1000
+            );
             setHistoryConfigDetails(config || null);
           }
         }
@@ -4822,11 +4911,21 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     setHistoryConfigDetails(null);
 
     try {
-      const data = await approvalRequestService.getApprovalRequest(record.id, getToken());
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        String(record.id),
+        () => approvalRequestService.getApprovalRequest(record.id, getToken()),
+        60 * 1000
+      );
       setDetailData(data ? normalizeRequest(data) : null);
 
       if (data && data.budget_id) {
-        const config = await getBudgetConfigurationById(data.budget_id, getToken());
+        const config = await fetchWithCache(
+          'budgetConfigById',
+          String(data.budget_id),
+          () => getBudgetConfigurationById(data.budget_id, getToken()),
+          5 * 60 * 1000
+        );
         setHistoryConfigDetails(config || null);
       }
     } catch (error) {
@@ -5067,6 +5166,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
   return (
     <Card className="bg-slate-800 border-slate-700 flex flex-col h-full min-h-0">
+      {loading && <LoadingLine />}
       <CardHeader>
         <CardTitle className="text-white">Approval History & Logs</CardTitle>
         <CardDescription className="text-gray-400">
@@ -5099,7 +5199,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
           <div className="text-sm text-gray-400">No history records found where you are a participant.</div>
         ) : (
           <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
-            <table className="w-full border-collapse">
+            <table className="min-w-[1050px] w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
@@ -5120,7 +5220,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Requested By
                   </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider sticky right-0 z-30 bg-slate-700 border-l border-slate-600 whitespace-nowrap">
                     Action
                   </th>
                 </tr>
@@ -5148,7 +5248,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                     <td className="px-4 py-3 text-xs text-slate-300">
                       {record.submittedByName || record.submitted_by_name || record.submittedBy || record.submitted_by || '—'}
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-4 py-3 text-center sticky right-0 z-20 bg-slate-800 border-l border-slate-700 group-hover:bg-slate-700 transition-colors">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -5167,7 +5267,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
       </CardContent>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[1200px] max-h-[85vh] overflow-y-auto flex flex-col">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[98vw] md:w-[93vw] xl:w-[86vw] 2xl:w-[82vw] max-w-[1680px] max-h-[85vh] overflow-y-auto flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request History Details</DialogTitle>
             <DialogDescription className="text-gray-400">

@@ -3,6 +3,12 @@ import { BudgetConfigService } from '../services/budgetConfigService.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { broadcast } from '../realtime/websocketServer.js';
 
+const normalizeRole = (role) => String(role || '').toLowerCase();
+const isAdminUser = (req) => {
+  const role = normalizeRole(req.user?.role);
+  return req.user?.userType === 'admin' || ['admin', 'administrator', 'system admin', 'system administrator'].includes(role);
+};
+
 /**
  * Approval Request Controller
  * Handles HTTP requests for approval workflows
@@ -181,6 +187,27 @@ export class ApprovalRequestController {
         }
       }
 
+      const budgetConfigResult = await BudgetConfigService.getBudgetConfigById(budget_id);
+      if (!budgetConfigResult.success) {
+        return sendError(res, budgetConfigResult.error || 'Budget configuration not found', 404);
+      }
+
+      const userAccessResult = await BudgetConfigService.canUserAccessBudgetConfig({
+        budgetConfig: budgetConfigResult.data,
+        userId,
+        userRole: req.user?.role,
+        orgId,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!userAccessResult.success) {
+        return sendError(res, userAccessResult.error || 'Failed to validate budget configuration access', 500);
+      }
+
+      if (!userAccessResult.data) {
+        return sendError(res, 'Access denied: you are not authorized to submit requests for this budget configuration', 403);
+      }
+
       const result = await ApprovalRequestService.createApprovalRequest({
         budget_id,
         description,
@@ -307,6 +334,37 @@ export class ApprovalRequestController {
     try {
       const { id } = req.params;
       const { id: userId } = req.user;
+
+      const requestResult = await ApprovalRequestService.getApprovalRequestById(id);
+      if (!requestResult.success || !requestResult.data) {
+        return sendError(res, requestResult.error || 'Approval request not found', 404);
+      }
+
+      const budgetId = requestResult.data?.budget_id;
+      if (!budgetId) {
+        return sendError(res, 'Budget configuration is missing for this request', 400);
+      }
+
+      const budgetConfigResult = await BudgetConfigService.getBudgetConfigById(budgetId);
+      if (!budgetConfigResult.success) {
+        return sendError(res, budgetConfigResult.error || 'Budget configuration not found', 404);
+      }
+
+      const userAccessResult = await BudgetConfigService.canUserAccessBudgetConfig({
+        budgetConfig: budgetConfigResult.data,
+        userId,
+        userRole: req.user?.role,
+        orgId: req.user?.org_id || null,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!userAccessResult.success) {
+        return sendError(res, userAccessResult.error || 'Failed to validate budget configuration access', 500);
+      }
+
+      if (!userAccessResult.data) {
+        return sendError(res, 'Access denied: you are not authorized to submit this request', 403);
+      }
 
       const result = await ApprovalRequestService.submitApprovalRequest(id, userId);
 

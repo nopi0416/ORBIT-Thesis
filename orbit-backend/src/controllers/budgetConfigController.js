@@ -157,6 +157,9 @@ export class BudgetConfigController {
         client: req.query.client,
         status: req.query.status,
         ...(restrictByOrg ? { org_id: orgId } : {}),
+        user_id: req.user?.id || null,
+        user_role: req.user?.role || null,
+        is_admin: isAdminUser(req),
       };
 
       const result = await BudgetConfigService.getAllBudgetConfigs(filters);
@@ -188,6 +191,22 @@ export class BudgetConfigController {
 
       if (!result.success) {
         return sendError(res, result.error || 'Budget configuration not found', 404);
+      }
+
+      const accessResult = await BudgetConfigService.canUserAccessBudgetConfig({
+        budgetConfig: result.data,
+        userId: req.user?.id,
+        userRole: req.user?.role,
+        orgId: req.user?.org_id,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!accessResult.success) {
+        return sendError(res, accessResult.error || 'Failed to validate budget configuration access', 500);
+      }
+
+      if (!accessResult.data) {
+        return sendError(res, 'Access denied for this budget configuration', 403);
       }
 
       sendSuccess(res, result.data, 'Budget configuration retrieved successfully');

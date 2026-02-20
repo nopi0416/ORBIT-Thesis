@@ -19,8 +19,6 @@ const parseResponse = async (response) => {
     throw new Error(`Failed to parse server response: ${response.statusText}`);
   }
   
-  console.log('[parseResponse] Response status:', response.status, 'Data:', data);
-  
   if (!response.ok) {
     const errorMessage = data.error || data.message || `Request failed with status ${response.status}`;
     console.error('[parseResponse] Request failed:', errorMessage, 'Full data:', data);
@@ -100,13 +98,11 @@ const completePayrollPayment = async (requestId, payload, token) => {
 
 const createApprovalRequest = async (payload, token) => {
   try {
-    console.log('[createApprovalRequest] Sending request with payload:', payload);
     const response = await fetch(`${API_BASE_URL}/approval-requests`, {
       method: 'POST',
       headers: getHeaders(token),
       body: JSON.stringify(payload),
     });
-    console.log('[createApprovalRequest] Response received:', response.status);
     return parseResponse(response);
   } catch (error) {
     console.error('[createApprovalRequest] Network or parsing error:', error);
@@ -116,12 +112,10 @@ const createApprovalRequest = async (payload, token) => {
 
 const submitApprovalRequest = async (requestId, token) => {
   try {
-    console.log('[submitApprovalRequest] Submitting request:', requestId);
     const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/submit`, {
       method: 'POST',
       headers: getHeaders(token),
     });
-    console.log('[submitApprovalRequest] Response received:', response.status);
     return parseResponse(response);
   } catch (error) {
     console.error('[submitApprovalRequest] Network or parsing error:', error);
@@ -155,13 +149,11 @@ const addLineItem = async (requestId, payload, token) => {
 
 const addLineItemsBulk = async (requestId, payload, token) => {
   try {
-    console.log('[addLineItemsBulk] Adding line items to request:', requestId, 'Count:', payload?.line_items?.length);
     const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/line-items/bulk`, {
       method: 'POST',
       headers: getHeaders(token),
       body: JSON.stringify(payload),
     });
-    console.log('[addLineItemsBulk] Response received:', response.status);
     return parseResponse(response);
   } catch (error) {
     console.error('[addLineItemsBulk] Network or parsing error:', error);

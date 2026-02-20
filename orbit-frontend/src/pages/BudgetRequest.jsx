@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -55,7 +55,7 @@ const getReadableErrorMessage = (error, fallback = 'Failed to save changes.') =>
 };
 
 const sanitizeSingleLine = (value = "") =>
-  sanitizeTextInput(value).replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trimStart();
+  sanitizeTextInput(value).replace(/[\r\n]+/g, " ");
 
 const blockShortcuts = (event) => {
   const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
@@ -284,6 +284,7 @@ function ConfigurationList({ userRole }) {
   const [exportLoading, setExportLoading] = useState(false);
   const [editSuccessModalOpen, setEditSuccessModalOpen] = useState(false);
   const [editSuccessCountdown, setEditSuccessCountdown] = useState(5);
+  const lastConfigFetchRef = useRef(0);
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
@@ -291,10 +292,7 @@ function ConfigurationList({ userRole }) {
     if (!approverId) return null;
     if (!Array.isArray(approversList) || approversList.length === 0) return null;
     const approver = approversList.find(a => a.user_id === approverId);
-    if (!approver) {
-      console.log('Approver not found:', approverId, 'in list:', approversList);
-      return null;
-    }
+    if (!approver) return null;
     const fullName = `${approver.first_name || ''} ${approver.last_name || ''}`.trim();
     return fullName || null;
   };
@@ -324,16 +322,6 @@ function ConfigurationList({ userRole }) {
     const backupApproverL2Name = l2Approver?.backup_approver_name || null;
     const approverL3Name = l3Approver?.approver_name || null;
     const backupApproverL3Name = l3Approver?.backup_approver_name || null;
-
-    console.log('Transform config:', config.budget_name || config.name, {
-      approverL1Id,
-      approverL1Name,
-      approverL2Id,
-      approverL2Name,
-      approverL3Id,
-      approverL3Name,
-      approversArray: approversArray.length
-    });
 
     const resolvedCreatedById = config.created_by || config.createdBy || null;
     const resolvedCreatedByName =
@@ -373,6 +361,7 @@ function ConfigurationList({ userRole }) {
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
+      selectedTenureGroups: parseStoredList(config.tenure_group || config.selectedTenureGroups || config.tenureGroup),
       history: config.history || config.history_entries || config.historyEntries || [],
       logs: config.logs || config.logEntries || config.configuration_logs || config.log_entries || [],
       approvers: approversArray,
@@ -403,9 +392,9 @@ function ConfigurationList({ userRole }) {
     return nameMatch ? nameMatch.user_id : value;
   };
 
-  const fetchConfigurations = useCallback(async (forceRefresh = false) => {
+  const fetchConfigurations = useCallback(async (forceRefresh = false, showLoader = true) => {
     if (!user) return;
-    setLoading(true);
+    if (showLoader) setLoading(true);
     try {
       const token = user?.token || localStorage.getItem("authToken") || "";
       if (forceRefresh) {
@@ -418,33 +407,32 @@ function ConfigurationList({ userRole }) {
         5 * 60 * 1000 // 5 minutes TTL
       );
       setConfigurations((data || []).map(transformConfig));
+      lastConfigFetchRef.current = Date.now();
     } catch (err) {
       console.error("Error fetching configurations:", err);
       toast.error(err.message || "Failed to load configurations");
       setConfigurations([]);
     } finally {
-      setLoading(false);
+      if (showLoader) setLoading(false);
     }
   }, [user, transformConfig]);
 
   useEffect(() => {
     // Initial fetch
-    fetchConfigurations();
+    fetchConfigurations(false, true);
     
     // Auto-refresh when tab/window regains focus to update ongoing amounts
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        fetchConfigurations(true);
+      const now = Date.now();
+      const isStale = now - (lastConfigFetchRef.current || 0) > 60 * 1000;
+      if (document.visibilityState === 'visible' && isStale) {
+        fetchConfigurations(true, false);
       }
     };
     document.addEventListener("visibilitychange", handleVisibility);
-    
-    // Auto-refresh on mount if data might be stale effectively
-    const timer = setTimeout(() => fetchConfigurations(true), 500);
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
-      clearTimeout(timer);
     };
   }, [fetchConfigurations]);
 
@@ -500,18 +488,9 @@ function ConfigurationList({ userRole }) {
 
   // Re-transform configurations when approver data loads to populate names
   useEffect(() => {
-    console.log('Approver data effect:', {
-      loading: approvalsLoading,
-      configCount: configurations.length,
-      l1Count: approvalsL1.length,
-      l2Count: approvalsL2.length,
-      l3Count: approvalsL3.length
-    });
-
     if (approvalsLoading) return;
     if (configurations.length === 0) return;
 
-    console.log('Re-transforming configurations with approver names');
     setConfigurations(prev => {
       const rawConfigs = prev.map(config => ({
         // Get raw config data (revert to original structure for re-transform)
@@ -528,6 +507,10 @@ function ConfigurationList({ userRole }) {
         budget_limit: config.budgetLimit,
         pay_cycle: config.payCycle,
         currency: config.currency,
+        approved_amount: config.approvedAmount,
+        ongoing_amount: config.ongoingAmount,
+        client_sponsored_amount: config.clientSponsoredAmount,
+        has_approval_activity: config.hasApprovalActivity,
         geo: config.geo,
         location: config.location,
         client: config.clients,
@@ -541,6 +524,14 @@ function ConfigurationList({ userRole }) {
   useEffect(() => {
     connectWebSocket();
     const unsubscribe = addWebSocketListener(async (message) => {
+      if (message?.event === "approval_request_updated") {
+        const action = String(message?.payload?.action || '').toLowerCase();
+        if (["submitted", "approved", "rejected", "payment_completed", "completed", "deleted"].includes(action)) {
+          fetchConfigurations(true, false);
+        }
+        return;
+      }
+
       if (message?.event !== "budget_config_updated") return;
       const payload = message?.payload || {};
       const budgetId = payload.budget_id;
@@ -576,7 +567,7 @@ function ConfigurationList({ userRole }) {
     return () => {
       unsubscribe();
     };
-  }, [token, selectedConfig?.id]);
+  }, [token, selectedConfig?.id, fetchConfigurations]);
 
   useEffect(() => {
     if (!detailsOpen || !selectedConfig?.id) return;
@@ -675,6 +666,9 @@ function ConfigurationList({ userRole }) {
       payCycle: "SEMI_MONTHLY",
       budgetControlEnabled: Boolean(selectedConfig.budgetControlEnabled),
       budgetControlLimit: selectedConfig.budgetLimit || "",
+      selectedTenureGroups: Array.isArray(selectedConfig.selectedTenureGroups)
+        ? selectedConfig.selectedTenureGroups
+        : [],
       approverL1: extractApproverId(selectedConfig.approverL1),
       backupApproverL1: extractApproverId(selectedConfig.backupApproverL1),
       approverL2: extractApproverId(selectedConfig.approverL2),
@@ -762,8 +756,8 @@ function ConfigurationList({ userRole }) {
       return;
     }
 
-    const name = String(editConfig.name || '').trim();
-    const description = String(editConfig.description || '').trim();
+    const name = sanitizeSingleLine(String(editConfig.name || '')).trim();
+    const description = sanitizeSingleLine(String(editConfig.description || '')).trim();
     const minLimit = Number(editConfig.limitMin);
     const maxLimit = Number(editConfig.limitMax);
     const budgetLimit = editConfig.budgetControlEnabled ? Number(editConfig.budgetControlLimit) : null;
@@ -804,6 +798,10 @@ function ConfigurationList({ userRole }) {
       toast.error('L3 primary and backup approvers cannot be the same.');
       return;
     }
+    if (!Array.isArray(editConfig.selectedTenureGroups) || editConfig.selectedTenureGroups.length === 0) {
+      toast.error('At least one tenure group is required.');
+      return;
+    }
 
     if (!hasEditChanges) {
       toast.error('No changes to save.');
@@ -824,6 +822,7 @@ function ConfigurationList({ userRole }) {
         pay_cycle: 'SEMI_MONTHLY',
         budget_control: Boolean(editConfig.budgetControlEnabled),
         budget_limit: editConfig.budgetControlEnabled ? budgetLimit : null,
+        tenure_group: editConfig.selectedTenureGroups || [],
         status: editConfig.status || 'active',
       };
 
@@ -975,6 +974,14 @@ function ConfigurationList({ userRole }) {
     return fallback;
   };
 
+  const sanitizeLogAction = (value) => {
+    const clean = sanitizeSingleLine(String(value || ''))
+      .replace(/_/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return clean.slice(0, 80);
+  };
+
   const mapHistoryStatus = (item = {}) => {
     const raw = String(
       item.approval_stage_status ||
@@ -1070,7 +1077,7 @@ function ConfigurationList({ userRole }) {
 
     return filteredLogItems.map((item) => ({
       created_at: emptyValue(getLogValue(item, ['created_at', 'timestamp', 'createdAt', 'date'], '')),
-      action_type: emptyValue(getLogValue(item, ['action_type', 'action', 'event', 'type'], '')),
+      action_type: emptyValue(sanitizeLogAction(getLogValue(item, ['action_type', 'action', 'event', 'type'], ''))),
       description: emptyValue(getLogValue(item, ['description', 'details', 'message', 'note'], '')),
       performed_by: emptyValue(getLogValue(item, ['performed_by_name', 'performedByName', 'created_by_name', 'createdByName', 'performed_by', 'created_by'], '')),
     }));
@@ -1169,6 +1176,7 @@ function ConfigurationList({ userRole }) {
       limitMax: String(editConfig.limitMax ?? ''),
       budgetControlEnabled: Boolean(editConfig.budgetControlEnabled),
       budgetControlLimit: editConfig.budgetControlEnabled ? String(editConfig.budgetControlLimit ?? '') : '',
+      selectedTenureGroups: JSON.stringify([...(editConfig.selectedTenureGroups || [])].sort()),
       approverL1: String(editConfig.approverL1 || ''),
       backupApproverL1: String(editConfig.backupApproverL1 || ''),
       approverL2: String(editConfig.approverL2 || ''),
@@ -1187,6 +1195,7 @@ function ConfigurationList({ userRole }) {
       limitMax: String(selectedConfig.limitMax ?? ''),
       budgetControlEnabled: Boolean(selectedConfig.budgetControlEnabled),
       budgetControlLimit: selectedConfig.budgetControlEnabled ? String(selectedConfig.budgetLimit ?? '') : '',
+      selectedTenureGroups: JSON.stringify([...(selectedConfig.selectedTenureGroups || [])].sort()),
       approverL1: String(getApproverIdValue(selectedConfig.approverL1) || ''),
       backupApproverL1: String(getApproverIdValue(selectedConfig.backupApproverL1) || ''),
       approverL2: String(getApproverIdValue(selectedConfig.approverL2) || ''),
@@ -1421,7 +1430,7 @@ function ConfigurationList({ userRole }) {
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       L3 Approver
                     </th>
-                    <th className="px-2 py-2 min-w-[70px] sticky right-0 z-20 bg-slate-700">Actions</th>
+                    <th className="px-2 py-2 min-w-[90px] sticky right-0 z-30 bg-slate-700 border-l border-slate-600 whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1519,7 +1528,7 @@ function ConfigurationList({ userRole }) {
                           )}
                         </div>
                       </td>
-                      <td className="px-2 py-2 sticky right-0 z-10 bg-slate-800">
+                      <td className="px-2 py-2 sticky right-0 z-20 bg-slate-800 border-l border-slate-700 whitespace-nowrap hover:bg-slate-700/80 transition-colors">
                         <Button
                           onClick={() => {
                             setSelectedConfig(config);
@@ -1542,7 +1551,7 @@ function ConfigurationList({ userRole }) {
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent
-          className="bg-slate-800 border-slate-600 text-white w-[99vw] sm:w-[97vw] md:w-[96vw] lg:w-[94vw] xl:w-[92vw] 2xl:w-[90vw] max-w-[1800px] max-h-[82vh] overflow-y-auto"
+          className="bg-slate-800 border-slate-600 text-white !w-[99vw] sm:!w-[97vw] md:!w-[96vw] lg:!w-[94vw] xl:!w-[92vw] 2xl:!w-[90vw] !max-w-[1800px] max-h-[82vh] overflow-y-auto"
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
           <DialogHeader>
@@ -1722,6 +1731,36 @@ function ConfigurationList({ userRole }) {
                       className="w-full rounded-md bg-slate-700 border border-gray-300 px-3 py-2 text-white resize-none"
                       disabled={!isOwner}
                     />
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label className="text-white">Tenure Group</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
+                        <div key={value} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`edit-${value}`}
+                            checked={(editConfig.selectedTenureGroups || []).includes(value)}
+                            className="border-blue-400 bg-slate-600"
+                            disabled={!isOwner}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                handleEditChange("selectedTenureGroups", [...(editConfig.selectedTenureGroups || []), value]);
+                              } else {
+                                handleEditChange("selectedTenureGroups", (editConfig.selectedTenureGroups || []).filter((t) => t !== value));
+                              }
+                            }}
+                          />
+                          <Label htmlFor={`edit-${value}`} className="cursor-pointer text-white text-sm font-medium">
+                            {value === "0-6months" && "0-6 Months"}
+                            {value === "6-12months" && "6-12 Months"}
+                            {value === "1-2years" && "1-2 Years"}
+                            {value === "2-5years" && "2-5 Years"}
+                            {value === "5plus-years" && "5+ Years"}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -2053,7 +2092,7 @@ function ConfigurationList({ userRole }) {
                             {formatDateTimeCompact(getLogValue(item, ['timestamp', 'created_at', 'createdAt', 'date'], ''))}
                           </td>
                           <td className="px-3 py-2 text-xs text-slate-200">
-                            {getLogValue(item, ['action_type', 'action', 'event', 'type'], '')}
+                            {sanitizeLogAction(getLogValue(item, ['action_type', 'action', 'event', 'type'], ''))}
                           </td>
                           <td className="px-3 py-2 text-xs text-slate-300">
                             {getLogValue(item, ['description', 'details', 'message', 'note'], '')}
@@ -2648,10 +2687,10 @@ function CreateConfiguration() {
 
     try {
       const configData = {
-        budgetName: formData.budgetName,
+        budgetName: sanitizeSingleLine(formData.budgetName || "").trim(),
         startDate: formData.startDate || null,
         endDate: formData.endDate || null,
-        description: formData.description || "",
+        description: sanitizeSingleLine(formData.description || "").trim(),
         minLimit: formData.limitMin ? parseFloat(formData.limitMin) : 0,
         maxLimit: formData.limitMax ? parseFloat(formData.limitMax) : 0,
         currency: formData.currency || null,

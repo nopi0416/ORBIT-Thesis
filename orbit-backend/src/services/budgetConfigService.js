@@ -42,6 +42,12 @@ const containsOrgId = (value, orgId) => {
   });
 };
 
+const normalizeRole = (role) => String(role || '').trim().toLowerCase();
+
+const isRequestorRole = (role) => normalizeRole(role).includes('requestor');
+const isPayrollRole = (role) => normalizeRole(role).includes('payroll');
+const isAdminRole = (role) => normalizeRole(role).includes('admin');
+
 const logBudgetConfigAction = async ({
   budgetId,
   actionType,
@@ -78,6 +84,99 @@ const logBudgetConfigAction = async ({
  */
 
 export class BudgetConfigService {
+  static async getApproverBudgetIdsByUser(userId, budgetIds = []) {
+    if (!userId) return new Set();
+
+    let query = supabase
+      .from('tblbudgetconfig_approvers')
+      .select('budget_id')
+      .or(`primary_approver.eq.${userId},backup_approver.eq.${userId}`);
+
+    const uniqueBudgetIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
+    if (uniqueBudgetIds.length) {
+      query = query.in('budget_id', uniqueBudgetIds);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return new Set((data || []).map((row) => row.budget_id).filter(Boolean));
+  }
+
+  static async getOrganizationAncestryIds(orgId) {
+    if (!orgId) return [];
+
+    const { data, error } = await supabase
+      .from('tblorganizations')
+      .select('org_id, parent_org_id, parent_id');
+
+    if (error) throw error;
+
+    const orgMap = new Map((data || []).map((row) => [row.org_id, row]));
+    const ancestry = [];
+    const visited = new Set();
+    let current = orgId;
+
+    while (current && !visited.has(current)) {
+      ancestry.push(current);
+      visited.add(current);
+      const row = orgMap.get(current);
+      current = row?.parent_org_id || row?.parent_id || null;
+    }
+
+    return ancestry;
+  }
+
+  static canUserViewBudgetConfig(config, context = {}) {
+    const {
+      userId,
+      userRole,
+      orgAncestryIds = [],
+      approverBudgetIds = new Set(),
+      isAdmin = false,
+    } = context;
+
+    if (!config) return false;
+    if (isAdmin || isAdminRole(userRole)) return true;
+
+    const budgetId = config.budget_id || config.id;
+    const createdBy = config.created_by || config.createdBy || null;
+
+    if (userId && String(createdBy || '') === String(userId)) return true;
+    if (budgetId && approverBudgetIds?.has?.(budgetId)) return true;
+    if (isPayrollRole(userRole)) return true;
+
+    if (isRequestorRole(userRole)) {
+      if (!orgAncestryIds.length) return false;
+      return orgAncestryIds.some((orgId) => containsOrgId(config.access_ou, orgId));
+    }
+
+    return false;
+  }
+
+  static async canUserAccessBudgetConfig({ budgetConfig, userId, userRole, orgId, isAdmin = false }) {
+    try {
+      const budgetId = budgetConfig?.budget_id || budgetConfig?.id;
+      const [orgAncestryIds, approverBudgetIds] = await Promise.all([
+        this.getOrganizationAncestryIds(orgId),
+        this.getApproverBudgetIdsByUser(userId, budgetId ? [budgetId] : []),
+      ]);
+
+      const allowed = this.canUserViewBudgetConfig(budgetConfig, {
+        userId,
+        userRole,
+        orgAncestryIds,
+        approverBudgetIds,
+        isAdmin,
+      });
+
+      return { success: true, data: allowed };
+    } catch (error) {
+      console.error('Error checking user budget access:', error);
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
   static async getUserNameMap(userIds = []) {
     const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
     if (!uniqueIds.length) return new Map();
@@ -133,7 +232,7 @@ export class BudgetConfigService {
 
     const { data, error } = await supabase
       .from('tblbudgetapprovalrequests')
-      .select('budget_id, total_request_amount, overall_status')
+      .select('budget_id, total_request_amount, overall_status, is_client_sponsored')
       .in('budget_id', uniqueIds);
 
     if (error) throw error;
@@ -143,11 +242,18 @@ export class BudgetConfigService {
       const key = row.budget_id;
       const status = String(row.overall_status || '').toLowerCase();
       const amount = Number(row.total_request_amount || 0);
-      const current = totals.get(key) || { approvedAmount: 0, ongoingAmount: 0 };
+      const isClientSponsored = Boolean(row.is_client_sponsored);
+      const current = totals.get(key) || { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
 
-      if (status === 'approved' || status === 'completed') {
+      const isDiscardedStatus = status === 'rejected' || status === 'draft';
+      const isApprovedOrCompleted = status === 'approved' || status === 'completed';
+
+      if (!isDiscardedStatus && isClientSponsored) {
+        // Client-sponsored requests should be tracked separately and must never consume budget.
+        current.clientSponsoredAmount += amount;
+      } else if (isApprovedOrCompleted) {
         current.approvedAmount += amount;
-      } else if (status !== 'rejected' && status !== 'draft') {
+      } else if (!isDiscardedStatus) {
         current.ongoingAmount += amount;
       }
 
@@ -348,7 +454,7 @@ export class BudgetConfigService {
       if (error) throw error;
 
       let filteredByOrg = data || [];
-      if (filters.org_id) {
+      if (filters.org_id && !filters.user_id) {
         const subtreeResult = await this.getOrganizationSubtreeIds(filters.org_id);
         const allowedOrgIds = new Set(subtreeResult.data || [filters.org_id]);
         filteredByOrg = (data || []).filter((row) => {
@@ -358,10 +464,35 @@ export class BudgetConfigService {
         });
       }
 
+      let visibilityFiltered = filteredByOrg;
+      if (filters.user_id) {
+        let orgAncestryIds = [];
+        let approverBudgetIds = new Set();
+
+        try {
+          [orgAncestryIds, approverBudgetIds] = await Promise.all([
+            this.getOrganizationAncestryIds(filters.org_id),
+            this.getApproverBudgetIdsByUser(filters.user_id, (filteredByOrg || []).map((row) => row.budget_id)),
+          ]);
+        } catch (visibilityError) {
+          console.warn('[getAllBudgetConfigs] Visibility context lookup failed:', visibilityError?.message || visibilityError);
+        }
+
+        visibilityFiltered = (filteredByOrg || []).filter((row) =>
+          this.canUserViewBudgetConfig(row, {
+            userId: filters.user_id,
+            userRole: filters.user_role,
+            orgAncestryIds,
+            approverBudgetIds,
+            isAdmin: Boolean(filters.is_admin),
+          })
+        );
+      }
+
       let approvalAmounts = new Map();
       try {
         approvalAmounts = await this.getBudgetApprovalAmounts(
-          (filteredByOrg || []).map((row) => row.budget_id)
+          (visibilityFiltered || []).map((row) => row.budget_id)
         );
       } catch (amountError) {
         console.warn('[getAllBudgetConfigs] Failed to compute approval amounts:', amountError?.message || amountError);
@@ -369,7 +500,7 @@ export class BudgetConfigService {
 
       let decisionMap = new Map();
       try {
-        decisionMap = await this.getBudgetDecisionMap((filteredByOrg || []).map((row) => row.budget_id));
+        decisionMap = await this.getBudgetDecisionMap((visibilityFiltered || []).map((row) => row.budget_id));
       } catch (decisionError) {
         console.warn('[getAllBudgetConfigs] Failed to compute approval decisions:', decisionError?.message || decisionError);
       }
@@ -377,7 +508,7 @@ export class BudgetConfigService {
       // Fetch related data for each config
       let userNameMap = new Map();
       let userRoleMap = new Map();
-      const creatorIds = (filteredByOrg || []).map((row) => row.created_by);
+      const creatorIds = (visibilityFiltered || []).map((row) => row.created_by);
       try {
         [userNameMap, userRoleMap] = await Promise.all([
           this.getUserNameMap(creatorIds),
@@ -388,14 +519,14 @@ export class BudgetConfigService {
       }
 
       const configsWithRelations = await Promise.all(
-        filteredByOrg.map(async (config) => {
+        visibilityFiltered.map(async (config) => {
           const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
           ]);
           const creatorName = userNameMap.get(config.created_by);
           const creatorRole = userRoleMap.get(config.created_by);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
-          const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0 };
+          const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
           const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
 
           const computedStatus = BudgetConfigService.computeConfigStatus(config);
@@ -409,6 +540,7 @@ export class BudgetConfigService {
             created_by_role: creatorRole || null,
             approved_amount: totals.approvedAmount,
             ongoing_amount: totals.ongoingAmount,
+            client_sponsored_amount: totals.clientSponsoredAmount,
             has_approval_activity: hasApprovalActivity,
           };
         })
@@ -450,7 +582,7 @@ export class BudgetConfigService {
         this.getApproversByBudgetId(budgetId),
       ]);
 
-      let approvalTotals = { approvedAmount: 0, ongoingAmount: 0 };
+      let approvalTotals = { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
       try {
         const totalsMap = await this.getBudgetApprovalAmounts([budgetId]);
         approvalTotals = totalsMap.get(budgetId) || approvalTotals;
@@ -485,6 +617,7 @@ export class BudgetConfigService {
           created_by_name: creatorDetails?.name || data.created_by,
           approved_amount: approvalTotals.approvedAmount,
           ongoing_amount: approvalTotals.ongoingAmount,
+          client_sponsored_amount: approvalTotals.clientSponsoredAmount,
           has_approval_activity: hasApprovalActivity,
         },
       };
