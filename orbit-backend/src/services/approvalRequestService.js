@@ -1040,6 +1040,8 @@ export class ApprovalRequestService {
    */
   static async getAllApprovalRequests(filters = {}) {
     try {
+      const page = Math.max(parseInt(filters.page, 10) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(filters.limit, 10) || 10, 1), 100);
       let query = supabase
         .from('tblbudgetapprovalrequests')
         .select('*');
@@ -1097,18 +1099,36 @@ export class ApprovalRequestService {
       const approvalsMap = new Map();
 
       if (requestIds.length > 0) {
-        const { data: lineItemRows, error: lineItemError } = await supabase
-          .from('tblbudgetapprovalrequests_line_items')
-          .select('request_id, is_deduction')
-          .in('request_id', requestIds);
+        const countPairs = await Promise.all(
+          requestIds.map(async (requestId) => {
+            const [{ count: lineItemsCount, error: lineItemsCountError }, { count: deductionCount, error: deductionCountError }] =
+              await Promise.all([
+                supabase
+                  .from('tblbudgetapprovalrequests_line_items')
+                  .select('*', { count: 'exact', head: true })
+                  .eq('request_id', requestId),
+                supabase
+                  .from('tblbudgetapprovalrequests_line_items')
+                  .select('*', { count: 'exact', head: true })
+                  .eq('request_id', requestId)
+                  .eq('is_deduction', true),
+              ]);
 
-        if (lineItemError) throw lineItemError;
+            if (lineItemsCountError) throw lineItemsCountError;
+            if (deductionCountError) throw deductionCountError;
 
-        (lineItemRows || []).forEach((row) => {
-          const current = countsMap.get(row.request_id) || { line_items_count: 0, deduction_count: 0 };
-          current.line_items_count += 1;
-          if (row.is_deduction) current.deduction_count += 1;
-          countsMap.set(row.request_id, current);
+            return [
+              requestId,
+              {
+                line_items_count: Number(lineItemsCount || 0),
+                deduction_count: Number(deductionCount || 0),
+              },
+            ];
+          })
+        );
+
+        countPairs.forEach(([requestId, counts]) => {
+          countsMap.set(requestId, counts);
         });
 
         const { data: approvalRows, error: approvalError } = await supabase
@@ -1135,8 +1155,25 @@ export class ApprovalRequestService {
       }
 
       const normalizedData = (data || []).map((request) => {
-        const counts = countsMap.get(request.request_id) || { line_items_count: 0, deduction_count: 0 };
+        const storedLineItemsCount = Number(request?.line_items_count ?? request?.employee_count);
+        const storedDeductionCount = Number(request?.deduction_count);
+        const storedToBePaidCount = Number(request?.to_be_paid_count);
+        const hasStoredCounts = Number.isFinite(storedLineItemsCount) && storedLineItemsCount >= 0;
+
+        const computedCounts = countsMap.get(request.request_id) || { line_items_count: 0, deduction_count: 0 };
+        const counts = {
+          line_items_count: hasStoredCounts ? Math.floor(storedLineItemsCount) : computedCounts.line_items_count,
+          deduction_count:
+            Number.isFinite(storedDeductionCount) && storedDeductionCount >= 0
+              ? Math.floor(storedDeductionCount)
+              : computedCounts.deduction_count,
+        };
+
         const toBePaidCount = Math.max(0, counts.line_items_count - counts.deduction_count);
+        const resolvedToBePaidCount =
+          Number.isFinite(storedToBePaidCount) && storedToBePaidCount >= 0
+            ? Math.floor(storedToBePaidCount)
+            : toBePaidCount;
         const approvalsForRequest = approvalsMap.get(request.request_id) || [];
         const approvalStageStatus = this.computeApprovalStageStatus(approvalsForRequest, request?.overall_status);
         const submitterId = request?.submitted_by || request?.created_by;
@@ -1149,7 +1186,7 @@ export class ApprovalRequestService {
           budget_description: budgetConfigMap[request.budget_id]?.budget_description || null,
           line_items_count: counts.line_items_count,
           deduction_count: counts.deduction_count,
-          to_be_paid_count: toBePaidCount,
+          to_be_paid_count: resolvedToBePaidCount,
           approval_stage_status: approvalStageStatus,
           approvals: approvalsForRequest,
           submitted_by_name: submitterDetails?.name || request?.submitted_by,
@@ -1166,9 +1203,25 @@ export class ApprovalRequestService {
           )
         : normalizedData;
 
+      const totalItems = filteredByStage.length;
+      const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+      const safePage = Math.min(page, totalPages);
+      const offset = (safePage - 1) * limit;
+      const pagedItems = filteredByStage.slice(offset, offset + limit);
+
       return {
         success: true,
-        data: filteredByStage,
+        data: {
+          items: pagedItems,
+          pagination: {
+            page: safePage,
+            limit,
+            totalItems,
+            totalPages,
+            hasPrev: safePage > 1,
+            hasNext: safePage < totalPages,
+          },
+        },
       };
     } catch (error) {
       console.error('Error fetching approval requests:', error);
@@ -1356,6 +1409,9 @@ export class ApprovalRequestService {
         submission_status,
         attachment_count,
         employee_count,
+        line_items_count,
+        deduction_count,
+        to_be_paid_count,
         current_budget_used,
         remaining_budget,
         will_exceed_budget,
@@ -1378,6 +1434,9 @@ export class ApprovalRequestService {
           ...(submission_status && { submission_status }),
           ...(attachment_count !== undefined && { attachment_count }),
           ...(employee_count !== undefined && { employee_count }),
+          ...(line_items_count !== undefined && { line_items_count }),
+          ...(deduction_count !== undefined && { deduction_count }),
+          ...(to_be_paid_count !== undefined && { to_be_paid_count }),
           ...(current_budget_used !== undefined && {
             current_budget_used: parseFloat(current_budget_used),
           }),
@@ -1421,6 +1480,20 @@ export class ApprovalRequestService {
     try {
       console.log('[submitApprovalRequest] Starting submission for request:', requestId, 'by:', submittedBy);
 
+      const lineItemsResult = await this.getLineItemsByRequestId(requestId);
+      if (!lineItemsResult.success) {
+        return {
+          success: false,
+          error: lineItemsResult.error || 'Failed to load line items for submission.',
+        };
+      }
+
+      const lineItems = Array.isArray(lineItemsResult.data) ? lineItemsResult.data : [];
+      const netRequestAmount = lineItems.reduce((sum, item) => {
+        const amount = Number(item?.amount || 0);
+        return sum + (item?.is_deduction ? -amount : amount);
+      }, 0);
+
       const locationValidation = await this.validateRequestLocationScope(requestId);
       if (!locationValidation.success) {
         return {
@@ -1454,6 +1527,7 @@ export class ApprovalRequestService {
         .update({
           overall_status: 'submitted',
           submission_status: 'completed',
+          total_request_amount: netRequestAmount,
           submitted_date: new Date().toISOString(),
           updated_by: submittedBy,
           updated_at: new Date().toISOString(),
@@ -1470,29 +1544,30 @@ export class ApprovalRequestService {
 
       console.log('[submitApprovalRequest] Request updated to submitted status');
 
-      // Run these operations in parallel for better performance
-      console.log('[submitApprovalRequest] Running parallel operations: activity log, workflow init, auto-approval check');
-      const [activityResult, workflowResult, autoApprovalResult, notificationResult] = await Promise.allSettled([
+      // Run non-dependent tasks in parallel, then run dependent auto-approval after workflow is initialized
+      console.log('[submitApprovalRequest] Running parallel operations: activity log, submission notifications');
+      const [activityResult, notificationResult] = await Promise.allSettled([
         this.addActivityLog(requestId, 'submitted', submittedBy),
-        this.initializeApprovalWorkflow(requestId),
-        this.checkAndAutoApproveL1(requestId, submittedBy),
         this.sendSubmissionNotifications(requestId),
       ]);
 
-      console.log('[submitApprovalRequest] Parallel operations completed');
+      const workflowResult = await this.initializeApprovalWorkflow(requestId);
+      if (!workflowResult?.success) {
+        console.warn('[submitApprovalRequest] Workflow initialization failed:', workflowResult?.error || 'Unknown error');
+      }
+
+      const autoApprovalResult = await this.checkAndAutoApproveL1(requestId, submittedBy);
+      console.log('[submitApprovalRequest] Submission operations completed');
       
       // Log any errors but don't fail the submission
       if (activityResult.status === 'rejected') {
         console.warn('Activity log failed:', activityResult.reason);
       }
-      if (workflowResult.status === 'rejected') {
-        console.warn('Workflow initialization failed:', workflowResult.reason);
-      }
       if (notificationResult.status === 'rejected') {
         console.warn('Submission notification failed:', notificationResult.reason);
       }
 
-      const autoApproved = autoApprovalResult.status === 'fulfilled' && autoApprovalResult.value?.autoApproved;
+      const autoApproved = Boolean(autoApprovalResult?.autoApproved);
       
       console.log('[submitApprovalRequest] Submission complete. Auto-approved:', autoApproved);
 
@@ -1597,6 +1672,7 @@ export class ApprovalRequestService {
       if (reqError) throw reqError;
 
       const effectiveSubmittedBy = String(submittedBy || request?.submitted_by || request?.created_by || '').trim();
+      const normalizedSubmittedBy = effectiveSubmittedBy.toLowerCase();
       if (!effectiveSubmittedBy) {
         return { autoApproved: false };
       }
@@ -1611,10 +1687,10 @@ export class ApprovalRequestService {
       if (approverError) throw approverError;
 
       // Check if submittedBy matches any L1 approver UUID
-      const isL1Approver = l1Approvers.some((approver) => {
-        const primary = String(approver.primary_approver || '').trim();
-        const backup = String(approver.backup_approver || '').trim();
-        return primary === effectiveSubmittedBy || backup === effectiveSubmittedBy;
+      const isL1Approver = (l1Approvers || []).some((approver) => {
+        const primary = String(approver.primary_approver || '').trim().toLowerCase();
+        const backup = String(approver.backup_approver || '').trim().toLowerCase();
+        return primary === normalizedSubmittedBy || backup === normalizedSubmittedBy;
       });
 
       if (!isL1Approver) {
@@ -1748,12 +1824,30 @@ export class ApprovalRequestService {
         console.error('[addLineItemsBulk] lineItems array is empty');
         throw new Error('lineItems array cannot be empty');
       }
+
+      if (lineItems.length > 500) {
+        throw new Error('Maximum 500 line items per bulk request');
+      }
+
+      const { data: existingLastItem, error: existingLastItemError } = await supabase
+        .from('tblbudgetapprovalrequests_line_items')
+        .select('item_number')
+        .eq('request_id', requestId)
+        .order('item_number', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingLastItemError) {
+        throw existingLastItemError;
+      }
+
+      const itemNumberOffset = Number(existingLastItem?.item_number || 0);
       
       console.log('[addLineItemsBulk] First item structure:', JSON.stringify(lineItems[0], null, 2));
       
       const records = lineItems.map((item, index) => ({
         request_id: requestId,
-        item_number: index + 1,
+        item_number: itemNumberOffset + index + 1,
         employee_id: item.employee_id || '',
         employee_name: item.employee_name || '',
         department: item.department || '',
@@ -1792,10 +1886,36 @@ export class ApprovalRequestService {
 
       console.log('[addLineItemsBulk] Line items inserted successfully:', data?.length || 0);
       console.log('[addLineItemsBulk] Updating employee count...');
+
+      const { count: totalLineItemsCount, error: countError } = await supabase
+        .from('tblbudgetapprovalrequests_line_items')
+        .select('*', { count: 'exact', head: true })
+        .eq('request_id', requestId);
+
+      if (countError) {
+        throw countError;
+      }
+
+      const { count: totalDeductionCount, error: deductionCountError } = await supabase
+        .from('tblbudgetapprovalrequests_line_items')
+        .select('*', { count: 'exact', head: true })
+        .eq('request_id', requestId)
+        .eq('is_deduction', true);
+
+      if (deductionCountError) {
+        throw deductionCountError;
+      }
+
+      const resolvedLineItemsCount = Number(totalLineItemsCount || 0);
+      const resolvedDeductionCount = Number(totalDeductionCount || 0);
+      const resolvedToBePaidCount = Math.max(0, resolvedLineItemsCount - resolvedDeductionCount);
       
       // Update request with employee count
       await this.updateApprovalRequest(requestId, {
-        employee_count: lineItems.length,
+        employee_count: resolvedLineItemsCount,
+        line_items_count: resolvedLineItemsCount,
+        deduction_count: resolvedDeductionCount,
+        to_be_paid_count: resolvedToBePaidCount,
         updated_by: createdBy,
       });
 
@@ -1827,17 +1947,31 @@ export class ApprovalRequestService {
    */
   static async getLineItemsByRequestId(requestId) {
     try {
-      const { data, error } = await supabase
-        .from('tblbudgetapprovalrequests_line_items')
-        .select('*')
-        .eq('request_id', requestId)
-        .order('item_number', { ascending: true });
+      const allRows = [];
+      const pageSize = 1000;
+      let from = 0;
 
-      if (error) throw error;
+      while (true) {
+        const to = from + pageSize - 1;
+        const { data, error } = await supabase
+          .from('tblbudgetapprovalrequests_line_items')
+          .select('*')
+          .eq('request_id', requestId)
+          .order('item_number', { ascending: true })
+          .range(from, to);
+
+        if (error) throw error;
+
+        const rows = data || [];
+        allRows.push(...rows);
+
+        if (rows.length < pageSize) break;
+        from += pageSize;
+      }
 
       return {
         success: true,
-        data,
+        data: allRows,
       };
     } catch (error) {
       console.error('Error fetching line items:', error);

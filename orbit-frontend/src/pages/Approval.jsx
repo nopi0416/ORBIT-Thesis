@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Search } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -20,6 +21,7 @@ import { resolveUserRole } from '../utils/roleUtils';
 import BulkUploadValidation from '../components/approval/BulkUploadValidation';
 import { fetchWithCache, invalidateNamespace } from '../utils/dataCache';
 import { useLocation, useNavigate } from 'react-router-dom';
+import PaginationControls from '../components/PaginationControls';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -224,8 +226,8 @@ const normalizeConfig = (config) => ({
   maxAmount: config.max_limit || config.maxAmount || config.budgetControlLimit || config.total_budget || 0,
   totalBudget: config.total_budget || config.totalBudget || config.total_budget_amount || config.budget_total || 0,
   budgetLimit: config.budget_limit || config.budgetLimit || config.total_budget || config.totalBudget || 0,
-  usedAmount: config.budget_used || config.usedAmount || 0,
-  approvedAmount: config.approved_amount ?? config.approvedAmount ?? config.budget_used ?? config.usedAmount ?? 0,
+  usedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
+  approvedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
   ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
   minLimit: config.min_limit || config.limitMin || 0,
   maxLimit: config.max_limit || config.limitMax || config.maxAmount || 0,
@@ -303,24 +305,32 @@ const normalizeRequest = (request) => {
   const rawStatus = request.approval_stage_status || request.display_status || request.overall_status || request.status || request.submission_status || 'draft';
   const submittedAt = request.submitted_at || request.created_at || '';
   const status = rawStatus === 'draft' && submittedAt ? 'submitted' : rawStatus;
+  const toSafeCount = (...values) => {
+    for (const value of values) {
+      if (value === null || value === undefined || value === '') continue;
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+    }
+    return 0;
+  };
   const rawLineItems = Array.isArray(request.line_items)
     ? request.line_items
     : Array.isArray(request.lineItems)
       ? request.lineItems
       : [];
   const lineItems = rawLineItems.map(normalizeLineItem);
-  const computedCounts = lineItems.length
-    ? {
-        lineItemsCount: lineItems.length,
-        deductionCount: lineItems.filter((item) => Boolean(item?.is_deduction)).length,
-      }
-    : null;
-  const lineItemsCount =
-    request.line_items_count ?? request.employee_count ?? request.employeeCount ?? computedCounts?.lineItemsCount ?? 0;
-  const deductionCount =
-    request.deduction_count ?? request.deductionCount ?? computedCounts?.deductionCount ?? 0;
-  const toBePaidCount =
-    request.to_be_paid_count ?? request.toBePaidCount ?? Math.max(0, lineItemsCount - deductionCount);
+  const hasLineItems = lineItems.length > 0;
+  const computedLineItemsCount = lineItems.length;
+  const computedDeductionCount = lineItems.filter((item) => Boolean(item?.is_deduction)).length;
+  const lineItemsCount = hasLineItems
+    ? computedLineItemsCount
+    : toSafeCount(request.line_items_count, request.employee_count, request.employeeCount, request.lineItemsCount);
+  const deductionCount = hasLineItems
+    ? computedDeductionCount
+    : toSafeCount(request.deduction_count, request.deductionCount);
+  const toBePaidCount = hasLineItems
+    ? Math.max(0, computedLineItemsCount - computedDeductionCount)
+    : toSafeCount(request.to_be_paid_count, request.toBePaidCount, lineItemsCount - deductionCount);
   const approvalStageStatus = request.approval_stage_status || request.display_status || null;
 
   // Calculate totals from line items if available
@@ -371,6 +381,7 @@ const normalizeRequest = (request) => {
     lineItemsCount,
     deductionCount,
     toBePaidCount,
+    employeeCount: lineItemsCount,
     approvalStageStatus,
     lineItems, // Pass line items through
     
@@ -378,6 +389,9 @@ const normalizeRequest = (request) => {
     total_request_amount: totalAmount,
     overall_status: status,
     submitted_at: submittedAt,
+    line_items_count: lineItemsCount,
+    deduction_count: deductionCount,
+    to_be_paid_count: toBePaidCount,
     request_number: request.request_number || request.requestNumber || null,
     budget_name: request.budget_name || request.configName || null,
     is_client_sponsored: request.is_client_sponsored ?? request.client_sponsored ?? request.clientSponsored ?? false,
@@ -576,6 +590,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [bulkItems, setBulkItems] = useState([]);
   const [bulkFileName, setBulkFileName] = useState('');
   const [bulkParseError, setBulkParseError] = useState(null);
+  const [bulkUploadLoading, setBulkUploadLoading] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [submitSuccess, setSubmitSuccess] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -586,6 +601,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [successMessage, setSuccessMessage] = useState('');
   const [countdown, setCountdown] = useState(5);
   const [isError, setIsError] = useState(false);
+  const [configCurrentPage, setConfigCurrentPage] = useState(1);
+  const [configRowsPerPage, setConfigRowsPerPage] = useState('10');
+  const [configPagination, setConfigPagination] = useState({
+    page: 1,
+    limit: 10,
+    totalItems: 0,
+    totalPages: 1,
+    hasPrev: false,
+    hasNext: false,
+  });
   const successModalWasOpen = useRef(false);
 
   const token = useMemo(() => getToken(), [refreshKey]);
@@ -644,26 +669,43 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
       const data = await fetchWithCache(
         'budgetConfigs',
-        `org_${user?.org_id || 'all'}`,
-        () => getBudgetConfigurations({ org_id: user?.org_id }, token),
+        `org_${user?.org_id || 'all'}_${configCurrentPage}_${configRowsPerPage}_${searchTerm}`,
+        () => getBudgetConfigurations({
+          org_id: user?.org_id,
+          page: configCurrentPage,
+          limit: Number(configRowsPerPage || 10),
+          search: searchTerm,
+        }, token),
         5 * 60 * 1000,
         forceRefresh
       );
 
-      setConfigurations((data || []).map(normalizeConfig).filter(config => {
+      const items = Array.isArray(data) ? data : (data?.items || []);
+      const pagination = data?.pagination || {
+        page: configCurrentPage,
+        limit: Number(configRowsPerPage || 10),
+        totalItems: items.length,
+        totalPages: Math.max(1, Math.ceil(items.length / Number(configRowsPerPage || 10))),
+        hasPrev: configCurrentPage > 1,
+        hasNext: false,
+      };
+
+      setConfigurations((items || []).map(normalizeConfig).filter(config => {
         const isActive = String(config.status || '').toLowerCase() === 'active';
         if (userRole === 'payroll') {
           return isActive && config.createdBy === user.id;
         }
         return isActive;
       }));
+      setConfigPagination(pagination);
     } catch (error) {
       setConfigError(error.message || 'Failed to load configurations');
       setConfigurations([]);
+      setConfigPagination((prev) => ({ ...prev, totalItems: 0, totalPages: 1, page: 1, hasPrev: false, hasNext: false }));
     } finally {
       setConfigLoading(false);
     }
-  }, [token, user?.org_id, user?.id, userRole]);
+  }, [token, user?.org_id, user?.id, userRole, configCurrentPage, configRowsPerPage, searchTerm]);
 
   useEffect(() => {
     refreshBudgetConfigs(false);
@@ -848,7 +890,31 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           true
         );
 
-        setMyRequests((data || []).map(normalizeRequest));
+        const baseRequests = Array.isArray(data) ? data : [];
+        const detailedRequests = await Promise.allSettled(
+          baseRequests.map(async (request) => {
+            const requestId = request?.approval_request_id || request?.request_id || request?.id;
+            if (!requestId) return request;
+            try {
+              const details = await fetchWithCache(
+                'approvalRequestDetails',
+                requestId,
+                () => approvalRequestService.getApprovalRequest(requestId, token),
+                60 * 1000,
+                true
+              );
+              return details || request;
+            } catch {
+              return request;
+            }
+          })
+        );
+
+        const mergedRequests = detailedRequests.map((result, index) =>
+          result.status === 'fulfilled' && result.value ? result.value : baseRequests[index]
+        );
+
+        setMyRequests(mergedRequests.map(normalizeRequest));
       } catch (error) {
         setRequestsError(error.message || 'Failed to load requests');
         setMyRequests([]);
@@ -1623,11 +1689,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setBulkItems([]);
       setBulkFileName('');
       setBulkParseError(null);
+      setBulkUploadLoading(false);
       return;
     }
 
     setBulkParseError(null);
     setBulkFileName(file.name);
+    setBulkUploadLoading(true);
 
     try {
       const XLSXModule = await import('xlsx');
@@ -1847,6 +1915,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       console.error('Error parsing bulk template:', error);
       setBulkItems([]);
       setBulkParseError(error.message || 'Failed to parse the template file.');
+    } finally {
+      setBulkUploadLoading(false);
     }
   };
 
@@ -1939,7 +2009,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return;
     }
 
-    const totalAmount = amountValue;
+    const totalAmount = individualRequest.isDeduction ? -amountValue : amountValue;
 
     setSubmitting(true);
     setSubmitError(null);
@@ -2057,8 +2127,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return;
     }
 
-    // Calculate total from valid items only
-    const totalAmount = validItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    // Calculate net total from valid items only (deductions reduce total)
+    const totalAmount = validItems.reduce((sum, item) => {
+      const amount = Number(item.amount || 0);
+      return sum + (item.is_deduction ? -amount : amount);
+    }, 0);
     
     setSubmitting(true);
     setSubmitError(null);
@@ -2304,10 +2377,23 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     return detailApprovals.find((approval) => String(approval.approval_level) === String(level)) || null;
   };
 
-  const filteredConfigs = configurations.filter(config => 
-    (!searchTerm || String(config.name || '').toLowerCase().includes(searchTerm.toLowerCase())) &&
+  const filteredConfigs = configurations.filter(config =>
     !(userRole === 'requestor' && ['payroll', 'l1'].includes(String(config.created_by_role || '').toLowerCase()))
   );
+  const configTotalPages = Math.max(1, Number(configPagination?.totalPages || 1));
+  const safeConfigPage = Math.min(Math.max(1, configCurrentPage), configTotalPages);
+  const paginatedConfigs = filteredConfigs;
+
+  useEffect(() => {
+    setConfigCurrentPage(1);
+  }, [searchTerm, configRowsPerPage]);
+
+  useEffect(() => {
+    if (configCurrentPage > configTotalPages) {
+      setConfigCurrentPage(configTotalPages);
+    }
+  }, [configCurrentPage, configTotalPages]);
+
   const visibleMyRequests = myRequests.filter((request) => {
     const rawStatus = String(request.overall_status || request.status || '').toLowerCase();
     return rawStatus !== 'completed';
@@ -2338,7 +2424,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             </div>
           </div>
         </CardHeader>
-        <CardContent className="p-0 overflow-y-auto flex-1">
+        <CardContent className="p-0 flex-1 min-h-0 flex flex-col">
           {configLoading ? (
             <div className="p-8 text-center text-gray-400">Loading configurations...</div>
           ) : configError ? (
@@ -2346,7 +2432,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           ) : filteredConfigs.length === 0 ? (
             <div className="p-8 text-center text-gray-400">No active budget configurations found.</div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0">
             <table className="min-w-[1400px] w-full text-left text-sm text-gray-300 border-collapse">
               <thead className="text-xs uppercase bg-slate-900/50 text-gray-400 sticky top-0 z-10 backdrop-blur-sm">
                 <tr>
@@ -2364,7 +2451,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
-                {filteredConfigs.map((config) => {
+                {paginatedConfigs.map((config) => {
                   const used = Number(config.approvedAmount ?? config.usedAmount ?? 0);
                   const ongoing = Number(config.ongoingAmount ?? 0);
                     const clientSponsoredAmount = Number(config.clientSponsoredAmount ?? 0);
@@ -2420,6 +2507,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               </tbody>
             </table>
             </div>
+            <div className="px-4 py-3 border-t border-slate-700/60">
+              <PaginationControls
+                page={safeConfigPage}
+                totalPages={configTotalPages}
+                rowsPerPage={configRowsPerPage}
+                onPageChange={(page) => setConfigCurrentPage(page)}
+                onRowsPerPageChange={(value) => setConfigRowsPerPage(value)}
+              />
+            </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -2500,8 +2597,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               const approvals = request.approvals || [];
               const stageStatus = request.approvalStageStatus || computeStageStatus(approvals, request.overall_status || request.status);
               const displayStatus = formatStageStatusLabel(stageStatus);
-              const employeeCount = request.lineItemsCount ?? request.line_items_count ?? request.employeeCount ?? 0;
-              const deductionCount = request.deductionCount ?? request.deduction_count ?? 0;
+              const employeeCount = Number(request.lineItemsCount ?? request.line_items_count ?? request.employeeCount ?? request.employee_count ?? 0) || 0;
+              const deductionCount = Number(request.deductionCount ?? request.deduction_count ?? 0) || 0;
               const payCount = request.toBePaidCount ?? request.to_be_paid_count ?? Math.max(0, employeeCount - deductionCount);
               
               return (
@@ -2578,7 +2675,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className={`bg-slate-800 border-slate-700 text-white flex flex-col ${
           requestMode === 'bulk' && bulkItems.length > 0
-            ? 'w-[95vw] max-w-[1299px] max-h-[85vh] p-0 overflow-y-auto'
+            ? '!w-[99vw] sm:!w-[98vw] md:!w-[97vw] lg:!w-[96vw] xl:!w-[95vw] 2xl:!w-[92vw] !max-w-[1800px] max-h-[90vh] p-0 overflow-y-auto'
             : 'w-[95vw] md:w-[80vw] xl:w-[60vw] max-w-none max-h-[90vh] overflow-y-auto p-4'
         }`}>
 <DialogHeader className={`flex-shrink-0 space-y-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-5 pt-4 pb-1' : 'pb-2'}`}>
@@ -2825,6 +2922,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="file"
                       accept=".xlsx,.xls"
                       onChange={handleBulkFileChange}
+                      disabled={bulkUploadLoading}
                       className="bg-slate-700 border-gray-300 text-white max-w-md"
                     />
                   </div>
@@ -2843,6 +2941,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                         type="button"
                         variant="ghost"
                         size="sm"
+                        disabled={bulkUploadLoading}
                         onClick={() => {
                           setBulkItems([]);
                           setBulkFileName('');
@@ -2860,6 +2959,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   )}
                   {bulkItems.length > 0 && (
                     <p className="text-xs text-green-300">Uploaded {bulkItems.length} line item(s).</p>
+                  )}
+                  {bulkUploadLoading && (
+                    <p className="text-xs text-blue-300">Uploading and validating template, please wait...</p>
                   )}
                   {bulkParseError && (
                     <p className="text-xs text-red-300">{bulkParseError}</p>
@@ -2915,7 +3017,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             {requestMode === 'individual' ? (
               <Button
                 onClick={() => setConfirmAction('submit-individual')}
-                disabled={!canProceed || submitting}
+                disabled={!canProceed || submitting || bulkUploadLoading}
                 className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {submitting ? 'Submitting...' : 'Proceed'}
@@ -2923,15 +3025,27 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             ) : (
               <Button
                 onClick={() => setConfirmAction('submit-bulk')}
-                disabled={!canProceed || submitting}
+                disabled={!canProceed || submitting || bulkUploadLoading}
                 className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {submitting ? 'Submitting...' : 'Proceed'}
               </Button>
             )}
           </DialogFooter>
+
         </DialogContent>
       </Dialog>
+
+      {bulkUploadLoading && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+            <p className="text-blue-300 font-medium text-lg">Uploading template...</p>
+            <p className="text-xs text-slate-400">Validating rows and employee scope</p>
+          </div>
+        </div>,
+        document.body
+      )}
 
       <Dialog
         open={detailsOpen}
@@ -2950,7 +3064,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           }
         }}
       >
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[98vw] md:w-[92vw] lg:w-[85vw] xl:w-[70vw] max-w-none max-h-[85vh] overflow-y-auto p-5">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[99vw] md:w-[95vw] lg:w-[90vw] xl:w-[82vw] 2xl:w-[76vw] max-w-[1800px] max-h-[85vh] overflow-y-auto p-5">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request Details</DialogTitle>
 
@@ -3030,7 +3144,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-semibold text-white">Uploaded Data</div>
+                  <div className="text-sm font-semibold text-white">Uploaded Data ({detailLineItems.length} total)</div>
                   {warningCount > 0 && (
                     <Badge className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
                   )}
@@ -3297,7 +3411,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   );
 }
 const LoadingOverlay = () => (
-  <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+  <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/80 backdrop-blur-sm">
     <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl animate-in fade-in zoom-in duration-200">
       <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
       <p className="text-emerald-400 font-medium animate-pulse text-lg">Processing Approval...</p>
@@ -3326,6 +3440,16 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('submitted');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState('10');
+  const [serverPagination, setServerPagination] = useState({
+    page: 1,
+    limit: 10,
+    totalItems: 0,
+    totalPages: 1,
+    hasPrev: false,
+    hasNext: false,
+  });
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState(null);
@@ -3481,19 +3605,37 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         const filters = {
           ...(effectiveStatusFilter === 'all' ? {} : { status: effectiveStatusFilter }),
           submitted_by: user.id,
+          search: searchTerm,
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
         };
-        const data = await getApprovalRequestsCached(filters, `requestor_${user.id}_${effectiveStatusFilter || 'all'}`);
-        setApprovals((data || []).map(normalizeRequest));
+        const data = await getApprovalRequestsCached(filters, `requestor_${user.id}_${effectiveStatusFilter || 'all'}_${searchTerm}_${currentPage}_${rowsPerPage}`);
+        const items = Array.isArray(data) ? data : (data?.items || []);
+        setApprovals((items || []).map(normalizeRequest));
+        setServerPagination(data?.pagination || {
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
+          totalItems: items.length,
+          totalPages: Math.max(1, Math.ceil(items.length / Number(rowsPerPage || 10))),
+          hasPrev: currentPage > 1,
+          hasNext: false,
+        });
         setApprovalStatusMap({});
       } else if (userRole === 'payroll') {
         // Payroll sees requests that are pending payroll approval within their org scope
         const payrollStage = 'pending_payroll_approval,pending_payment_completion';
         const data = await getApprovalRequestsCached(
-          { approval_stage_status: payrollStage },
-          `payroll_${user.id}_${payrollStage}`
+          {
+            approval_stage_status: payrollStage,
+            search: searchTerm,
+            page: currentPage,
+            limit: Number(rowsPerPage || 10),
+          },
+          `payroll_${user.id}_${payrollStage}_${searchTerm}_${currentPage}_${rowsPerPage}`
         );
 
-        const normalizedRequests = (data || []).map(normalizeRequest);
+        const items = Array.isArray(data) ? data : (data?.items || []);
+        const normalizedRequests = (items || []).map(normalizeRequest);
         const normalizedFilter = String(effectiveStatusFilter || '').toLowerCase();
         const filteredByStatus =
           normalizedFilter === 'all' || normalizedFilter === 'pending' || normalizedFilter === 'submitted'
@@ -3502,7 +3644,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                 (request) => String(request.status || '').toLowerCase() === normalizedFilter
               );
 
-        const statusMap = (data || []).reduce((acc, request) => {
+        const statusMap = (items || []).reduce((acc, request) => {
           const id = request?.request_id || request?.id;
           if (!id) return acc;
           acc[id] = request.approvals || [];
@@ -3511,6 +3653,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
         setApprovals(filteredByStatus);
         setApprovalStatusMap(statusMap);
+        setServerPagination(data?.pagination || {
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
+          totalItems: filteredByStatus.length,
+          totalPages: Math.max(1, Math.ceil(filteredByStatus.length / Number(rowsPerPage || 10))),
+          hasPrev: currentPage > 1,
+          hasNext: false,
+        });
       } else {
         // Other roles (L1/L2/L3) see pending approvals + already approved by them (but not completed/rejected)
         const pendingApprovals = await fetchWithCache(
@@ -3561,11 +3711,20 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
         setApprovals(filteredByStatus);
         setApprovalStatusMap(statusMap);
+        setServerPagination({
+          page: 1,
+          limit: Number(rowsPerPage || 10),
+          totalItems: filteredByStatus.length,
+          totalPages: Math.max(1, Math.ceil(filteredByStatus.length / Number(rowsPerPage || 10))),
+          hasPrev: false,
+          hasNext: false,
+        });
       }
     } catch (error) {
       setError(error.message || 'Failed to load approvals');
       setApprovals([]);
       setApprovalStatusMap({});
+      setServerPagination((prev) => ({ ...prev, page: 1, totalItems: 0, totalPages: 1, hasPrev: false, hasNext: false }));
     } finally {
       setLoading(false);
     }
@@ -3573,7 +3732,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
   useEffect(() => {
     fetchApprovals();
-  }, [refreshKey, statusFilter, user?.id, userRole]);
+  }, [refreshKey, statusFilter, user?.id, userRole, currentPage, rowsPerPage, searchTerm]);
 
   const applyRequestUpdate = async (requestId, action) => {
     if (!requestId) return;
@@ -3654,6 +3813,21 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
+
+  const rowsPerPageNumber = Number(rowsPerPage || 10);
+  const totalPages = Math.max(1, Number(serverPagination?.totalPages || 1));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedApprovals = filteredApprovals;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   useEffect(() => {
     if (!focusRequestId || loading) return;
@@ -4093,6 +4267,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         ) : filteredApprovals.length === 0 ? (
           <div className="text-sm text-gray-400">No approval requests found.</div>
         ) : (
+          <>
           <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
             <table className="min-w-[1400px] w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
@@ -4142,7 +4317,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                 </tr>
               </thead>
               <tbody className="bg-slate-800/50">
-                  {filteredApprovals.map((approval) => {
+                  {paginatedApprovals.map((approval) => {
                   const approvalsForRequest = approvalStatusMap[approval.id] || approval.approvals || [];
                   const stageStatus = approval.approvalStageStatus || computeStageStatus(approvalsForRequest, approval.status);
                   const displayStatus = formatStageStatusLabel(stageStatus);
@@ -4247,6 +4422,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               </tbody>
             </table>
           </div>
+          <PaginationControls
+            page={safeCurrentPage}
+            totalPages={totalPages}
+            rowsPerPage={rowsPerPage}
+            onPageChange={(page) => setCurrentPage(page)}
+            onRowsPerPageChange={(value) => setRowsPerPage(value)}
+          />
+          </>
         )}
       </CardContent>
 
@@ -4774,6 +4957,16 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState('10');
+  const [serverPagination, setServerPagination] = useState({
+    page: 1,
+    limit: 10,
+    totalItems: 0,
+    totalPages: 1,
+    hasPrev: false,
+    hasNext: false,
+  });
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState(null);
@@ -4790,21 +4983,35 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
       try {
         const data = await fetchWithCache(
           'approvalRequests',
-          `history_${user?.id || 'all'}`,
-          () => approvalRequestService.getApprovalRequests({}, getToken()),
+          `history_${user?.id || 'all'}_${currentPage}_${rowsPerPage}_${searchTerm}`,
+          () => approvalRequestService.getApprovalRequests({
+            search: searchTerm,
+            page: currentPage,
+            limit: Number(rowsPerPage || 10),
+          }, getToken()),
           60 * 1000
         );
-        setHistory((data || []).map(normalizeRequest));
+        const items = Array.isArray(data) ? data : (data?.items || []);
+        setHistory((items || []).map(normalizeRequest));
+        setServerPagination(data?.pagination || {
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
+          totalItems: items.length,
+          totalPages: Math.max(1, Math.ceil(items.length / Number(rowsPerPage || 10))),
+          hasPrev: currentPage > 1,
+          hasNext: false,
+        });
       } catch (error) {
         toast.error(error.message || 'Failed to load history');
         setHistory([]);
+        setServerPagination((prev) => ({ ...prev, page: 1, totalItems: 0, totalPages: 1, hasPrev: false, hasNext: false }));
       } finally {
         setLoading(false);
       }
     };
 
     fetchHistory();
-  }, [refreshKey, user?.id]);
+  }, [refreshKey, user?.id, currentPage, rowsPerPage, searchTerm]);
 
   const isUserInvolvedInRecord = useCallback(
     (record) => {
@@ -4933,6 +5140,21 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
       record.budgetName?.toLowerCase().includes(term)
     );
   });
+
+  const rowsPerPageNumber = Number(rowsPerPage || 10);
+  const totalPages = Math.max(1, Number(serverPagination?.totalPages || 1));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedHistory = filteredHistory;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const handleViewHistory = async (record) => {
     if (!record?.id) return;
@@ -5229,6 +5451,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
         ) : filteredHistory.length === 0 ? (
           <div className="text-sm text-gray-400">No history records found where you are a participant.</div>
         ) : (
+          <>
           <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
             <table className="min-w-[1050px] w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
@@ -5257,7 +5480,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700">
-                {filteredHistory.map((record) => (
+                {paginatedHistory.map((record) => (
                   <tr key={record.id} className="hover:bg-slate-700/50">
                     <td className="px-4 py-3 text-xs text-slate-300">
                       {record.requestNumber || '—'}
@@ -5294,6 +5517,14 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
               </tbody>
             </table>
           </div>
+          <PaginationControls
+            page={safeCurrentPage}
+            totalPages={totalPages}
+            rowsPerPage={rowsPerPage}
+            onPageChange={(page) => setCurrentPage(page)}
+            onRowsPerPageChange={(value) => setRowsPerPage(value)}
+          />
+          </>
         )}
       </CardContent>
 

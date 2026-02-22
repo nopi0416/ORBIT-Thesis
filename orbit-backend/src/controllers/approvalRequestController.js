@@ -263,6 +263,8 @@ export class ApprovalRequestController {
   static async getAllApprovalRequests(req, res) {
     try {
       const { budget_id, status, search, submitted_by, approval_stage_status } = req.query;
+      const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
       const orgId = req.user?.org_id || null;
       const isUuid = (value) =>
         typeof value === 'string' &&
@@ -274,6 +276,8 @@ export class ApprovalRequestController {
         ...(search && { search }),
         ...(submitted_by && isUuid(submitted_by) && { submitted_by }),
         ...(approval_stage_status && { approval_stage_status }),
+        page,
+        limit,
       };
 
       if (orgId) {
@@ -419,6 +423,10 @@ export class ApprovalRequestController {
 
       if (!Array.isArray(line_items) || line_items.length === 0) {
         return sendError(res, 'line_items must be a non-empty array', 400);
+      }
+
+      if (line_items.length > 500) {
+        return sendError(res, 'Maximum 500 line items per bulk request', 400);
       }
 
       const result = await ApprovalRequestService.addLineItemsBulk(id, line_items, userId);

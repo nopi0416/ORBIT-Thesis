@@ -18,6 +18,7 @@ import * as budgetConfigService from "../services/budgetConfigService";
 import approvalRequestService from "../services/approvalRequestService";
 import { connectWebSocket, addWebSocketListener } from "../services/realtimeService";
 import { fetchWithCache, invalidateNamespace } from "../utils/dataCache";
+import PaginationControls from "../components/PaginationControls";
 const parseStoredList = (value) => {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -272,11 +273,22 @@ export default function BudgetConfigurationPage() {
 function ConfigurationList({ userRole }) {
   const { user } = useAuth();
   const toast = useToast();
+  const PAGE_SIZE_OPTIONS = [10, 15, 20];
   const [searchQuery, setSearchQuery] = useState("");
   const [filterGeo, setFilterGeo] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
   const [filterClient, setFilterClient] = useState("all");
   const [statusFilter, setStatusFilter] = useState("active");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [serverPagination, setServerPagination] = useState({
+    page: 1,
+    limit: 10,
+    totalItems: 0,
+    totalPages: 1,
+    hasPrev: false,
+    hasNext: false,
+  });
   const [configurations, setConfigurations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -421,20 +433,58 @@ function ConfigurationList({ userRole }) {
       }
       const data = await fetchWithCache(
         'budgetConfigs',
-        `org_${user?.org_id || 'all'}`,
-        () => budgetConfigService.getBudgetConfigurations({ org_id: user?.org_id }, token),
+        `org_${user?.org_id || 'all'}_${currentPage}_${rowsPerPage}_${statusFilter}_${searchQuery}_${filterGeo}_${filterLocation}_${filterClient}`,
+        () => budgetConfigService.getBudgetConfigurations({
+          org_id: user?.org_id,
+          page: currentPage,
+          limit: rowsPerPage,
+          status: statusFilter,
+          search: searchQuery,
+          geo: filterGeo !== 'all' ? filterGeo : undefined,
+          location: filterLocation !== 'all' ? filterLocation : undefined,
+          client: filterClient !== 'all' ? filterClient : undefined,
+        }, token),
         5 * 60 * 1000 // 5 minutes TTL
       );
-      setConfigurations((data || []).map(transformConfig));
+      const items = Array.isArray(data) ? data : (data?.items || []);
+      const pagination = data?.pagination || {
+        page: currentPage,
+        limit: rowsPerPage,
+        totalItems: items.length,
+        totalPages: Math.max(1, Math.ceil(items.length / rowsPerPage)),
+        hasPrev: currentPage > 1,
+        hasNext: false,
+      };
+
+      setConfigurations((items || []).map(transformConfig));
+      setServerPagination(pagination);
       lastConfigFetchRef.current = Date.now();
     } catch (err) {
       console.error("Error fetching configurations:", err);
       toast.error(err.message || "Failed to load configurations");
       setConfigurations([]);
+      setServerPagination((prev) => ({
+        ...prev,
+        page: 1,
+        totalItems: 0,
+        totalPages: 1,
+        hasPrev: false,
+        hasNext: false,
+      }));
     } finally {
       if (showLoader) setLoading(false);
     }
-  }, [user, transformConfig]);
+  }, [
+    user,
+    transformConfig,
+    currentPage,
+    rowsPerPage,
+    statusFilter,
+    searchQuery,
+    filterGeo,
+    filterLocation,
+    filterClient,
+  ]);
 
   useEffect(() => {
     // Initial fetch
@@ -933,17 +983,38 @@ function ConfigurationList({ userRole }) {
   }, [configurations]);
 
   const filteredConfigurations = configurations.filter((config) => {
-    const matchesSearch = config.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesGeo = filterGeo === "all" || config.geo.includes(filterGeo);
-    const matchesLocation = filterLocation === "all" || config.location.includes(filterLocation);
-    const matchesClient = filterClient === "all" || config.clients.includes(filterClient);
-    const statusNormalized = String(config.status || "active").toLowerCase();
-    const matchesStatus = statusFilter === "all" || statusNormalized === statusFilter;
     const listRange = computeDateRange(listDatePreset, listStartDate, listEndDate);
     const dateSource = config.createdAt || config.startDate || config.endDate;
     const matchesDate = listRange.error ? true : isWithinDateRange(dateSource, listRange);
-    return matchesSearch && matchesGeo && matchesLocation && matchesClient && matchesStatus && matchesDate;
+    return matchesDate;
   });
+
+  const prioritizedConfigurations = useMemo(() => {
+    const currentUserId = String(user?.id || '');
+    return [...filteredConfigurations].sort((a, b) => {
+      const aMine = currentUserId && String(a.createdById || '') === currentUserId;
+      const bMine = currentUserId && String(b.createdById || '') === currentUserId;
+      if (aMine !== bMine) return aMine ? -1 : 1;
+
+      const aTime = new Date(a.createdAt || a.startDate || 0).getTime();
+      const bTime = new Date(b.createdAt || b.startDate || 0).getTime();
+      return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+    });
+  }, [filteredConfigurations, user?.id]);
+
+  const totalPages = Math.max(1, Number(serverPagination?.totalPages || 1));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+  const paginatedConfigurations = prioritizedConfigurations;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filterGeo, filterLocation, filterClient, statusFilter, listDatePreset, listStartDate, listEndDate, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const historyItems = configApprovalHistory || [];
   const logItems = configLogs || selectedConfig?.logs || selectedConfig?.logEntries || [];
@@ -1245,13 +1316,13 @@ function ConfigurationList({ userRole }) {
   }, [editSuccessModalOpen]);
 
   return (
-    <div className="space-y-6">
-      <Card className="bg-slate-800 border-slate-700">
+    <div className="space-y-6 h-full flex flex-col min-h-0">
+      <Card className="bg-slate-800 border-slate-700 flex-1 min-h-0 flex flex-col">
         <CardHeader>
           <CardTitle className="text-white">Filter Configurations</CardTitle>
           <CardDescription className="text-gray-400">Search and filter budget configurations</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex-1 min-h-0 flex flex-col">
           <div className="flex flex-wrap items-end gap-4">
             <div className="min-w-[260px] flex-1 space-y-2">
               <Label htmlFor="search" className="text-white">Search</Label>
@@ -1397,10 +1468,11 @@ function ConfigurationList({ userRole }) {
             <div className="flex items-center justify-center py-12">
               <Loader className="h-6 w-6 text-pink-500 animate-spin" />
             </div>
-          ) : filteredConfigurations.length === 0 ? (
+          ) : prioritizedConfigurations.length === 0 ? (
             <div className="text-sm text-gray-400">No configurations found.</div>
           ) : (
-            <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+            <>
+            <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0">
               <table className="min-w-full text-xs text-left text-gray-300 border-collapse">
                 <thead className="text-[10px] uppercase bg-slate-700 text-gray-300 sticky top-0 z-10">
                   <tr>
@@ -1453,7 +1525,7 @@ function ConfigurationList({ userRole }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredConfigurations.map((config) => (
+                  {paginatedConfigurations.map((config) => (
                     <tr key={config.id} className="border-b border-slate-700 hover:bg-slate-700/50 transition-colors">
                       <td className="px-2 py-2 border-r border-slate-600">
                         <div className="font-medium text-white">{config.name}</div>
@@ -1564,6 +1636,16 @@ function ConfigurationList({ userRole }) {
                 </tbody>
               </table>
             </div>
+            <PaginationControls
+              page={safeCurrentPage}
+              totalPages={totalPages}
+              rowsPerPage={rowsPerPage}
+              onPageChange={(page) => setCurrentPage(page)}
+              onRowsPerPageChange={(value) => setRowsPerPage(Number(value) || 10)}
+              rowOptions={PAGE_SIZE_OPTIONS}
+              className="mt-3"
+            />
+            </>
           )}
         </CardContent>
       </Card>
@@ -1631,14 +1713,6 @@ function ConfigurationList({ userRole }) {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-white">Created By</Label>
-                      <Input
-                        value={editConfig.createdByName || "—"}
-                        disabled
-                        className="bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed"
-                      />
-                    </div>
-                    <div className="space-y-2">
                       <Label className="text-white">Budget Name</Label>
                       <Input
                         value={editConfig.name}
@@ -1647,18 +1721,6 @@ function ConfigurationList({ userRole }) {
                         maxLength={100}
                         className="bg-slate-700 border-gray-300 text-white"
                         disabled={!isOwner}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-white">Payroll Cycle</Label>
-                      <SearchableSelect
-                        value={editConfig.payCycle}
-                        onValueChange={(value) => handleEditChange("payCycle", value)}
-                        options={[
-                          { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
-                        ]}
-                        placeholder="Select payroll cycle"
-                        disabled
                       />
                     </div>
                     <div className="space-y-2">
@@ -1681,6 +1743,21 @@ function ConfigurationList({ userRole }) {
                         disabled={!isOwner}
                       />
                     </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label className="text-white">Payroll Cycle</Label>
+                      <SearchableSelect
+                        value={editConfig.payCycle}
+                        onValueChange={(value) => handleEditChange("payCycle", value)}
+                        options={[
+                          { value: "SEMI_MONTHLY", label: "Semi-Monthly (15 & 30)" },
+                        ]}
+                        placeholder="Select payroll cycle"
+                        disabled
+                      />
+                    </div>
                     <div className="space-y-2">
                       <Label className="text-white">Currency</Label>
                       <SearchableSelect
@@ -1689,30 +1766,6 @@ function ConfigurationList({ userRole }) {
                         options={currencyOptions}
                         placeholder="Select currency"
                         disabled
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-white">Budget Control</Label>
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          id="edit-budget-control"
-                          checked={editConfig.budgetControlEnabled}
-                          onCheckedChange={(checked) => handleEditChange("budgetControlEnabled", Boolean(checked))}
-                          className="border-blue-400 bg-slate-600"
-                          disabled={!isOwner}
-                        />
-                        <Label htmlFor="edit-budget-control" className="text-white text-sm">Enable</Label>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-white">Budget Limit</Label>
-                      <Input
-                        type="number"
-                        value={editConfig.budgetControlLimit}
-                        onChange={(e) => handleEditChange("budgetControlLimit", e.target.value.slice(0, 15))}
-                        maxLength={15}
-                        className="bg-slate-700 border-gray-300 text-white"
-                        disabled={!isOwner || !editConfig.budgetControlEnabled}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1739,6 +1792,62 @@ function ConfigurationList({ userRole }) {
                     </div>
                   </div>
 
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label className="text-white">Budget Control</Label>
+                      <div className="flex items-center gap-2 h-10">
+                        <Checkbox
+                          id="edit-budget-control"
+                          checked={editConfig.budgetControlEnabled}
+                          onCheckedChange={(checked) => handleEditChange("budgetControlEnabled", Boolean(checked))}
+                          className="border-blue-400 bg-slate-600"
+                          disabled={!isOwner}
+                        />
+                        <Label htmlFor="edit-budget-control" className="text-white text-sm">Enable</Label>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white">Budget Limit</Label>
+                      <Input
+                        type="number"
+                        value={editConfig.budgetControlLimit}
+                        onChange={(e) => handleEditChange("budgetControlLimit", e.target.value.slice(0, 15))}
+                        maxLength={15}
+                        className="bg-slate-700 border-gray-300 text-white"
+                        disabled={!isOwner || !editConfig.budgetControlEnabled}
+                      />
+                    </div>
+                    <div className="space-y-3 xl:col-span-2">
+                      <Label className="text-white">Tenure Group</Label>
+                      <div className="flex items-center gap-4 overflow-x-auto whitespace-nowrap pb-1">
+                        {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
+                          <div key={value} className="inline-flex items-center gap-2 flex-shrink-0 whitespace-nowrap">
+                            <Checkbox
+                              id={`edit-${value}`}
+                              checked={(editConfig.selectedTenureGroups || []).includes(value)}
+                              className="border-blue-400 bg-slate-600"
+                              disabled={!isOwner}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  handleEditChange("selectedTenureGroups", [...(editConfig.selectedTenureGroups || []), value]);
+                                } else {
+                                  handleEditChange("selectedTenureGroups", (editConfig.selectedTenureGroups || []).filter((t) => t !== value));
+                                }
+                              }}
+                            />
+                            <Label htmlFor={`edit-${value}`} className="cursor-pointer text-white text-sm font-medium whitespace-nowrap">
+                              {value === "0-6months" && "0-6 Months"}
+                              {value === "6-12months" && "6-12 Months"}
+                              {value === "1-2years" && "1-2 Years"}
+                              {value === "2-5years" && "2-5 Years"}
+                              {value === "5plus-years" && "5+ Years"}
+                            </Label>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="space-y-2">
                     <Label className="text-white">Description</Label>
                     <textarea
@@ -1750,36 +1859,6 @@ function ConfigurationList({ userRole }) {
                       className="w-full rounded-md bg-slate-700 border border-gray-300 px-3 py-2 text-white resize-none"
                       disabled={!isOwner}
                     />
-                  </div>
-
-                  <div className="space-y-3">
-                    <Label className="text-white">Tenure Group</Label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
-                        <div key={value} className="flex items-center space-x-2">
-                          <Checkbox
-                            id={`edit-${value}`}
-                            checked={(editConfig.selectedTenureGroups || []).includes(value)}
-                            className="border-blue-400 bg-slate-600"
-                            disabled={!isOwner}
-                            onCheckedChange={(checked) => {
-                              if (checked) {
-                                handleEditChange("selectedTenureGroups", [...(editConfig.selectedTenureGroups || []), value]);
-                              } else {
-                                handleEditChange("selectedTenureGroups", (editConfig.selectedTenureGroups || []).filter((t) => t !== value));
-                              }
-                            }}
-                          />
-                          <Label htmlFor={`edit-${value}`} className="cursor-pointer text-white text-sm font-medium">
-                            {value === "0-6months" && "0-6 Months"}
-                            {value === "6-12months" && "6-12 Months"}
-                            {value === "1-2years" && "1-2 Years"}
-                            {value === "2-5years" && "2-5 Years"}
-                            {value === "5plus-years" && "5+ Years"}
-                          </Label>
-                        </div>
-                      ))}
-                    </div>
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
