@@ -530,7 +530,7 @@ function ApprovalNotificationsTable({ items = [], role }) {
                           {formatLabel(item.approval_stage_status || item.stage_status || item.stage)}
                         </td>
                         <td className="px-4 py-3 text-right text-sm font-semibold text-white">
-                          ₱{Number(item.total_request_amount || item.amount || 0).toLocaleString()}
+                          ₱{Number(item.total_request_amount || item.amount || 0).toLocaleString('en-US')}
                         </td>
                         <td className="px-4 py-3 text-xs text-slate-300">
                           {formatDate(item.updated_at || item.updatedAt || item.created_at || item.createdAt)}
@@ -674,7 +674,7 @@ function PayrollInsightsLayout({ loading, data, metrics, onGenerate }) {
               title="Approvals Amount Breakdown"
               data={statusAmounts}
               totalLabel="Total"
-              valueFormatter={(value) => `₱${Number(value || 0).toLocaleString()}`}
+              valueFormatter={(value) => `₱${Number(value || 0).toLocaleString('en-US')}`}
             />
           </div>
 
@@ -800,14 +800,14 @@ function TopBudgetsBarChart({ data }) {
             <div key={item.budget_id} className="space-y-1">
               <div className="flex items-center justify-between text-sm text-slate-300">
                 <span className="truncate max-w-[240px]">{item.budget_name}</span>
-                <span className="text-white font-semibold">₱{total.toLocaleString()}</span>
+                <span className="text-white font-semibold">₱{total.toLocaleString('en-US')}</span>
               </div>
               <div className="h-2 w-full rounded-full bg-slate-700">
                 <div className="h-2 rounded-full bg-blue-500" style={{ width: `${totalPercent}%` }} />
               </div>
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Completed: ₱{completed.toLocaleString()}</span>
-                <span>Ongoing: ₱{ongoing.toLocaleString()}</span>
+                <span>Completed: ₱{completed.toLocaleString('en-US')}</span>
+                <span>Ongoing: ₱{ongoing.toLocaleString('en-US')}</span>
               </div>
             </div>
           );
@@ -834,7 +834,7 @@ function MonthlyApprovalsChart({ data }) {
                   style={{ height: `${(Number(item.amount || 0) / maxValue) * 120}px` }}
                 />
                 <span className="text-xs text-slate-400">{item.month}</span>
-                <span className="text-[10px] text-slate-500">₱{Number(item.amount || 0).toLocaleString()}</span>
+                <span className="text-[10px] text-slate-500">₱{Number(item.amount || 0).toLocaleString('en-US')}</span>
               </div>
             ))}
           </div>
@@ -876,7 +876,7 @@ function LatestUpdatesTable({ updates = [] }) {
                     <td className="py-2">{row.budget_name || 'Unknown Budget'}</td>
                     <td className="py-2 font-medium text-white">{row.request_number || row.id}</td>
                     <td className="py-2 capitalize">{String(row.status || '').replace(/_/g, ' ')}</td>
-                    <td className="py-2">₱{Number(row.amount || 0).toLocaleString()}</td>
+                    <td className="py-2">₱{Number(row.amount || 0).toLocaleString('en-US')}</td>
                     <td className="py-2">{row.requested_by || 'Unknown'}</td>
                     <td className="py-2 capitalize">{String(row.action || '').replace(/_/g, ' ')}</td>
                     <td className="py-2">{row.action_by || 'System'}</td>
@@ -994,7 +994,7 @@ function RequestorAmountsBarChart({ data }) {
           <div key={row.budget_id} className="space-y-1">
             <div className="flex items-center justify-between text-sm text-slate-300">
               <span className="truncate max-w-[260px] text-white">{row.budget_name || '—'}</span>
-              <span className="text-emerald-400 font-semibold">₱{amount.toLocaleString()}</span>
+              <span className="text-emerald-400 font-semibold">₱{amount.toLocaleString('en-US')}</span>
             </div>
             <div className="h-2 w-full rounded-full bg-slate-700">
               <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${percent}%` }} />
@@ -1143,7 +1143,7 @@ function ApproverVerticalAmountsBarChart({ data }) {
               <div className="mt-2 text-[10px] text-slate-300 text-center truncate max-w-[90px]">
                 {row.budget_name || '—'}
               </div>
-              <div className="text-[10px] text-emerald-400">₱{amount.toLocaleString()}</div>
+              <div className="text-[10px] text-emerald-400">₱{amount.toLocaleString('en-US')}</div>
             </div>
           );
         })}
@@ -1165,7 +1165,7 @@ function ApproverAmountsPieChart({ data }) {
       title="Approved Amounts by Configuration"
       data={sections}
       totalLabel="Total Approved"
-      valueFormatter={(value) => `₱${Number(value || 0).toLocaleString()}`}
+      valueFormatter={(value) => `₱${Number(value || 0).toLocaleString('en-US')}`}
     />
   );
 }
@@ -1210,7 +1210,7 @@ function L2ApproverCharts({ tables, totals }) {
               title="Approved vs Ongoing Amounts"
               data={amountSections}
               totalLabel="Total"
-              valueFormatter={(value) => `₱${Number(value || 0).toLocaleString()}`}
+              valueFormatter={(value) => `₱${Number(value || 0).toLocaleString('en-US')}`}
             />
           )}
         </CardContent>

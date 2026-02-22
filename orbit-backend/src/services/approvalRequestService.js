@@ -544,6 +544,10 @@ export class ApprovalRequestService {
     return [value];
   }
 
+  static normalizeScopeText(value = '') {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
   static normalizeTenureGroup(value = '') {
     const normalized = String(value || '')
       .trim()
@@ -643,6 +647,77 @@ export class ApprovalRequestService {
       success: true,
       valid: false,
       error: `Tenure group validation failed. Employees out of scope: ${preview}${invalidItems.length > 5 ? '...' : ''}`,
+    };
+  }
+
+  static async validateRequestLocationScope(requestId) {
+    const { data: requestData, error: requestError } = await supabase
+      .from('tblbudgetapprovalrequests')
+      .select('request_id, budget_id')
+      .eq('request_id', requestId)
+      .maybeSingle();
+
+    if (requestError) throw requestError;
+    if (!requestData?.budget_id) {
+      return { success: false, error: 'Budget configuration is missing for this request.' };
+    }
+
+    const { data: configData, error: configError } = await supabase
+      .from('tblbudgetconfiguration')
+      .select('location')
+      .eq('budget_id', requestData.budget_id)
+      .maybeSingle();
+
+    if (configError) throw configError;
+
+    const allowedLocations = Array.from(
+      new Set(
+        this.parseStoredList(configData?.location)
+          .map((item) => this.normalizeScopeText(item))
+          .filter(Boolean)
+      )
+    );
+
+    if (!allowedLocations.length || allowedLocations.includes('all')) {
+      return { success: true, valid: true };
+    }
+
+    const allowedLocationSet = new Set(allowedLocations);
+
+    const { data: lineItems, error: lineItemsError } = await supabase
+      .from('tblbudgetapprovalrequests_line_items')
+      .select('item_number, employee_id, Location')
+      .eq('request_id', requestId)
+      .order('item_number', { ascending: true });
+
+    if (lineItemsError) throw lineItemsError;
+
+    const invalidItems = (lineItems || [])
+      .map((item) => {
+        const resolvedLocation = this.normalizeScopeText(item?.Location || '');
+        const valid = Boolean(resolvedLocation && allowedLocationSet.has(resolvedLocation));
+
+        return {
+          employeeId: item?.employee_id || `Item ${item?.item_number || 'N/A'}`,
+          resolvedLocation,
+          valid,
+        };
+      })
+      .filter((item) => !item.valid);
+
+    if (!invalidItems.length) {
+      return { success: true, valid: true };
+    }
+
+    const preview = invalidItems
+      .slice(0, 5)
+      .map((item) => `${item.employeeId} (${item.resolvedLocation || 'missing location'})`)
+      .join(', ');
+
+    return {
+      success: true,
+      valid: false,
+      error: `Location scope validation failed. Employees out of scope: ${preview}${invalidItems.length > 5 ? '...' : ''}`,
     };
   }
 
@@ -1345,6 +1420,20 @@ export class ApprovalRequestService {
   static async submitApprovalRequest(requestId, submittedBy) {
     try {
       console.log('[submitApprovalRequest] Starting submission for request:', requestId, 'by:', submittedBy);
+
+      const locationValidation = await this.validateRequestLocationScope(requestId);
+      if (!locationValidation.success) {
+        return {
+          success: false,
+          error: locationValidation.error || 'Failed location scope validation.',
+        };
+      }
+      if (!locationValidation.valid) {
+        return {
+          success: false,
+          error: locationValidation.error || 'Location scope validation failed.',
+        };
+      }
 
       const tenureValidation = await this.validateRequestTenureScope(requestId);
       if (!tenureValidation.success) {

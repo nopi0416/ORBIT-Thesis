@@ -44,6 +44,19 @@ const containsOrgId = (value, orgId) => {
 
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
 
+const normalizeIdentityText = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+const toDateOnlyKey = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().split('T')[0];
+};
+
 const isRequestorRole = (role) => normalizeRole(role).includes('requestor');
 const isPayrollRole = (role) => normalizeRole(role).includes('payroll');
 const isAdminRole = (role) => normalizeRole(role).includes('admin');
@@ -325,6 +338,39 @@ export class BudgetConfigService {
         status,
         log_meta,
       } = configData;
+
+      const normalizedName = normalizeIdentityText(budget_name);
+      const normalizedDescription = normalizeIdentityText(budget_description);
+      const normalizedStartDate = toDateOnlyKey(start_date);
+      const normalizedEndDate = toDateOnlyKey(end_date);
+
+      if (normalizedName && normalizedStartDate && normalizedEndDate) {
+        const { data: possibleDuplicates, error: duplicateLookupError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name, budget_description, start_date, end_date')
+          .eq('start_date', normalizedStartDate)
+          .eq('end_date', normalizedEndDate);
+
+        if (duplicateLookupError) throw duplicateLookupError;
+
+        const hasExactDuplicate = (possibleDuplicates || []).some((record) => {
+          const existingName = normalizeIdentityText(record?.budget_name);
+          const existingDescription = normalizeIdentityText(record?.budget_description);
+          const existingStartDate = toDateOnlyKey(record?.start_date);
+          const existingEndDate = toDateOnlyKey(record?.end_date);
+
+          return (
+            existingName === normalizedName &&
+            existingDescription === normalizedDescription &&
+            existingStartDate === normalizedStartDate &&
+            existingEndDate === normalizedEndDate
+          );
+        });
+
+        if (hasExactDuplicate) {
+          throw new Error('A budget configuration with the same Budget Name, Description, and Config Date already exists.');
+        }
+      }
 
       // Step 1: Create main budget configuration (without geo/location/department scopes)
       const { data: budgetData, error: budgetError } = await supabase

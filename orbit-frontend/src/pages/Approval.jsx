@@ -213,7 +213,7 @@ const formatDateTimeCompact = (value) => {
   }
 };
 
-const formatCurrencyValue = (value) => `₱${Number(value || 0).toLocaleString()}`;
+const formatCurrencyValue = (value) => `₱${Number(value || 0).toLocaleString('en-US')}`;
 
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
@@ -1039,6 +1039,17 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           data?.department || data?.dept || data?.department_name || 
           data?.dept_name || data?.org_name || data?.ou_name || ''
         );
+        const employeeLocation = normalizeText(
+          data?.location || data?.Location || data?.site || data?.office || data?.site_location || ''
+        );
+
+        const configLocations = parseStoredList(
+          selectedConfig?.location || selectedConfig?.locations || selectedConfig?.siteLocation || []
+        )
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+        const hasLocationFilter = configLocations.length > 0 && !configLocations.includes('all');
+        const locationAllowed = !hasLocationFilter || configLocations.includes(employeeLocation);
 
         // 2. Resolve Budget Configuration Scope
         // Get IDs of selected OUs (leaf nodes)
@@ -1108,9 +1119,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
            }
         }
 
-        if (!isScopeAllowed) {
-          console.warn('[Employee Lookup] Validation Failed:', rejectionReason);
-          setEmployeeLookupError('Employee is not within the selected budget scope.');
+        if (!isScopeAllowed || !locationAllowed) {
+          console.warn('[Employee Lookup] Validation Failed:', rejectionReason || 'Location mismatch');
+          setEmployeeLookupError(
+            !locationAllowed
+              ? 'Employee location is not within the selected budget scope.'
+              : 'Employee is not within the selected budget scope.'
+          );
           setIndividualRequest((prev) => ({
             ...prev,
             employeeName: '',
@@ -1649,6 +1664,17 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           data?.org_id || data?.ou_id || data?.org_unit_id || data?.department_id || ''
         );
         const employeeOrgName = employeeOrgId ? getOrgName(employeeOrgId) : '';
+        const employeeLocation = normalizeText(
+          data?.location || data?.Location || data?.site || data?.office || data?.site_location || ''
+        );
+
+        const configLocations = parseStoredList(
+          selectedConfig?.location || selectedConfig?.locations || selectedConfig?.siteLocation || []
+        )
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+        const hasLocationFilter = configLocations.length > 0 && !configLocations.includes('all');
+        const locationAllowed = !hasLocationFilter || configLocations.includes(employeeLocation);
 
         const rawConfigDepartments =
           selectedConfig?.departments ||
@@ -1700,10 +1726,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           return {
             departmentAllowed: deptMatch,
             ouAllowed: companyMatch,
+            locationAllowed,
             tenureAllowed: tenureValidation.tenureAllowed,
             employeeTenureGroup: tenureValidation.employeeTenureGroup,
             tenureReason: tenureValidation.reason,
-            isValid: companyMatch && deptMatch && tenureValidation.tenureAllowed,
+            isValid: companyMatch && deptMatch && locationAllowed && tenureValidation.tenureAllowed,
             employeeDepartment,
             employeeOrgName,
           };
@@ -1715,10 +1742,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         return {
           departmentAllowed,
           ouAllowed: true,
+          locationAllowed,
           tenureAllowed: tenureValidation.tenureAllowed,
           employeeTenureGroup: tenureValidation.employeeTenureGroup,
           tenureReason: tenureValidation.reason,
-          isValid: departmentAllowed && tenureValidation.tenureAllowed,
+          isValid: departmentAllowed && locationAllowed && tenureValidation.tenureAllowed,
           employeeDepartment,
           employeeOrgName,
         };
@@ -1844,6 +1872,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       if (!item.scopeValidation.ouAllowed) {
         errors.push('Employee OU/organization not in budget scope');
       }
+        if (item.scopeValidation.locationAllowed === false) {
+          errors.push('Employee location not in budget scope');
+        }
       if (item.scopeValidation.tenureAllowed === false) {
         errors.push(item.scopeValidation.tenureReason || 'Employee tenure group is not in budget scope');
       }
@@ -2339,7 +2370,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     const clientSponsoredAmount = Number(config.clientSponsoredAmount ?? 0);
                   const limitValue = Number(config.totalBudget || config.budgetLimit || 0);
                   const formattedRemaining = limitValue > 0 
-                      ? (limitValue - used).toLocaleString() 
+                      ? (limitValue - used).toLocaleString('en-US') 
                       : 'Unlimited';
                   
                   const pathsText = formatOuPaths(config.affectedOUPaths || config.affected_ou || []);
@@ -2506,13 +2537,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     {request.description || 'No description'}
                   </td>
                   <td className="px-4 py-3 text-xs text-right font-semibold text-emerald-400">
-                    ₱{Number(request.amount || 0).toLocaleString()}
+                    ₱{Number(request.amount || 0).toLocaleString('en-US')}
                   </td>
                   <td className="px-4 py-3 text-xs text-right text-red-400">
-                    ₱{Number(request.deductionAmount || 0).toLocaleString()}
+                    ₱{Number(request.deductionAmount || 0).toLocaleString('en-US')}
                   </td>
                   <td className="px-4 py-3 text-xs text-right font-bold text-emerald-400">
-                    ₱{Number(request.netPay || 0).toLocaleString()}
+                    ₱{Number(request.netPay || 0).toLocaleString('en-US')}
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-400">
                     {formatDatePHT(request.submittedAt)}
@@ -2698,7 +2729,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     />
                     {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
                       <p className="text-xs text-slate-400">
-                        Range: {Number(selectedConfig.minLimit).toLocaleString()} - {Number(selectedConfig.maxLimit).toLocaleString()}
+                        Range: {Number(selectedConfig.minLimit).toLocaleString('en-US')} - {Number(selectedConfig.maxLimit).toLocaleString('en-US')}
                       </p>
                     )}
                     {(() => {
@@ -2802,7 +2833,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   </p>
                   {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
                     <p className="text-xs text-emerald-400 font-medium">
-                      Configured Range: {Number(selectedConfig.minLimit).toLocaleString()} - {Number(selectedConfig.maxLimit).toLocaleString()}
+                      Configured Range: {Number(selectedConfig.minLimit).toLocaleString('en-US')} - {Number(selectedConfig.maxLimit).toLocaleString('en-US')}
                     </p>
                   )}
                   {bulkFileName && (
@@ -2966,21 +2997,21 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
-                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString('en-US')}</div>
                   <div className="flex gap-4">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Deduction Total</div>
-                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString()}</div>
+                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Net to Pay</div>
-                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString()}</div>
+                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString('en-US')}</div>
                     </div>
                   </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
-                      ? `₱${Number(budgetUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `₱${Number(budgetUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'No limit'}
                   </div>
                   <div className="h-2 rounded-full bg-slate-700">
@@ -2991,7 +3022,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   </div>
                   <div className="text-xs text-slate-400">
                     {hasTotalBudget
-                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'After approval: No limit'}
                   </div>
                 </div>
@@ -3060,7 +3091,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                               <td className="px-3 py-2 text-slate-300">{item.hire_date || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.termination_date || '—'}</td>
                               <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                ₱{Math.abs(amountValue).toLocaleString()}
+                                ₱{Math.abs(amountValue).toLocaleString('en-US')}
                               </td>
                               <td className="px-3 py-2 text-center">
                                 {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
@@ -4276,21 +4307,21 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
-                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString('en-US')}</div>
                   <div className="flex gap-4">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Deduction Total</div>
-                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString()}</div>
+                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Net to Pay</div>
-                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString()}</div>
+                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString('en-US')}</div>
                     </div>
                   </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
-                      ? `₱${Number(budgetUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `₱${Number(budgetUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'No limit'}
                   </div>
                   <div className="h-2 rounded-full bg-slate-700">
@@ -4298,7 +4329,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                   </div>
                   <div className="text-xs text-slate-400">
                     {hasTotalBudget
-                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'After approval: No limit'}
                   </div>
                 </div>
@@ -4370,7 +4401,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                               <td className="px-3 py-2 text-slate-300">{item.termination_date || '—'}</td>
                               {(userRole === 'payroll' || detailRecord?.is_self_request) && (
                                 <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                  ₱{Math.abs(amountValue).toLocaleString()}
+                                  ₱{Math.abs(amountValue).toLocaleString('en-US')}
                                 </td>
                               )}
                               <td className="px-3 py-2 text-center">
@@ -5240,7 +5271,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-white">
-                      ₱{Number(record.amount || 0).toLocaleString()}
+                      ₱{Number(record.amount || 0).toLocaleString('en-US')}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-300">
                         {formatDate(record.submittedAt)}
@@ -5313,15 +5344,15 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-4 pt-3 border-t border-slate-700">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Total Amount</div>
-                      <div className="text-lg font-semibold text-emerald-400">₱{totalAmount.toLocaleString()}</div>
+                      <div className="text-lg font-semibold text-emerald-400">₱{totalAmount.toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Deductions</div>
-                      <div className="text-lg font-semibold text-rose-400">₱{deductionTotal.toLocaleString()}</div>
+                      <div className="text-lg font-semibold text-rose-400">₱{deductionTotal.toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Net To Pay</div>
-                      <div className="text-lg font-semibold text-blue-400">₱{Math.max(0, totalAmount - deductionTotal).toLocaleString()}</div>
+                      <div className="text-lg font-semibold text-blue-400">₱{Math.max(0, totalAmount - deductionTotal).toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Client Sponsored</div>
@@ -5406,7 +5437,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                                 <td className="px-3 py-2 text-slate-300">{item.employee_status || '—'}</td>
                                 <td className="px-3 py-2 text-slate-300">{item.geo || '—'}</td>
                                 <td className="px-3 py-2 text-slate-300">{item.location || item.Location || '—'}</td>
-                                <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString()}</td>
+                                <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString('en-US')}</td>
                                 <td className="px-3 py-2 text-center text-slate-300">{item.is_deduction ? 'Yes' : 'No'}</td>
                                 <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
                               </tr>

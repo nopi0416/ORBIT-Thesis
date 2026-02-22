@@ -104,6 +104,25 @@ const DATE_PRESET_OPTIONS = [
   { value: "custom", label: "Custom range" },
 ];
 
+const TENURE_GROUP_ORDER = ["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"];
+
+const formatTenureGroupLabel = (value) => {
+  switch (value) {
+    case "0-6months":
+      return "0-6 Months";
+    case "6-12months":
+      return "6-12 Months";
+    case "1-2years":
+      return "1-2 Years";
+    case "2-5years":
+      return "2-5 Years";
+    case "5plus-years":
+      return "5+ Years";
+    default:
+      return String(value || "");
+  }
+};
+
 const toDateOnly = (value) => {
   if (!value) return null;
   const date = new Date(value);
@@ -1463,7 +1482,7 @@ function ConfigurationList({ userRole }) {
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
                         {config.budgetControlEnabled ? (
                           <div className="font-medium text-green-400">
-                            {config.currency} {Number(config.budgetLimit || 0).toLocaleString()}
+                            {config.currency} {Number(config.budgetLimit || 0).toLocaleString('en-US')}
                           </div>
                         ) : (
                           <div className="text-xs text-gray-400">No limit</div>
@@ -1471,22 +1490,22 @@ function ConfigurationList({ userRole }) {
                       </td>
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
                         <div className="font-medium text-emerald-400">
-                          {config.currency} {Number(config.approvedAmount || 0).toLocaleString()}
+                          {config.currency} {Number(config.approvedAmount || 0).toLocaleString('en-US')}
                         </div>
                       </td>
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
                         <div className="font-medium text-cyan-300">
-                          {config.currency} {Number(config.clientSponsoredAmount || 0).toLocaleString()}
+                          {config.currency} {Number(config.clientSponsoredAmount || 0).toLocaleString('en-US')}
                         </div>
                       </td>
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
                         <div className="font-medium text-amber-300">
-                          {config.currency} {Number(config.ongoingAmount || 0).toLocaleString()}
+                          {config.currency} {Number(config.ongoingAmount || 0).toLocaleString('en-US')}
                         </div>
                       </td>
                       <td className="px-2 py-2 border-r border-slate-600 text-right">
                         <div className="text-xs">
-                          {config.currency} {Number(config.limitMin || 0).toLocaleString()} - {Number(config.limitMax || 0).toLocaleString()}
+                          {config.currency} {Number(config.limitMin || 0).toLocaleString('en-US')} - {Number(config.limitMax || 0).toLocaleString('en-US')}
                         </div>
                       </td>
                       <td className="px-2 py-2 border-r border-slate-600">
@@ -1996,9 +2015,9 @@ function ConfigurationList({ userRole }) {
                           <td className="px-3 py-2 text-xs text-slate-300">
                             <Badge className={statusClass}>{statusLabel}</Badge>
                           </td>
-                          <td className="px-3 py-2 text-xs text-emerald-300 text-right">₱{amounts.payment.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-xs text-rose-300 text-right">₱{amounts.deduction.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-xs text-slate-200 text-right">₱{amounts.total.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-xs text-emerald-300 text-right">₱{amounts.payment.toLocaleString('en-US')}</td>
+                          <td className="px-3 py-2 text-xs text-rose-300 text-right">₱{amounts.deduction.toLocaleString('en-US')}</td>
+                          <td className="px-3 py-2 text-xs text-slate-200 text-right">₱{amounts.total.toLocaleString('en-US')}</td>
                           <td className="px-3 py-2 text-xs text-slate-300">{item.description || ''}</td>
                         </tr>
                       )})}
@@ -2622,6 +2641,19 @@ function CreateConfiguration() {
     }
   };
 
+  const normalizeDuplicateText = (value) =>
+    String(value || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+
+  const toDateOnlyKey = (value) => {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toISOString().split("T")[0];
+  };
+
   useEffect(() => {
     if (!formData.startDate || !formData.endDate) return;
     const start = new Date(formData.startDate);
@@ -2725,6 +2757,27 @@ function CreateConfiguration() {
         return;
       }
 
+      const existingConfigs = await budgetConfigService.getBudgetConfigurations({}, token);
+      const duplicateExists = (existingConfigs || []).some((existing) => {
+        const existingName = normalizeDuplicateText(existing?.budget_name || existing?.name);
+        const existingDescription = normalizeDuplicateText(existing?.budget_description || existing?.description);
+        const existingStartDate = toDateOnlyKey(existing?.start_date || existing?.startDate);
+        const existingEndDate = toDateOnlyKey(existing?.end_date || existing?.endDate);
+
+        return (
+          existingName === normalizeDuplicateText(configData.budgetName) &&
+          existingDescription === normalizeDuplicateText(configData.description) &&
+          existingStartDate === toDateOnlyKey(configData.startDate) &&
+          existingEndDate === toDateOnlyKey(configData.endDate)
+        );
+      });
+
+      if (duplicateExists) {
+        toast.error("A configuration with the same Budget Name, Description, and Config Date already exists.");
+        setIsSubmitting(false);
+        return;
+      }
+
       await budgetConfigService.createBudgetConfiguration(configData, token);
 
       // Invalidate budget configs cache to force refresh on list
@@ -2793,6 +2846,17 @@ function CreateConfiguration() {
   const hasCountries = formData.countries.length > 0;
   const hasLocation = formData.siteLocation.length > 0;
 
+  const orderedTenureGroups = useMemo(() => {
+    const selected = Array.isArray(formData.selectedTenureGroups) ? formData.selectedTenureGroups : [];
+    const orderIndex = new Map(TENURE_GROUP_ORDER.map((key, index) => [key, index]));
+
+    return [...selected].sort((a, b) => {
+      const aIndex = orderIndex.has(a) ? orderIndex.get(a) : Number.MAX_SAFE_INTEGER;
+      const bIndex = orderIndex.has(b) ? orderIndex.get(b) : Number.MAX_SAFE_INTEGER;
+      return aIndex - bIndex || String(a).localeCompare(String(b));
+    });
+  }, [formData.selectedTenureGroups]);
+
   const availableGeoOptions = useMemo(() => {
     const map = new Map();
     orgGeoLocations
@@ -2844,9 +2908,14 @@ function CreateConfiguration() {
 
   useEffect(() => {
     const allowed = new Set(availableLocationOptions.map((option) => option.value));
-    if (formData.siteLocation.length && !allowed.has(formData.siteLocation[0])) {
-      updateField("siteLocation", []);
-      updateField("clients", []);
+    if (formData.siteLocation.length) {
+      const filteredLocations = formData.siteLocation.filter((location) => allowed.has(location));
+      if (filteredLocations.length !== formData.siteLocation.length) {
+        updateField("siteLocation", filteredLocations);
+      }
+      if (filteredLocations.length === 0) {
+        updateField("clients", []);
+      }
     }
   }, [availableLocationOptions, formData.siteLocation]);
 
@@ -3042,7 +3111,7 @@ function CreateConfiguration() {
                 <h4 className="font-medium text-white">Organization</h4>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label className="text-white text-sm">Affected OUs</Label>
+                    <Label className="text-white text-sm">Affected OUs *</Label>
                     <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
                       {organizationsLoading ? (
                         <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
@@ -3167,7 +3236,7 @@ function CreateConfiguration() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label className="text-white text-sm">Accessible OUs</Label>
+                    <Label className="text-white text-sm">Accessible OUs *</Label>
                     <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
                       {organizationsLoading ? (
                         <div className="text-gray-400 text-sm p-2">Loading organizations...</div>
@@ -3297,7 +3366,7 @@ function CreateConfiguration() {
                 <div className="space-y-3">
                   <h4 className="font-medium text-white">Location & Client Scope</h4>
                   <div className="space-y-2">
-                    <Label className="text-white text-xs">Geo (Country/Region)</Label>
+                    <Label className="text-white text-xs">Geo (Country/Region) *</Label>
                     <SearchableSelect
                       value={formData.countries.length > 0 ? formData.countries[0] : ""}
                       onValueChange={(value) => {
@@ -3321,14 +3390,15 @@ function CreateConfiguration() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-white text-xs">Site Location</Label>
-                    <SearchableSelect
-                      value={formData.siteLocation.length > 0 ? formData.siteLocation[0] : ""}
-                      onValueChange={(value) => {
-                        updateField("siteLocation", value ? [value] : []);
+                    <Label className="text-white text-xs">Site Location *</Label>
+                    <MultiSelect
+                      selected={formData.siteLocation}
+                      onChange={(selected) => {
+                        updateField("siteLocation", selected);
                         updateField("clients", []);
                       }}
                       options={availableLocationOptions}
+                      hasAllOption={true}
                       disabled={!hasCountries || orgScopeLoading || availableLocationOptions.length === 0}
                       placeholder={
                         !hasCountries
@@ -3339,12 +3409,11 @@ function CreateConfiguration() {
                               ? "Select location"
                               : "No locations available"
                       }
-                      searchPlaceholder="Search location..."
                       maxLength={50}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-white text-xs">Clients</Label>
+                    <Label className="text-white text-xs">Clients *</Label>
                     <MultiSelect
                       options={availableClientOptions}
                       selected={formData.clients}
@@ -3366,7 +3435,7 @@ function CreateConfiguration() {
                 </div>
 
                 <div className="pt-3 border-t border-slate-600/60 space-y-3">
-                  <h4 className="font-medium text-white">Tenure Group</h4>
+                  <h4 className="font-medium text-white">Tenure Group *</h4>
                   <div className="grid grid-cols-2 gap-2">
                     {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
                       <div key={value} className="flex items-center space-x-2">
@@ -3571,10 +3640,10 @@ function CreateConfiguration() {
                   <div className="flex items-start justify-between gap-2">
                     <span className="text-gray-400 text-sm flex-shrink-0">Tenure Groups</span>
                     <div className="flex flex-wrap gap-2 justify-end">
-                      {formData.selectedTenureGroups?.length ? (
-                        formData.selectedTenureGroups.map((tenure) => (
+                      {orderedTenureGroups.length ? (
+                        orderedTenureGroups.map((tenure) => (
                           <span key={tenure} className="text-sm bg-slate-800/60 px-2 py-1 rounded">
-                            {tenure}
+                            {formatTenureGroupLabel(tenure)}
                           </span>
                         ))
                       ) : (
