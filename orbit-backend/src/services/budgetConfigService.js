@@ -29,6 +29,53 @@ const containsOrgId = (value, orgId) => {
   });
 };
 
+const flattenScopeEntries = (value) => {
+  const parsed = parseStoredList(value);
+  const flat = [];
+
+  const walk = (entry) => {
+    if (Array.isArray(entry)) {
+      entry.forEach(walk);
+      return;
+    }
+    if (entry === undefined || entry === null || entry === '') return;
+    flat.push(String(entry).trim());
+  };
+
+  walk(parsed);
+  return flat.filter(Boolean);
+};
+
+const normalizeScopeText = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+
+const matchesDepartmentScope = (config = {}, departmentId = null, departmentName = null) => {
+  const normalizedDepartmentId = String(departmentId || '').trim();
+  const normalizedDepartmentName = normalizeScopeText(departmentName);
+  if (!normalizedDepartmentId && !normalizedDepartmentName) return false;
+
+  const accessScope = flattenScopeEntries(config.access_ou);
+  const departmentScope = flattenScopeEntries(config.department || config.budget_department || config.department_id);
+  const allScopeValues = [...accessScope, ...departmentScope];
+
+  if (!allScopeValues.length) return false;
+
+  return allScopeValues.some((rawValue) => {
+    const scopeValue = String(rawValue || '').trim();
+    if (!scopeValue) return false;
+    if (normalizedDepartmentId && scopeValue === normalizedDepartmentId) return true;
+
+    const normalizedScopeValue = normalizeScopeText(scopeValue);
+    if (normalizedDepartmentName && normalizedScopeValue === normalizedDepartmentName) return true;
+
+    return false;
+  });
+};
+
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
 
 const normalizeIdentityText = (value) =>
@@ -132,6 +179,8 @@ export class BudgetConfigService {
       userId,
       userRole,
       orgAncestryIds = [],
+      departmentId = null,
+      departmentName = null,
       approverBudgetIds = new Set(),
       isAdmin = false,
     } = context;
@@ -147,8 +196,11 @@ export class BudgetConfigService {
     if (isPayrollRole(userRole)) return true;
 
     if (isRequestorRole(userRole)) {
-      if (!orgAncestryIds.length) return false;
-      return orgAncestryIds.some((orgId) => containsOrgId(config.access_ou, orgId));
+      const orgMatch = orgAncestryIds.length
+        ? orgAncestryIds.some((orgId) => containsOrgId(config.access_ou, orgId))
+        : false;
+      const departmentMatch = matchesDepartmentScope(config, departmentId, departmentName);
+      return orgMatch || departmentMatch;
     }
 
     return false;
@@ -157,6 +209,17 @@ export class BudgetConfigService {
   static async canUserAccessBudgetConfig({ budgetConfig, userId, userRole, orgId, isAdmin = false }) {
     try {
       const budgetId = budgetConfig?.budget_id || budgetConfig?.id;
+      let departmentId = null;
+      let departmentName = null;
+
+      if (userId) {
+        const userResult = await this.getUserById(userId);
+        if (userResult?.success && userResult?.data) {
+          departmentId = userResult.data.department_id || null;
+          departmentName = userResult.data.department || null;
+        }
+      }
+
       const [orgAncestryIds, approverBudgetIds] = await Promise.all([
         this.getOrganizationAncestryIds(orgId),
         this.getApproverBudgetIdsByUser(userId, budgetId ? [budgetId] : []),
@@ -166,6 +229,8 @@ export class BudgetConfigService {
         userId,
         userRole,
         orgAncestryIds,
+        departmentId,
+        departmentName,
         approverBudgetIds,
         isAdmin,
       });
@@ -568,9 +633,17 @@ export class BudgetConfigService {
       let visibilityFiltered = filteredByOrg;
       if (filters.user_id) {
         let orgAncestryIds = [];
+        let departmentId = null;
+        let departmentName = null;
         let approverBudgetIds = new Set();
 
         try {
+          const userResult = await this.getUserById(filters.user_id);
+          if (userResult?.success && userResult?.data) {
+            departmentId = userResult.data.department_id || null;
+            departmentName = userResult.data.department || null;
+          }
+
           [orgAncestryIds, approverBudgetIds] = await Promise.all([
             this.getOrganizationAncestryIds(filters.org_id),
             this.getApproverBudgetIdsByUser(filters.user_id, (filteredByOrg || []).map((row) => row.budget_id)),
@@ -584,6 +657,8 @@ export class BudgetConfigService {
             userId: filters.user_id,
             userRole: filters.user_role,
             orgAncestryIds,
+            departmentId,
+            departmentName,
             approverBudgetIds,
             isAdmin: Boolean(filters.is_admin),
           })

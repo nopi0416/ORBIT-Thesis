@@ -320,6 +320,58 @@ function ConfigurationList({ userRole }) {
   const lastConfigFetchRef = useRef(0);
 
   const token = user?.token || localStorage.getItem("authToken") || "";
+  const normalizedUserRole = String(userRole || '').toLowerCase();
+  const shouldRestrictByDepartmentScope = ['requestor', 'l1'].includes(normalizedUserRole);
+
+  const normalizeScopeText = (value = '') =>
+    String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[_\-]+/g, ' ')
+      .replace(/\s+/g, ' ');
+
+  const flattenScopeEntries = (value) => {
+    const parsed = parseStoredList(value);
+    const result = [];
+
+    const walk = (entry) => {
+      if (Array.isArray(entry)) {
+        entry.forEach(walk);
+        return;
+      }
+      if (entry === undefined || entry === null || entry === '') return;
+      result.push(String(entry).trim());
+    };
+
+    walk(parsed);
+    return result.filter(Boolean);
+  };
+
+  const canUserViewByDepartmentScope = (config) => {
+    if (!shouldRestrictByDepartmentScope) return true;
+    if (!config) return false;
+    if (String(config.createdById || '') === String(user?.id || '')) return true;
+
+    const userDepartmentId = String(user?.department_id || user?.departmentId || '').trim();
+    const userDepartmentName = normalizeScopeText(user?.department || user?.department_name || user?.departmentName || '');
+    if (!userDepartmentId && !userDepartmentName) return true;
+
+    const rawScopeValues = [
+      ...flattenScopeEntries(config.accessOUPaths),
+      ...flattenScopeEntries(config.department),
+      ...flattenScopeEntries(config.departmentId),
+    ];
+
+    if (!rawScopeValues.length) return true;
+
+    return rawScopeValues.some((value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return false;
+      if (userDepartmentId && raw === userDepartmentId) return true;
+      if (userDepartmentName && normalizeScopeText(raw) === userDepartmentName) return true;
+      return false;
+    });
+  };
 
   const getApproverName = (approverId, approversList) => {
     if (!approverId) return null;
@@ -394,6 +446,9 @@ function ConfigurationList({ userRole }) {
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
+      accessOUPaths: parseStoredList(config.access_ou || config.accessOUPaths),
+      department: config.department || config.budget_department || null,
+      departmentId: config.department_id || config.departmentId || null,
       selectedTenureGroups: parseStoredList(config.tenure_group || config.selectedTenureGroups || config.tenureGroup),
       history: config.history || config.history_entries || config.historyEntries || [],
       logs: config.logs || config.logEntries || config.configuration_logs || config.log_entries || [],
@@ -458,7 +513,8 @@ function ConfigurationList({ userRole }) {
         hasNext: false,
       };
 
-      setConfigurations((items || []).map(transformConfig));
+      const transformedItems = (items || []).map(transformConfig);
+      setConfigurations(transformedItems.filter(canUserViewByDepartmentScope));
       setServerPagination(pagination);
       lastConfigFetchRef.current = Date.now();
     } catch (err) {
