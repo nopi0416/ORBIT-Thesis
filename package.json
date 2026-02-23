@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "ngrok": "ngrok start --all --config ./ngrok.yml",
+    "ngrok:frontend": "ngrok http 5173 --config ./ngrok.yml",
+    "ngrok:backend": "ngrok http 3001 --config ./ngrok.yml"
+  },
   "dependencies": {
     "currency-codes": "^2.2.0"
   }

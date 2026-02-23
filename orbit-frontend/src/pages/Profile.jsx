@@ -1,242 +1,150 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Avatar, AvatarFallback } from "../components/ui/avatar";
 import { useAuth } from "../context/AuthContext";
-import { 
-  User, 
-  Mail, 
-  Briefcase, 
-  Calendar, 
-  Edit, 
-  Save, 
-  X 
-} from "../components/icons";
+import { User, Mail, Briefcase } from "../components/icons";
+import { getUserById } from "../services/budgetConfigService";
+
+const getRoleLabel = (roles = [], fallback = "") => {
+  const roleValue = String(roles?.[0] || fallback || "").toLowerCase();
+  if (roleValue.includes("l1")) return "L1 Approver";
+  if (roleValue.includes("l2")) return "L2 Approver";
+  if (roleValue.includes("l3")) return "L3 Approver";
+  if (roleValue.includes("payroll")) return "Payroll";
+  if (roleValue.includes("admin")) return "Admin";
+  return "Requestor";
+};
 
 export default function ProfilePage() {
   const { user } = useAuth();
-  const [isEditing, setIsEditing] = useState(false);
-  const [formData, setFormData] = useState({
-    name: user?.name || "",
-    email: user?.email || "",
-    phone: "+63 917 123 4567",
-    department: "IT Department",
-    position:
-      user?.role === "l1"
-        ? "Team Lead"
-        : user?.role === "l2"
-          ? "Manager"
-          : user?.role === "l3"
-            ? "VP"
-            : user?.role === "payroll"
-              ? "Payroll Staff"
-              : "Employee",
-    joinDate: "January 15, 2022",
-  });
+  const [loading, setLoading] = useState(false);
+  const [profile, setProfile] = useState(null);
 
-  const handleSave = () => {
-    setIsEditing(false);
-    alert("Profile updated successfully!");
-  };
+  const token = user?.token || localStorage.getItem("authToken") || "";
 
-  const handleCancel = () => {
-    setIsEditing(false);
-  };
+  useEffect(() => {
+    let active = true;
 
-  const getInitials = (name) => {
-    return name
-      .split(" ")
-      .map((n) => n[0])
-      .join("")
-      .toUpperCase();
-  };
+    const fetchProfile = async () => {
+      if (!user?.id) return;
+      setLoading(true);
+      try {
+        const data = await getUserById(user.id, token);
+        if (!active) return;
+        setProfile(data || null);
+      } catch (error) {
+        if (!active) return;
+        console.error("[ProfilePage] Failed to load profile:", error);
+        setProfile(null);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
 
-  const getRoleBadgeColor = () => {
-    switch (user?.role) {
-      case "l1":
-        return "bg-blue-500";
-      case "l2":
-        return "bg-purple-500";
-      case "l3":
-        return "bg-orange-500";
-      case "payroll":
-        return "bg-green-500";
-      default:
-        return "bg-pink-500";
-    }
-  };
+    fetchProfile();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, token]);
+
+  const fullName = useMemo(() => {
+    const first = profile?.first_name || user?.firstName || "";
+    const last = profile?.last_name || user?.lastName || "";
+    const combined = `${first} ${last}`.trim();
+    return combined || user?.name || "User";
+  }, [profile, user]);
+
+  const initials = useMemo(() => {
+    const parts = String(fullName || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2);
+    return parts.map((part) => part[0]).join("").toUpperCase() || "U";
+  }, [fullName]);
+
+  const roleLabel = useMemo(() => {
+    const roleFromProfile = (profile?.tbluserroles || [])
+      .filter((entry) => entry?.is_active !== false)
+      .map((entry) => {
+        const roleObj = Array.isArray(entry?.tblroles) ? entry.tblroles[0] : entry?.tblroles;
+        return roleObj?.role_name;
+      })
+      .filter(Boolean);
+
+    return getRoleLabel(roleFromProfile, user?.role);
+  }, [profile, user?.role]);
+
+  const email = profile?.email || user?.email || "—";
+  const department = profile?.department || profile?.org_name || "—";
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader 
-        title="Profile" 
-        description="Manage your personal information and settings" 
+      <PageHeader
+        title="Profile"
+        description="Your account details"
       />
 
-      <div className="flex-1 p-6">
+      <div className="flex-1 p-6 overflow-y-auto">
         <div className="mx-auto max-w-4xl space-y-6">
-          {/* Profile Header Card */}
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="pt-6">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-4">
-                  <Avatar className="h-20 w-20">
-                    <AvatarFallback className={`text-2xl font-bold ${getRoleBadgeColor()} text-white`}>
-                      {getInitials(formData.name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <h2 className="text-2xl font-bold text-white">{formData.name}</h2>
-                    <p className="text-sm text-gray-400">{formData.position}</p>
-                    <p className="mt-1 text-xs text-gray-400 capitalize">
-                      Role:{" "}
-                      {user?.role === "l1"
-                        ? "L1 Approver"
-                        : user?.role === "l2"
-                          ? "L2 Approver"
-                          : user?.role === "l3"
-                            ? "L3 Approver"
-                            : user?.role === "payroll"
-                              ? "Payroll Staff"
-                              : "Requestor"}
-                    </p>
-                  </div>
+              <div className="flex items-center gap-4">
+                <Avatar className="h-20 w-20">
+                  <AvatarFallback className="text-2xl font-bold bg-pink-500 text-white">
+                    {initials}
+                  </AvatarFallback>
+                </Avatar>
+                <div>
+                  <h2 className="text-2xl font-bold text-white">{fullName}</h2>
+                  <p className="mt-1 text-xs text-gray-400">Role: {roleLabel}</p>
                 </div>
-                {!isEditing ? (
-                  <Button 
-                    onClick={() => setIsEditing(true)} 
-                    variant="outline"
-                    className="border-slate-600 text-white hover:bg-slate-700"
-                  >
-                    <Edit className="mr-2 h-4 w-4" />
-                    Edit Profile
-                  </Button>
-                ) : (
-                  <div className="flex gap-2">
-                    <Button onClick={handleSave} size="sm" className="bg-blue-600 hover:bg-blue-700">
-                      <Save className="mr-2 h-4 w-4" />
-                      Save
-                    </Button>
-                    <Button 
-                      onClick={handleCancel} 
-                      variant="outline" 
-                      size="sm"
-                      className="border-slate-600 text-white hover:bg-slate-700"
-                    >
-                      <X className="mr-2 h-4 w-4" />
-                      Cancel
-                    </Button>
-                  </div>
-                )}
               </div>
             </CardContent>
           </Card>
 
-          {/* Personal Information */}
           <Card className="bg-slate-800 border-slate-700">
             <CardHeader>
-              <CardTitle className="text-white">Personal Information</CardTitle>
+              <CardTitle className="text-white">Profile Information</CardTitle>
               <CardDescription className="text-gray-400">
-                Your basic profile information
+                {loading ? "Loading latest data..." : "Fetched from database"}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="name" className="text-white">Full Name</Label>
-                  {isEditing ? (
-                    <Input
-                      id="name"
-                      value={formData.name}
-                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      className="bg-slate-700 border-slate-600 text-white"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-2 text-sm text-gray-300">
-                      <User className="h-4 w-4 text-gray-400" />
-                      <span>{formData.name}</span>
-                    </div>
-                  )}
+                  <Label className="text-white">Full Name</Label>
+                  <div className="flex items-center gap-2 text-sm text-gray-300">
+                    <User className="h-4 w-4 text-gray-400" />
+                    <span>{fullName}</span>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="email" className="text-white">Email Address</Label>
+                  <Label className="text-white">Email Address</Label>
                   <div className="flex items-center gap-2 text-sm text-gray-300">
                     <Mail className="h-4 w-4 text-gray-400" />
-                    <span>{formData.email}</span>
+                    <span>{email}</span>
                   </div>
-                  <p className="text-xs text-gray-400">Email cannot be changed</p>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="phone" className="text-white">Phone Number</Label>
-                  {isEditing ? (
-                    <Input
-                      id="phone"
-                      value={formData.phone}
-                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                      className="bg-slate-700 border-slate-600 text-white"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-2 text-sm text-gray-300">
-                      <span>{formData.phone}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="department" className="text-white">Department</Label>
+                  <Label className="text-white">Role</Label>
                   <div className="flex items-center gap-2 text-sm text-gray-300">
                     <Briefcase className="h-4 w-4 text-gray-400" />
-                    <span>{formData.department}</span>
+                    <span>{roleLabel}</span>
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="position" className="text-white">Position</Label>
+                  <Label className="text-white">Department</Label>
                   <div className="flex items-center gap-2 text-sm text-gray-300">
-                    <span>{formData.position}</span>
+                    <Briefcase className="h-4 w-4 text-gray-400" />
+                    <span>{department}</span>
                   </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="joinDate" className="text-white">Join Date</Label>
-                  <div className="flex items-center gap-2 text-sm text-gray-300">
-                    <Calendar className="h-4 w-4 text-gray-400" />
-                    <span>{formData.joinDate}</span>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Account Statistics */}
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader>
-              <CardTitle className="text-white">Account Activity</CardTitle>
-              <CardDescription className="text-gray-400">
-                Your activity summary in ORBIT
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-4 md:grid-cols-3">
-                <div className="rounded-lg border border-slate-600 bg-slate-700/30 p-4">
-                  <p className="text-sm text-gray-400">Total Requests</p>
-                  <p className="text-2xl font-bold text-white">24</p>
-                  <p className="text-xs text-gray-400">Last 30 days</p>
-                </div>
-                <div className="rounded-lg border border-slate-600 bg-slate-700/30 p-4">
-                  <p className="text-sm text-gray-400">Approved</p>
-                  <p className="text-2xl font-bold text-green-400">18</p>
-                  <p className="text-xs text-gray-400">Success rate: 75%</p>
-                </div>
-                <div className="rounded-lg border border-slate-600 bg-slate-700/30 p-4">
-                  <p className="text-sm text-gray-400">Pending</p>
-                  <p className="text-2xl font-bold text-yellow-400">6</p>
-                  <p className="text-xs text-gray-400">Awaiting approval</p>
                 </div>
               </div>
             </CardContent>

@@ -358,7 +358,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   </div>
                   <div className="mt-4 space-y-2">
                     <div className="text-center text-xs text-gray-400">
-                      Used Budget: ₱{Number(config.usedAmount || 0).toLocaleString()} / ₱{Number(config.maxAmount || 0).toLocaleString()}
+                      Used Budget: ₱{Number(config.usedAmount || 0).toLocaleString('en-US')} / ₱{Number(config.maxAmount || 0).toLocaleString('en-US')}
                     </div>
                     <Button
                       size="sm"
@@ -406,7 +406,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       <p className="text-xs text-gray-500">Submitted: {request.submittedAt || '—'}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-lg font-semibold text-white">₱{Number(request.amount || 0).toLocaleString()}</p>
+                      <p className="text-lg font-semibold text-white">₱{Number(request.amount || 0).toLocaleString('en-US')}</p>
                       <p className="text-xs text-gray-400">{request.description || 'No summary provided.'}</p>
                     </div>
                   </div>
@@ -443,7 +443,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 <div>
                   <p className="text-xs text-slate-400">Budget Usage</p>
                   <p className="text-white text-sm">
-                    ₱{Number(selectedConfig?.usedAmount || 0).toLocaleString()} / ₱{Number(selectedConfig?.maxAmount || 0).toLocaleString()}
+                    ₱{Number(selectedConfig?.usedAmount || 0).toLocaleString('en-US')} / ₱{Number(selectedConfig?.maxAmount || 0).toLocaleString('en-US')}
                   </p>
                 </div>
               </div>
@@ -673,7 +673,7 @@ function ApprovalRequests({ refreshKey }) {
                     <p className="text-xs text-gray-300">{approval.budgetName}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-lg font-semibold text-white">₱{Number(approval.amount || 0).toLocaleString()}</p>
+                    <p className="text-lg font-semibold text-white">₱{Number(approval.amount || 0).toLocaleString('en-US')}</p>
                     <p className="text-xs text-gray-400">{approval.description || 'No summary provided.'}</p>
                   </div>
                 </div>
@@ -759,7 +759,7 @@ function ApprovalHistory({ refreshKey }) {
                     <p className="text-xs text-gray-300">{record.budgetName}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-lg font-semibold text-white">₱{Number(record.amount || 0).toLocaleString()}</p>
+                    <p className="text-lg font-semibold text-white">₱{Number(record.amount || 0).toLocaleString('en-US')}</p>
                     <p className="text-xs text-gray-400">{record.submittedAt || '—'}</p>
                   </div>
                 </div>

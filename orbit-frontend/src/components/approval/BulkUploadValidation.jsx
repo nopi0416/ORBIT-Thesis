@@ -5,6 +5,7 @@ import { Checkbox } from '../ui/checkbox';
 import { Badge } from '../ui/badge';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
+import PaginationControls from '../PaginationControls';
 import approvalRequestService from '../../services/approvalRequestService';
 
 const sanitizeTextInput = (value = '') =>
@@ -144,6 +145,8 @@ const BulkUploadValidation = ({
   validateEmployee 
 }) => {
   const [activeTab, setActiveTab] = useState('valid');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState('25');
   const [employeeLookupQueue, setEmployeeLookupQueue] = useState(new Map());
   const lookupTimeoutRef = useRef(null);
   const token = localStorage.getItem('authToken') || '';
@@ -213,6 +216,24 @@ const BulkUploadValidation = ({
   const filteredItems = useMemo(() => {
     return validatedItems.filter(item => item.status === activeTab);
   }, [validatedItems, activeTab]);
+
+  const rowsPerPageNumber = Number(rowsPerPage || 25);
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / rowsPerPageNumber));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+  const paginatedItems = filteredItems.slice(
+    (safeCurrentPage - 1) * rowsPerPageNumber,
+    safeCurrentPage * rowsPerPageNumber
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const counts = useMemo(() => {
     return {
@@ -305,7 +326,7 @@ const BulkUploadValidation = ({
                 </tr>
               </thead>
               <tbody>
-                {filteredItems.map((item) => (
+                {paginatedItems.map((item) => (
                   <BulkTableRow 
                     key={`${item.index}-${item.employee_id}`}
                     item={item}
@@ -316,6 +337,14 @@ const BulkUploadValidation = ({
               </tbody>
             </table>
           </div>
+          <PaginationControls
+            page={safeCurrentPage}
+            totalPages={totalPages}
+            rowsPerPage={rowsPerPage}
+            onPageChange={(page) => setCurrentPage(page)}
+            onRowsPerPageChange={(value) => setRowsPerPage(value)}
+            rowOptions={[25, 50, 100]}
+          />
           <div className="mt-2 text-xs text-slate-400">
             Total items: {filteredItems.length}
           </div>

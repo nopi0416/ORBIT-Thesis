@@ -3,7 +3,7 @@
  * Handles API calls for approval requests and line items
  */
 
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 const getHeaders = (token) => ({
   'Content-Type': 'application/json',
@@ -19,8 +19,6 @@ const parseResponse = async (response) => {
     throw new Error(`Failed to parse server response: ${response.statusText}`);
   }
   
-  console.log('[parseResponse] Response status:', response.status, 'Data:', data);
-  
   if (!response.ok) {
     const errorMessage = data.error || data.message || `Request failed with status ${response.status}`;
     console.error('[parseResponse] Request failed:', errorMessage, 'Full data:', data);
@@ -30,12 +28,15 @@ const parseResponse = async (response) => {
 };
 
 const getApprovalRequests = async (filters = {}, token) => {
+  const wantsPaginated = Boolean(filters.page || filters.limit);
   const queryParams = new URLSearchParams();
   if (filters.budget_id) queryParams.append('budget_id', filters.budget_id);
   if (filters.status) queryParams.append('status', filters.status);
   if (filters.search) queryParams.append('search', filters.search);
   if (filters.submitted_by) queryParams.append('submitted_by', filters.submitted_by);
   if (filters.approval_stage_status) queryParams.append('approval_stage_status', filters.approval_stage_status);
+  if (filters.page) queryParams.append('page', String(filters.page));
+  if (filters.limit) queryParams.append('limit', String(filters.limit));
 
   const url = `${API_BASE_URL}/approval-requests${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
   const response = await fetch(url, {
@@ -43,7 +44,26 @@ const getApprovalRequests = async (filters = {}, token) => {
     headers: getHeaders(token),
   });
 
-  return parseResponse(response);
+  const payload = await parseResponse(response);
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === 'object') {
+    if (!wantsPaginated) {
+      return Array.isArray(payload.items) ? payload.items : [];
+    }
+
+    return {
+      items: Array.isArray(payload.items) ? payload.items : [],
+      pagination: payload.pagination || {
+        page: Number(filters.page || 1),
+        limit: Number(filters.limit || 10),
+        totalItems: Array.isArray(payload.items) ? payload.items.length : 0,
+        totalPages: 1,
+        hasPrev: false,
+        hasNext: false,
+      },
+    };
+  }
+  return [];
 };
 
 const getApprovalRequest = async (requestId, token) => {
@@ -100,13 +120,11 @@ const completePayrollPayment = async (requestId, payload, token) => {
 
 const createApprovalRequest = async (payload, token) => {
   try {
-    console.log('[createApprovalRequest] Sending request with payload:', payload);
     const response = await fetch(`${API_BASE_URL}/approval-requests`, {
       method: 'POST',
       headers: getHeaders(token),
       body: JSON.stringify(payload),
     });
-    console.log('[createApprovalRequest] Response received:', response.status);
     return parseResponse(response);
   } catch (error) {
     console.error('[createApprovalRequest] Network or parsing error:', error);
@@ -116,12 +134,10 @@ const createApprovalRequest = async (payload, token) => {
 
 const submitApprovalRequest = async (requestId, token) => {
   try {
-    console.log('[submitApprovalRequest] Submitting request:', requestId);
     const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/submit`, {
       method: 'POST',
       headers: getHeaders(token),
     });
-    console.log('[submitApprovalRequest] Response received:', response.status);
     return parseResponse(response);
   } catch (error) {
     console.error('[submitApprovalRequest] Network or parsing error:', error);
@@ -155,14 +171,35 @@ const addLineItem = async (requestId, payload, token) => {
 
 const addLineItemsBulk = async (requestId, payload, token) => {
   try {
-    console.log('[addLineItemsBulk] Adding line items to request:', requestId, 'Count:', payload?.line_items?.length);
-    const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/line-items/bulk`, {
-      method: 'POST',
-      headers: getHeaders(token),
-      body: JSON.stringify(payload),
-    });
-    console.log('[addLineItemsBulk] Response received:', response.status);
-    return parseResponse(response);
+    const lineItems = Array.isArray(payload?.line_items) ? payload.line_items : [];
+    if (!lineItems.length) {
+      throw new Error('line_items must be a non-empty array');
+    }
+
+    const chunkSize = 500;
+    const totalChunks = Math.ceil(lineItems.length / chunkSize);
+    const combinedData = [];
+
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+      const start = chunkIndex * chunkSize;
+      const end = start + chunkSize;
+      const chunk = lineItems.slice(start, end);
+
+      const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/line-items/bulk`, {
+        method: 'POST',
+        headers: getHeaders(token),
+        body: JSON.stringify({ line_items: chunk }),
+      });
+
+      const chunkResult = await parseResponse(response);
+      if (Array.isArray(chunkResult)) {
+        combinedData.push(...chunkResult);
+      } else if (chunkResult) {
+        combinedData.push(chunkResult);
+      }
+    }
+
+    return combinedData;
   } catch (error) {
     console.error('[addLineItemsBulk] Network or parsing error:', error);
     throw error;
