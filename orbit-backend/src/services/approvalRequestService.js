@@ -339,10 +339,45 @@ export class ApprovalRequestService {
     }
   }
 
+  static async includeActorRecipient(context, actorId) {
+    const recipientIds = new Set([...(context?.scopedRecipients || [])]);
+    const profileMap = new Map(context?.profileMap || []);
+    let actorProfile = actorId ? profileMap.get(actorId) : null;
+
+    if (actorId && !actorProfile) {
+      try {
+        const actorMap = await this.getUserProfileMap([actorId]);
+        const fetchedProfile = actorMap.get(actorId);
+        if (fetchedProfile) {
+          profileMap.set(actorId, fetchedProfile);
+          actorProfile = fetchedProfile;
+        }
+      } catch (error) {
+        console.warn('[email] Failed to resolve actor profile for notification:', error?.message || error);
+      }
+    }
+
+    if (actorId) {
+      recipientIds.add(actorId);
+    }
+
+    return {
+      recipientIds: Array.from(recipientIds),
+      profileMap,
+      actorProfile,
+    };
+  }
+
   static async sendApprovalStepNotifications({ requestId, approvalLevel, payrollCycle, payrollCycleDate, approvedBy = null }) {
     try {
       const context = await this.getNotificationContext(requestId);
-      const actor = approvedBy ? context.profileMap.get(approvedBy) : null;
+      const {
+        recipientIds,
+        profileMap,
+        actorProfile,
+      } = await this.includeActorRecipient(context, approvedBy);
+
+      const actor = actorProfile || (approvedBy ? profileMap.get(approvedBy) : null);
       const actorName = actor?.name || 'An approver';
       const actorRole = this.formatRoleLabel(actor?.role_name);
       const budgetName = context.budget?.budget_name || 'Unknown Budget';
@@ -354,8 +389,8 @@ export class ApprovalRequestService {
         notificationType: 'approved',
         title: 'Approval Request Updated',
         message,
-        recipientIds: context.scopedRecipients,
-        profileMap: context.profileMap,
+        recipientIds,
+        profileMap,
         relatedApprovalLevel: Number(approvalLevel),
       });
 
@@ -374,8 +409,8 @@ export class ApprovalRequestService {
         </div>
       `;
 
-      const recipients = context.scopedRecipients
-        .map((id) => context.profileMap.get(id)?.email)
+      const recipients = recipientIds
+        .map((id) => profileMap.get(id)?.email)
         .filter(Boolean);
 
       if (recipients.length) {
@@ -440,7 +475,13 @@ export class ApprovalRequestService {
   static async sendCompletionNotifications({ requestId, completedBy = null, completionNotes = '' }) {
     try {
       const context = await this.getNotificationContext(requestId);
-      const actor = completedBy ? context.profileMap.get(completedBy) : null;
+      const {
+        recipientIds,
+        profileMap,
+        actorProfile,
+      } = await this.includeActorRecipient(context, completedBy);
+
+      const actor = actorProfile || (completedBy ? profileMap.get(completedBy) : null);
       const actorName = actor?.name || 'Payroll';
       const actorRole = this.formatRoleLabel(actor?.role_name || 'payroll');
       const budgetName = context.budget?.budget_name || 'Unknown Budget';
@@ -452,13 +493,13 @@ export class ApprovalRequestService {
         notificationType: 'completed',
         title: 'Payment Completed',
         message,
-        recipientIds: context.scopedRecipients,
-        profileMap: context.profileMap,
+        recipientIds,
+        profileMap,
         relatedApprovalLevel: 4,
       });
 
-      const recipients = context.scopedRecipients
-        .map((id) => context.profileMap.get(id)?.email)
+      const recipients = recipientIds
+        .map((id) => profileMap.get(id)?.email)
         .filter(Boolean);
 
       if (!recipients.length) return;

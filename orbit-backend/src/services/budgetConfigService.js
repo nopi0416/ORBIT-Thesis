@@ -307,7 +307,7 @@ export class BudgetConfigService {
       const fallbackAmount = Number(row.total_request_amount || 0);
       const computedNetAmount = netAmountByRequest.get(row.request_id);
       const resolvedAmount = Number.isFinite(computedNetAmount) ? computedNetAmount : fallbackAmount;
-      const amount = Math.max(0, Number(resolvedAmount || 0));
+      const amount = Number(resolvedAmount || 0);
       const isClientSponsored = Boolean(row.is_client_sponsored);
       const current = totals.get(key) || { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
 

@@ -217,6 +217,15 @@ const formatDateTimeCompact = (value) => {
 
 const formatCurrencyValue = (value) => `₱${Number(value || 0).toLocaleString('en-US')}`;
 
+const formatStatusText = (value, fallback = 'Pending') => {
+  const normalized = String(value || '').replace(/_/g, ' ').trim();
+  if (!normalized) return fallback;
+  return normalized
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+};
+
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
   createdBy: config.created_by || config.createdBy || null,
@@ -286,19 +295,54 @@ const formatStageStatusLabel = (status) => {
   if (normalized === 'rejected') return 'Rejected';
   if (normalized === 'completed') return 'Completed';
   if (normalized === 'draft') return 'Draft';
-  return normalized ? normalized.replace(/_/g, ' ') : 'Ongoing Approval';
+  return formatStatusText(normalized, 'Ongoing Approval');
 };
 
 const getStageStatusBadgeClass = (status) => {
   const normalized = String(status || '').toLowerCase();
-  if (normalized === 'pending_payroll_approval') return 'bg-purple-500 text-white';
-  if (normalized === 'pending_payment_completion') return 'bg-blue-500 text-white';
+  if (normalized === 'pending_payroll_approval') return 'bg-amber-500 text-white';
+  if (normalized === 'pending_payment_completion') return 'bg-amber-500 text-white';
   if (normalized === 'rejected') return 'bg-red-600 text-white';
-  if (normalized === 'completed') return 'bg-emerald-600 text-white';
+  if (normalized === 'completed') return 'bg-blue-600 text-white';
   if (normalized === 'approved') return 'bg-green-600 text-white';
   if (normalized === 'draft') return 'bg-slate-600 text-white';
-  if (normalized === 'self_approved') return 'bg-blue-500 text-white';
-  return 'bg-amber-600 text-white'; // Muted yellow (Ongoing/Pending)
+  if (normalized === 'self_approved') return 'bg-teal-500 text-white';
+  return 'bg-amber-500 text-white';
+};
+
+const resolvePayrollCycleInfo = (request = {}) => {
+  const approvals = Array.isArray(request.approvals) ? request.approvals : [];
+  const payrollApprovalWithCycle = [...approvals]
+    .reverse()
+    .find(
+      (approval) =>
+        approval?.payroll_cycle ||
+        approval?.payrollCycle ||
+        approval?.payroll_cycle_date ||
+        approval?.payroll_cycle_Date ||
+        approval?.payrollCycleDate
+    );
+
+  const payrollCycle =
+    request.payroll_cycle ||
+    request.payrollCycle ||
+    payrollApprovalWithCycle?.payroll_cycle ||
+    payrollApprovalWithCycle?.payrollCycle ||
+    null;
+
+  const payrollCycleDate =
+    request.payroll_cycle_Date ||
+    request.payroll_cycle_date ||
+    request.payrollCycleDate ||
+    payrollApprovalWithCycle?.payroll_cycle_Date ||
+    payrollApprovalWithCycle?.payroll_cycle_date ||
+    payrollApprovalWithCycle?.payrollCycleDate ||
+    null;
+
+  return {
+    payrollCycle,
+    payrollCycleDate,
+  };
 };
 
 const normalizeRequest = (request) => {
@@ -359,6 +403,7 @@ const normalizeRequest = (request) => {
   
   const finalDeductionAmount = isLineItemsLoaded ? calculatedDeduction : 0;
   const finalNetPay = isLineItemsLoaded ? (calculatedGross - calculatedDeduction) : totalAmount; // Fallback: Assume total amount is net if no items (risky but needed)
+  const { payrollCycle, payrollCycleDate } = resolvePayrollCycleInfo(request);
 
   return {
     id: request.approval_request_id || request.id || request.request_id,
@@ -376,8 +421,8 @@ const normalizeRequest = (request) => {
     submittedByName: request.submitted_by_name || request.submittedByName || null,
     submittedBy: request.submitted_by || request.submittedBy || null,
     clientSponsored: request.is_client_sponsored ?? request.client_sponsored ?? request.clientSponsored ?? false,
-    payrollCycle: request.payroll_cycle || request.payrollCycle || null,
-    payrollCycleDate: request.payroll_cycle_Date || request.payroll_cycle_date || request.payrollCycleDate || null,
+    payrollCycle,
+    payrollCycleDate,
     lineItemsCount,
     deductionCount,
     toBePaidCount,
@@ -392,6 +437,10 @@ const normalizeRequest = (request) => {
     line_items_count: lineItemsCount,
     deduction_count: deductionCount,
     to_be_paid_count: toBePaidCount,
+    payroll_cycle: payrollCycle,
+    payroll_cycle_date: payrollCycleDate,
+    payroll_cycle_Date: payrollCycleDate,
+    payrollCycleDate: payrollCycleDate,
     request_number: request.request_number || request.requestNumber || null,
     budget_name: request.budget_name || request.configName || null,
     is_client_sponsored: request.is_client_sponsored ?? request.client_sponsored ?? request.clientSponsored ?? false,
@@ -404,25 +453,29 @@ const formatDatePHT = (dateString) => {
 };
 
 const getStatusBadgeClass = (status) => {
-  switch (status) {
-    case 'pending_payroll_approval':
-      return 'bg-purple-500 text-white';
-    case 'pending_payment_completion':
-      return 'bg-blue-500 text-white';
-    case 'ongoing_approval':
-    case 'pending':
-      return 'bg-amber-600 text-white'; // Muted yellow
-    case 'submitted':
+  const normalized = String(status || '').toLowerCase();
+
+  switch (normalized) {
     case 'self_approved':
-      return 'bg-blue-500 text-white'; // Self Approved / Submitted
+    case 'self request':
+    case 'self_request':
+      return 'bg-teal-500 text-white';
     case 'approved':
       return 'bg-green-600 text-white';
+    case 'completed':
+      return 'bg-blue-600 text-white';
     case 'rejected':
       return 'bg-red-600 text-white';
+    case 'pending_payroll_approval':
+    case 'pending_payment_completion':
+    case 'ongoing_approval':
+    case 'pending':
+    case 'submitted':
+      return 'bg-amber-500 text-white';
     case 'draft':
       return 'bg-slate-600 text-white';
     default:
-      return 'bg-amber-600 text-white';
+      return 'bg-amber-500 text-white';
   }
 };
 
@@ -559,8 +612,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [requestDetailsData, setRequestDetailsData] = useState(null);
   const [requestConfigDetails, setRequestConfigDetails] = useState(null);
   const [detailSearch, setDetailSearch] = useState('');
-  const [detailVisibleCount, setDetailVisibleCount] = useState(10);
-  const detailTableRef = useRef(null);
+  const [detailLineItemsPage, setDetailLineItemsPage] = useState(1);
+  const [detailLineItemsRowsPerPage, setDetailLineItemsRowsPerPage] = useState('25');
 
   const [showModal, setShowModal] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
@@ -1436,35 +1489,40 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
-    setDetailVisibleCount(10);
+    setDetailLineItemsPage(1);
     refreshSelectedRequestDetails();
     return undefined;
   }, [detailsOpen, selectedRequest?.id, token]);
 
-  const handleDetailTableScroll = useCallback((event) => {
-    const el = event.currentTarget;
-    if (!el) return;
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
-    if (nearBottom) {
-      setDetailVisibleCount((prev) => prev + 10);
-    }
-  }, []);
+  useEffect(() => {
+    setDetailLineItemsPage(1);
+  }, [detailSearch, detailLineItemsRowsPerPage]);
 
   const getApprovalBadgeClass = (status, isSelfRequest = false) => {
-    // Self request gets blue color
-    if (isSelfRequest && status === 'approved') {
-      return 'bg-blue-500 text-white';
+    const normalized = String(status || '').toLowerCase();
+
+    if (isSelfRequest && normalized === 'approved') {
+      return 'bg-teal-500 text-white';
     }
-    
-    switch (status) {
+
+    switch (normalized) {
+      case 'self_request':
+      case 'self request':
+      case 'self_approved':
+        return 'bg-teal-500 text-white';
       case 'approved':
         return 'bg-green-600 text-white';
+      case 'completed':
+        return 'bg-blue-600 text-white';
       case 'rejected':
         return 'bg-red-600 text-white';
+      case 'ongoing_approval':
+      case 'pending_payroll_approval':
+      case 'pending_payment_completion':
       case 'pending':
-        return 'bg-yellow-500 text-white';
       case 'escalated':
-        return 'bg-purple-500 text-white';
+      case 'submitted':
+        return 'bg-amber-500 text-white';
       default:
         return 'bg-slate-600 text-white';
     }
@@ -1474,8 +1532,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     if (isSelfRequest && status === 'approved') {
       return 'Self Request';
     }
-    const statusStr = String(status || 'pending');
-    return statusStr.charAt(0).toUpperCase() + statusStr.slice(1).replace(/_/g, ' ');
+    return formatStatusText(status, 'Pending');
   };
 
   const getWorkflowStatus = (request) => {
@@ -1569,25 +1626,25 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   };
   const getWorkflowBadgeClass = (stage, status, isSelfRequest = false) => {
     const currentStage = getWorkflowStage(status);
-    if (currentStage === 'APPROVED') return 'bg-emerald-500 text-white';
+    if (currentStage === 'APPROVED') return 'bg-green-600 text-white';
     if (currentStage === 'REJECTED' && stage === 'L1') return 'bg-red-500 text-white';
     
     // Handle self-request for L1
     if (stage === 'L1' && isSelfRequest && (status === 'l1_approved' || currentStage === 'L2' || currentStage === 'L3' || currentStage === 'P')) {
-      return 'bg-blue-500 text-white'; // Blue for self-approved L1
+      return 'bg-teal-500 text-white';
     }
     
     // Current stage in progress
-    if (stage === currentStage) return 'bg-amber-500 text-white'; // Yellow for pending
+    if (stage === currentStage) return 'bg-amber-500 text-white';
     
     // Approved stages
     if ((stage === 'L1' && ['L2', 'L3', 'P', 'APPROVED'].includes(currentStage)) ||
         (stage === 'L2' && ['L3', 'P', 'APPROVED'].includes(currentStage)) ||
         (stage === 'L3' && ['P', 'APPROVED'].includes(currentStage))) {
-      return 'bg-emerald-500 text-white'; // Green for approved
+      return 'bg-green-600 text-white';
     }
     
-    return 'bg-slate-600 text-slate-300'; // Gray for not reached
+    return 'bg-slate-600 text-slate-300';
   };
   
   const getWorkflowStatusLabel = (status, isSelfRequest = false) => {
@@ -2276,9 +2333,21 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
-  const visibleLineItems = filteredLineItems.slice(0, detailVisibleCount);
+  const detailLineItemsRowsPerPageNumber = Number(detailLineItemsRowsPerPage || 10);
+  const detailLineItemsTotalPages = Math.max(1, Math.ceil(filteredLineItems.length / detailLineItemsRowsPerPageNumber));
+  const safeDetailLineItemsPage = Math.min(detailLineItemsPage, detailLineItemsTotalPages);
+  const visibleLineItems = filteredLineItems.slice(
+    (safeDetailLineItemsPage - 1) * detailLineItemsRowsPerPageNumber,
+    safeDetailLineItemsPage * detailLineItemsRowsPerPageNumber
+  );
   const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
-  const budgetUsed = Number(requestConfigDetails?.budget_used || requestConfigDetails?.usedAmount || 0);
+  const budgetUsed = Number(
+    requestConfigDetails?.approved_amount ??
+      requestConfigDetails?.approvedAmount ??
+      requestConfigDetails?.usedAmount ??
+      requestConfigDetails?.budget_used ??
+      0
+  );
   const budgetMax = Number(
     requestConfigDetails?.total_budget ||
       requestConfigDetails?.totalBudget ||
@@ -2646,7 +2715,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     {formatDatePHT(request.submittedAt)}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge className={`text-[10px] ${getStageStatusBadgeClass(stageStatus)}`}>
+                    <Badge variant="outline" className={`text-[10px] ${getStageStatusBadgeClass(stageStatus)}`}>
                       {displayStatus}
                     </Badge>
                   </td>
@@ -3057,6 +3126,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             setRequestDetailsData(null);
             setRequestConfigDetails(null);
             setDetailSearch('');
+            setDetailLineItemsPage(1);
             setPayrollCycle('');
             setPayrollCycleDate('');
             setPayrollCycleModalOpen(false);
@@ -3081,7 +3151,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               <div className="grid gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-[2fr_1fr]">
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge className={getStageStatusBadgeClass(detailStageStatus)}>
+                    <Badge variant="outline" className={getStageStatusBadgeClass(detailStageStatus)}>
                       {detailStageLabel}
                     </Badge>
                     <span className="text-xs text-slate-300">{detailRequestNumber}</span>
@@ -3146,7 +3216,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="text-sm font-semibold text-white">Uploaded Data ({detailLineItems.length} total)</div>
                   {warningCount > 0 && (
-                    <Badge className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
+                    <Badge variant="outline" className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
                   )}
                 </div>
                 <div className="mt-3">
@@ -3158,11 +3228,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     className="bg-slate-700 border-gray-300 text-white"
                   />
                 </div>
-                <div
-                  ref={detailTableRef}
-                  onScroll={handleDetailTableScroll}
-                  className="mt-3 max-h-[360px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700"
-                >
+                <div className="mt-3 max-h-[360px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-800 sticky top-0 z-10">
                       <tr>
@@ -3208,7 +3274,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                                 ₱{Math.abs(amountValue).toLocaleString('en-US')}
                               </td>
                               <td className="px-3 py-2 text-center">
-                                {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
+                                {item.is_deduction ? <Badge variant="outline" className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
                               </td>
                               <td className="px-3 py-2 text-slate-300">
                                 {item.notes || item.item_description || '—'}
@@ -3220,6 +3286,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     </tbody>
                   </table>
                 </div>
+                <PaginationControls
+                  page={safeDetailLineItemsPage}
+                  totalPages={detailLineItemsTotalPages}
+                  rowsPerPage={detailLineItemsRowsPerPage}
+                  onPageChange={(page) => setDetailLineItemsPage(page)}
+                  onRowsPerPageChange={(value) => setDetailLineItemsRowsPerPage(value)}
+                  rowOptions={[25, 50, 100]}
+                />
               </div>
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
@@ -3231,13 +3305,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     const status = approval?.status || 'pending';
                     const isSelfRequest = entry.level === 1 && approval?.is_self_request === true;
                     const approvedBy = approval?.approver_name || '—';
+                    const selfRequestorName =
+                      detailRecord?.submitted_by_name ||
+                      detailRecord?.submittedByName ||
+                      selectedRequest?.submittedByName ||
+                      selectedRequest?.submitted_by_name ||
+                      approvedBy;
                     const approvedDate = approval?.approval_date ? formatDatePHT(approval.approval_date) : '—';
                     const isPayroll = entry.level === 'P';
                     
                     return (
                       <div key={entry.label} className="rounded-lg border border-slate-600 bg-slate-900/40 p-3 flex flex-col">
                         <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">{entry.title}</div>
-                        <Badge className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
+                        <Badge variant="outline" className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
                           {formatStatusLabel(status, isSelfRequest)}
                         </Badge>
                         <div className="flex-1 space-y-2 text-xs">
@@ -3284,7 +3364,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                               {status === 'approved' && (
                                 <>
                                   <div className="text-slate-400 mt-3">{isSelfRequest ? 'Submitted by:' : 'Approved by:'}</div>
-                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>{approvedBy}</div>
+                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>
+                                    {isSelfRequest ? selfRequestorName : approvedBy}
+                                  </div>
                                   <div className="text-slate-500 text-[10px]">{approvedDate}</div>
                                   {(approval?.approval_notes || approval?.rejection_reason || approval?.description) && (
                                     <>
@@ -3410,14 +3492,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     </>
   );
 }
-const LoadingOverlay = () => (
-  <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-    <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl animate-in fade-in zoom-in duration-200">
-      <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
-      <p className="text-emerald-400 font-medium animate-pulse text-lg">Processing Approval...</p>
-    </div>
-  </div>
-);
+const LoadingOverlay = () => {
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+      <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl animate-in fade-in zoom-in duration-200">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
+        <p className="text-emerald-400 font-medium animate-pulse text-lg">Processing Approval...</p>
+      </div>
+    </div>,
+    document.body
+  );
+};
 
 const LoadingLine = () => (
   <div className="h-1 w-full overflow-hidden rounded bg-slate-700/70">
@@ -3459,28 +3546,38 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const [detailSearch, setDetailSearch] = useState('');
   const [decisionNotes, setDecisionNotes] = useState('');
   const [actionError, setActionError] = useState(null);
-  const [detailVisibleCount, setDetailVisibleCount] = useState(10);
-  const detailTableRef = useRef(null);
+  const [detailLineItemsPage, setDetailLineItemsPage] = useState(1);
+  const [detailLineItemsRowsPerPage, setDetailLineItemsRowsPerPage] = useState('25');
 
   const formatDatePHT = (dateString) => {
     return formatDateTimeCompact(dateString);
   };
 
   const getApprovalBadgeClass = (status, isSelfRequest = false) => {
-    // Self request gets blue color
-    if (isSelfRequest && status === 'approved') {
-      return 'bg-blue-500 text-white';
+    const normalized = String(status || '').toLowerCase();
+
+    if (isSelfRequest && normalized === 'approved') {
+      return 'bg-teal-500 text-white';
     }
-    
-    switch (status) {
+
+    switch (normalized) {
+      case 'self_request':
+      case 'self request':
+      case 'self_approved':
+        return 'bg-teal-500 text-white';
       case 'approved':
         return 'bg-green-600 text-white';
+      case 'completed':
+        return 'bg-blue-600 text-white';
       case 'rejected':
         return 'bg-red-600 text-white';
+      case 'ongoing_approval':
+      case 'pending_payroll_approval':
+      case 'pending_payment_completion':
       case 'pending':
-        return 'bg-yellow-500 text-white';
       case 'escalated':
-        return 'bg-purple-500 text-white';
+      case 'submitted':
+        return 'bg-amber-500 text-white';
       default:
         return 'bg-slate-600 text-white';
     }
@@ -3490,8 +3587,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     if (isSelfRequest && status === 'approved') {
       return 'Self Request';
     }
-    const statusStr = String(status || 'pending');
-    return statusStr.charAt(0).toUpperCase() + statusStr.slice(1).replace(/_/g, ' ');
+    return formatStatusText(status, 'Pending');
   };
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [confirmAction, setConfirmAction] = useState(null);
@@ -3932,19 +4028,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
-    setDetailVisibleCount(10);
+    setDetailLineItemsPage(1);
     refreshDetails();
     return undefined;
   }, [detailsOpen, selectedRequest?.id]);
 
-  const handleDetailTableScroll = useCallback((event) => {
-    const el = event.currentTarget;
-    if (!el) return;
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
-    if (nearBottom) {
-      setDetailVisibleCount((prev) => prev + 10);
-    }
-  }, []);
+  useEffect(() => {
+    setDetailLineItemsPage(1);
+  }, [detailSearch, detailLineItemsRowsPerPage]);
 
   const workflowStages = ['L1', 'L2', 'L3', 'P'];
   const getApprovalStatusForLevel = (requestId, level) => {
@@ -3957,7 +4048,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     if (normalized === 'approved') return 'Approved';
     if (normalized === 'rejected') return 'Rejected';
     if (normalized === 'pending') return 'Pending';
-    return normalized ? normalized.replace(/_/g, ' ') : 'Pending';
+    return formatStatusText(normalized, 'Pending');
   };
   const getWorkflowStage = (status) => {
     const normalized = String(status || '').toLowerCase();
@@ -3973,9 +4064,16 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   };
   const getWorkflowBadgeClass = (stage, status) => {
     const currentStage = getWorkflowStage(status);
-    if (currentStage === 'APPROVED') return 'bg-emerald-500 text-white';
+    if (currentStage === 'APPROVED') return 'bg-green-600 text-white';
     if (currentStage === 'REJECTED' && stage === 'L1') return 'bg-red-500 text-white';
-    if (stage === currentStage) return 'bg-blue-500 text-white';
+    if (stage === currentStage) return 'bg-amber-500 text-white';
+
+    if ((stage === 'L1' && ['L2', 'L3', 'P', 'APPROVED'].includes(currentStage)) ||
+        (stage === 'L2' && ['L3', 'P', 'APPROVED'].includes(currentStage)) ||
+        (stage === 'L3' && ['P', 'APPROVED'].includes(currentStage))) {
+      return 'bg-green-600 text-white';
+    }
+
     return 'bg-slate-700 text-slate-200';
   };
   const renderWorkflowSummary = (status) => (
@@ -4067,9 +4165,21 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
-  const visibleLineItems = filteredLineItems.slice(0, detailVisibleCount);
+  const detailLineItemsRowsPerPageNumber = Number(detailLineItemsRowsPerPage || 10);
+  const detailLineItemsTotalPages = Math.max(1, Math.ceil(filteredLineItems.length / detailLineItemsRowsPerPageNumber));
+  const safeDetailLineItemsPage = Math.min(detailLineItemsPage, detailLineItemsTotalPages);
+  const visibleLineItems = filteredLineItems.slice(
+    (safeDetailLineItemsPage - 1) * detailLineItemsRowsPerPageNumber,
+    safeDetailLineItemsPage * detailLineItemsRowsPerPageNumber
+  );
   const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
-  const budgetUsed = Number(requestConfigDetails?.budget_used || requestConfigDetails?.usedAmount || 0);
+  const budgetUsed = Number(
+    requestConfigDetails?.approved_amount ??
+      requestConfigDetails?.approvedAmount ??
+      requestConfigDetails?.usedAmount ??
+      requestConfigDetails?.budget_used ??
+      0
+  );
   const budgetMax = Number(
     requestConfigDetails?.total_budget ||
       requestConfigDetails?.totalBudget ||
@@ -4397,7 +4507,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                         </div>
                       </td>
                       <td className="px-3 py-3 text-center">
-                        <Badge className={`${getStageStatusBadgeClass(stageStatus)} mx-auto`}>
+                        <Badge variant="outline" className={`${getStageStatusBadgeClass(stageStatus)} mx-auto`}>
                           {displayStatus}
                         </Badge>
                       </td>
@@ -4443,6 +4553,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
             setRequestDetailsData(null);
             setRequestConfigDetails(null);
             setDetailSearch('');
+            setDetailLineItemsPage(1);
           }
         }}
       >
@@ -4462,7 +4573,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               <div className="grid gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-[2fr_1fr]">
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge className={getStageStatusBadgeClass(detailStageStatus)}>
+                    <Badge variant="outline" className={getStageStatusBadgeClass(detailStageStatus)}>
                       {detailStageLabel}
                     </Badge>
                     <span className="text-xs text-slate-300">{detailRequestNumber}</span>
@@ -4520,9 +4631,9 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-semibold text-white">Uploaded Data</div>
+                  <div className="text-sm font-semibold text-white">Uploaded Data ({detailLineItems.length} total)</div>
                   {warningCount > 0 && (
-                    <Badge className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
+                    <Badge variant="outline" className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
                   )}
                 </div>
                 <div className="mt-3">
@@ -4534,11 +4645,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     className="bg-slate-700 border-gray-300 text-white"
                   />
                 </div>
-                <div
-                  ref={detailTableRef}
-                  onScroll={handleDetailTableScroll}
-                  className="mt-3 max-h-[380px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700"
-                >
+                <div className="mt-3 max-h-[380px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-800">
                       <tr>
@@ -4588,7 +4695,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                                 </td>
                               )}
                               <td className="px-3 py-2 text-center">
-                                {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
+                                {item.is_deduction ? <Badge variant="outline" className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
                               </td>
                               <td className="px-3 py-2 text-slate-300">
                                 {item.notes || item.item_description || '—'}
@@ -4600,6 +4707,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     </tbody>
                   </table>
                 </div>
+                <PaginationControls
+                  page={safeDetailLineItemsPage}
+                  totalPages={detailLineItemsTotalPages}
+                  rowsPerPage={detailLineItemsRowsPerPage}
+                  onPageChange={(page) => setDetailLineItemsPage(page)}
+                  onRowsPerPageChange={(value) => setDetailLineItemsRowsPerPage(value)}
+                  rowOptions={[25, 50, 100]}
+                />
               </div>
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
@@ -4611,13 +4726,19 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     const status = approval?.status || 'pending';
                     const isSelfRequest = entry.level === 1 && approval?.is_self_request === true;
                     const approvedBy = approval?.approver_name || '—';
+                    const selfRequestorName =
+                      detailRecord?.submitted_by_name ||
+                      detailRecord?.submittedByName ||
+                      selectedRequest?.submittedByName ||
+                      selectedRequest?.submitted_by_name ||
+                      approvedBy;
                     const approvedDate = approval?.approval_date ? formatDatePHT(approval.approval_date) : '—';
                     const isPayroll = entry.level === 'P';
                     
                     return (
                       <div key={entry.label} className="rounded-lg border border-slate-600 bg-slate-900/40 p-3 flex flex-col">
                         <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">{entry.title}</div>
-                        <Badge className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
+                        <Badge variant="outline" className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
                           {formatStatusLabel(status, isSelfRequest)}
                         </Badge>
                         <div className="flex-1 space-y-2 text-xs">
@@ -4664,7 +4785,9 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                               {status === 'approved' && (
                                 <>
                                   <div className="text-slate-400 mt-3">{isSelfRequest ? 'Submitted by:' : 'Approved by:'}</div>
-                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>{approvedBy}</div>
+                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>
+                                    {isSelfRequest ? selfRequestorName : approvedBy}
+                                  </div>
                                   <div className="text-slate-500 text-[10px]">{approvedDate}</div>
                                   {(approval?.approval_notes || approval?.rejection_reason || approval?.description) && (
                                     <>
@@ -4971,6 +5094,8 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState(null);
   const [historyConfigDetails, setHistoryConfigDetails] = useState(null);
+  const [historyLineItemsPage, setHistoryLineItemsPage] = useState(1);
+  const [historyLineItemsRowsPerPage, setHistoryLineItemsRowsPerPage] = useState('25');
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportScope, setExportScope] = useState('history');
   const [detailExportSection, setDetailExportSection] = useState('budget_details');
@@ -5162,6 +5287,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     setDetailLoading(true);
     setDetailData(null);
     setHistoryConfigDetails(null);
+    setHistoryLineItemsPage(1);
 
     try {
       const data = await fetchWithCache(
@@ -5236,10 +5362,41 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     return formatDateTimeCompact(value);
   };
 
-  const formatStatusLabel = (value) => String(value || 'pending').replace(/_/g, ' ');
+  const formatStatusLabel = (value) => formatStatusText(value, 'Pending');
   const getLevelLabel = (level) => {
     if (Number(level) === 4) return 'Payroll';
     return `L${level || '—'}`;
+  };
+
+  const getHistorySelfApproverName = () =>
+    detailData?.submittedByName ||
+    detailData?.submitted_by_name ||
+    detailData?.submittedBy ||
+    detailData?.submitted_by ||
+    '—';
+
+  const isSelfApprovedEntry = (approval = {}) => {
+    const normalizedStatus = String(approval?.status || '').toLowerCase();
+    const normalizedNotes = String(approval?.approval_notes || approval?.description || '').toLowerCase();
+    const level = Number(approval?.approval_level);
+
+    if (normalizedStatus === 'self_approved') return true;
+    if (approval?.is_self_request === true && normalizedStatus === 'approved') return true;
+    if (detailData?.is_self_request && level === 1 && normalizedStatus === 'approved') return true;
+    if (level === 1 && normalizedStatus === 'approved' && normalizedNotes.includes('auto-approved') && normalizedNotes.includes('self-request')) return true;
+
+    return false;
+  };
+
+  const getApprovalHistoryStatusLabel = (approval = {}) =>
+    isSelfApprovedEntry(approval) ? 'Self Approved' : formatStatusLabel(approval?.status);
+
+  const getApprovalHistoryApproverName = (approval = {}) => {
+    if (isSelfApprovedEntry(approval)) {
+      return getHistorySelfApproverName();
+    }
+
+    return approval?.approver_name || approval?.approved_by || '—';
   };
 
   // Calculate totals for history details
@@ -5251,9 +5408,20 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   const historyLineItems = Array.isArray(detailData?.line_items)
     ? detailData.line_items.map(normalizeLineItem)
     : [];
+  const historyLineItemsRowsPerPageNumber = Number(historyLineItemsRowsPerPage || 10);
+  const historyLineItemsTotalPages = Math.max(1, Math.ceil(historyLineItems.length / historyLineItemsRowsPerPageNumber));
+  const safeHistoryLineItemsPage = Math.min(historyLineItemsPage, historyLineItemsTotalPages);
+  const visibleHistoryLineItems = historyLineItems.slice(
+    (safeHistoryLineItemsPage - 1) * historyLineItemsRowsPerPageNumber,
+    safeHistoryLineItemsPage * historyLineItemsRowsPerPageNumber
+  );
   const canViewHistoryLineItems =
     userRole === 'payroll' ||
     String(detailData?.submitted_by || detailData?.submittedBy || '') === String(user?.id || '');
+
+  useEffect(() => {
+    setHistoryLineItemsPage(1);
+  }, [detailData?.id, historyLineItemsRowsPerPage]);
 
   const escapeCsvValue = (value) => {
     if (value === null || value === undefined) return '';
@@ -5276,6 +5444,9 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     return filteredHistory.map((record) => ({
       request_number: record.requestNumber || '',
       budget_name: record.budgetName || '',
+      total_employees: Number(record.lineItemsCount ?? record.line_items_count ?? record.employeeCount ?? 0) || 0,
+      deductions_count: Number(record.deductionCount ?? record.deduction_count ?? 0) || 0,
+      to_be_paid_count: Number(record.toBePaidCount ?? record.to_be_paid_count ?? 0) || 0,
       status: formatStatusLabel(record.status || 'pending'),
       amount: Number(record.amount || 0),
       submitted_at: formatDate(record.submittedAt),
@@ -5305,7 +5476,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
       payroll_cycle: `${detailData?.payroll_cycle || ''} ${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date ? `(${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date})` : ''}`.trim(),
       total_amount: Number(totalAmount || 0),
       deduction_total: Number(deductionTotal || 0),
-      net_to_pay: Math.max(0, Number(totalAmount || 0) - Number(deductionTotal || 0)),
+      net_to_pay: Number(totalAmount || 0),
     }];
   };
 
@@ -5313,8 +5484,8 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     const approvals = detailData?.approvals || detailData?.approval_history || [];
     return approvals.map((approval) => ({
       level: getLevelLabel(approval.approval_level),
-      status: formatStatusLabel(approval.status),
-      approver: approval.approver_name || approval.approved_by || '',
+      status: getApprovalHistoryStatusLabel(approval),
+      approver: getApprovalHistoryApproverName(approval),
       date: formatDate(approval.approval_date || approval.updated_at),
       notes: approval.approval_notes || approval.rejection_reason || '',
     }));
@@ -5453,7 +5624,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
         ) : (
           <>
           <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
-            <table className="min-w-[1050px] w-full border-collapse">
+            <table className="min-w-[1300px] w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
@@ -5462,7 +5633,16 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Budget Name
                   </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    Total Employees
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    Deductions
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    To Be Paid
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Status
                   </th>
                   <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
@@ -5482,15 +5662,31 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
               <tbody className="divide-y divide-slate-700">
                 {paginatedHistory.map((record) => (
                   <tr key={record.id} className="hover:bg-slate-700/50">
+                    {(() => {
+                      const employeeCount = Number(record.lineItemsCount ?? record.line_items_count ?? record.employeeCount ?? 0) || 0;
+                      const deductionCount = Number(record.deductionCount ?? record.deduction_count ?? 0) || 0;
+                      const toBePaidCount = Number(record.toBePaidCount ?? record.to_be_paid_count ?? Math.max(0, employeeCount - deductionCount)) || 0;
+
+                      return (
+                        <>
                     <td className="px-4 py-3 text-xs text-slate-300">
                       {record.requestNumber || '—'}
                     </td>
                     <td className="px-4 py-3">
                       <div className="text-sm font-medium text-white">{record.budgetName || '—'}</div>
                     </td>
-                    <td className="px-4 py-3">
-                      <Badge className={getStatusBadgeClass(record.status || 'pending')}>
-                        {(record.status || 'pending').replace(/_/g, ' ')}
+                    <td className="px-4 py-3 text-xs text-center text-white font-semibold">
+                      {employeeCount}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-center text-red-400">
+                      {deductionCount}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-center text-emerald-400">
+                      {toBePaidCount}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <Badge variant="outline" className={getStatusBadgeClass(record.status || 'pending')}>
+                        {formatStatusText(record.status || 'pending', 'Pending')}
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-white">
@@ -5512,6 +5708,9 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                         View
                       </Button>
                     </td>
+                        </>
+                      );
+                    })()}
                   </tr>
                 ))}
               </tbody>
@@ -5528,8 +5727,16 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
         )}
       </CardContent>
 
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[98vw] md:w-[93vw] xl:w-[86vw] 2xl:w-[82vw] max-w-[1680px] max-h-[85vh] overflow-y-auto flex flex-col">
+      <Dialog
+        open={detailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open);
+          if (!open) {
+            setHistoryLineItemsPage(1);
+          }
+        }}
+      >
+        <DialogContent className="bg-slate-900 border-slate-700 text-white !w-[99vw] md:!w-[95vw] lg:!w-[90vw] xl:!w-[82vw] 2xl:!w-[76vw] !max-w-none max-h-[85vh] overflow-y-auto flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request History Details</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -5561,7 +5768,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                     <div className="space-y-2 md:flex md:flex-col md:ml-8 md:min-w-[220px]">
                       <div>
                         <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
-                        <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
+                        <Badge variant="outline" className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
                           {formatStatusLabel(detailData?.overall_status)}
                         </Badge>
                       </div>
@@ -5583,7 +5790,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Net To Pay</div>
-                      <div className="text-lg font-semibold text-blue-400">₱{Math.max(0, totalAmount - deductionTotal).toLocaleString('en-US')}</div>
+                      <div className="text-lg font-semibold text-blue-400">₱{Number(totalAmount || 0).toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Client Sponsored</div>
@@ -5619,11 +5826,14 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                             <tr key={`${approval.request_id || 'req'}-${approval.approval_level || index}`}>
                               <td className="px-3 py-2 text-slate-200">{getLevelLabel(approval.approval_level)}</td>
                               <td className="px-3 py-2">
-                                <Badge className={getStatusBadgeClass(approval.status || 'pending')}>
-                                  {formatStatusLabel(approval.status)}
+                                <Badge
+                                  variant="outline"
+                                  className={getStatusBadgeClass(isSelfApprovedEntry(approval) ? 'self_approved' : (approval.status || 'pending'))}
+                                >
+                                  {getApprovalHistoryStatusLabel(approval)}
                                 </Badge>
                               </td>
-                              <td className="px-3 py-2 text-slate-300">{approval.approver_name || approval.approved_by || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{getApprovalHistoryApproverName(approval)}</td>
                               <td className="px-3 py-2 text-slate-300">{formatDate(approval.approval_date || approval.updated_at)}</td>
                               <td className="px-3 py-2 text-slate-300">
                                 {approval.approval_notes || approval.rejection_reason || '—'}
@@ -5638,44 +5848,54 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
                 {canViewHistoryLineItems && (
                   <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
-                    <div className="text-sm font-semibold text-white mb-2">Submitted Line Items</div>
+                    <div className="text-sm font-semibold text-white mb-2">Submitted Line Items ({historyLineItems.length} total)</div>
                     {historyLineItems.length === 0 ? (
                       <div className="text-xs text-slate-400">No line items available.</div>
                     ) : (
-                      <div className="border border-slate-700 rounded-md max-h-[320px] overflow-y-auto overflow-x-auto">
-                        <table className="w-full text-xs text-left text-slate-300 border-collapse">
-                          <thead className="bg-slate-800 sticky top-0">
-                            <tr>
-                              <th className="px-3 py-2 border-b border-slate-600">Employee ID</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Name</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Department</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Position</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Status</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Geo</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Location</th>
-                              <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
-                              <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Notes</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-700">
-                            {historyLineItems.map((item, index) => (
-                              <tr key={`${item.item_id || item.employee_id || 'line'}-${index}`}>
-                                <td className="px-3 py-2 text-slate-200">{item.employee_id || '—'}</td>
-                                <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.employee_status || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.geo || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.location || item.Location || '—'}</td>
-                                <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString('en-US')}</td>
-                                <td className="px-3 py-2 text-center text-slate-300">{item.is_deduction ? 'Yes' : 'No'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
+                      <>
+                        <div className="border border-slate-700 rounded-md max-h-[320px] overflow-y-auto overflow-x-auto">
+                          <table className="w-full text-xs text-left text-slate-300 border-collapse">
+                            <thead className="bg-slate-800 sticky top-0">
+                              <tr>
+                                <th className="px-3 py-2 border-b border-slate-600">Employee ID</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Name</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Department</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Position</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Status</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Geo</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Location</th>
+                                <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
+                                <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Notes</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                            </thead>
+                            <tbody className="divide-y divide-slate-700">
+                              {visibleHistoryLineItems.map((item, index) => (
+                                <tr key={`${item.item_id || item.employee_id || 'line'}-${index}`}>
+                                  <td className="px-3 py-2 text-slate-200">{item.employee_id || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.employee_status || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.geo || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.location || item.Location || '—'}</td>
+                                  <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString('en-US')}</td>
+                                  <td className="px-3 py-2 text-center text-slate-300">{item.is_deduction ? 'Yes' : 'No'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <PaginationControls
+                          page={safeHistoryLineItemsPage}
+                          totalPages={historyLineItemsTotalPages}
+                          rowsPerPage={historyLineItemsRowsPerPage}
+                          onPageChange={(page) => setHistoryLineItemsPage(page)}
+                          onRowsPerPageChange={(value) => setHistoryLineItemsRowsPerPage(value)}
+                          rowOptions={[25, 50, 100]}
+                        />
+                      </>
                     )}
                   </div>
                 )}

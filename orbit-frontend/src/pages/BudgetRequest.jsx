@@ -236,8 +236,8 @@ export default function BudgetConfigurationPage() {
         description="Manage budget configurations and access controls"
       />
 
-      <div className="flex-1 p-6">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+      <div className="flex-1 p-6 overflow-hidden">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6 h-full flex flex-col min-h-0">
           <TabsList className="bg-slate-800 border-slate-700 p-1">
             <TabsTrigger
               value="list"
@@ -255,11 +255,11 @@ export default function BudgetConfigurationPage() {
             )}
           </TabsList>
 
-          <TabsContent value="list">
+          <TabsContent value="list" className="flex-1 min-h-0 overflow-hidden">
             {activeTab === "list" && <ConfigurationList userRole={userRole} />}
           </TabsContent>
 
-          <TabsContent value="create">
+          <TabsContent value="create" className="flex-1 min-h-0 overflow-y-auto">
             {activeTab === "create" && !['l2', 'l3'].includes(String(userRole || '').toLowerCase()) && (
               <CreateConfiguration />
             )}
@@ -274,6 +274,7 @@ function ConfigurationList({ userRole }) {
   const { user } = useAuth();
   const toast = useToast();
   const PAGE_SIZE_OPTIONS = [10, 15, 20];
+  const STATUS_FILTER_OPTIONS = ["active", "expired", "deactivated", "all"];
   const [searchQuery, setSearchQuery] = useState("");
   const [filterGeo, setFilterGeo] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
@@ -315,6 +316,7 @@ function ConfigurationList({ userRole }) {
   const [exportLoading, setExportLoading] = useState(false);
   const [editSuccessModalOpen, setEditSuccessModalOpen] = useState(false);
   const [editSuccessCountdown, setEditSuccessCountdown] = useState(5);
+  const [statusCounts, setStatusCounts] = useState({ active: 0, expired: 0, deactivated: 0, all: 0 });
   const lastConfigFetchRef = useRef(0);
 
   const token = user?.token || localStorage.getItem("authToken") || "";
@@ -504,6 +506,65 @@ function ConfigurationList({ userRole }) {
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [fetchConfigurations]);
+
+  useEffect(() => {
+    if (!user) {
+      setStatusCounts({ active: 0, expired: 0, deactivated: 0, all: 0 });
+      return;
+    }
+
+    let isActive = true;
+
+    const fetchStatusCounts = async () => {
+      try {
+        const token = user?.token || localStorage.getItem("authToken") || "";
+
+        const countResults = await Promise.all(
+          STATUS_FILTER_OPTIONS.map(async (status) => {
+            const response = await budgetConfigService.getBudgetConfigurations(
+              {
+                org_id: user?.org_id,
+                page: 1,
+                limit: 1,
+                status,
+                search: searchQuery,
+                geo: filterGeo !== 'all' ? filterGeo : undefined,
+                location: filterLocation !== 'all' ? filterLocation : undefined,
+                client: filterClient !== 'all' ? filterClient : undefined,
+              },
+              token
+            );
+
+            const total = Number(response?.pagination?.totalItems);
+            const items = Array.isArray(response) ? response : (response?.items || []);
+            return [status, Number.isFinite(total) ? total : items.length];
+          })
+        );
+
+        if (!isActive) return;
+        setStatusCounts(Object.fromEntries(countResults));
+      } catch (error) {
+        if (!isActive) return;
+        console.error('Error fetching status counts:', error);
+      }
+    };
+
+    fetchStatusCounts();
+
+    return () => {
+      isActive = false;
+    };
+  }, [user, searchQuery, filterGeo, filterLocation, filterClient]);
+
+  useEffect(() => {
+    const totalItems = Number(serverPagination?.totalItems);
+    if (!Number.isFinite(totalItems)) return;
+
+    setStatusCounts((prev) => ({
+      ...prev,
+      [statusFilter]: totalItems,
+    }));
+  }, [serverPagination?.totalItems, statusFilter]);
 
   useEffect(() => {
     const fetchApprovers = async () => {
@@ -1108,12 +1169,12 @@ function ConfigurationList({ userRole }) {
 
     const total = Number.isFinite(explicitTotal) ? explicitTotal : 0;
     const deduction = Number.isFinite(explicitDeduction) ? explicitDeduction : computedDeduction;
-    const payment = Number(item.net_to_pay ?? item.netPay ?? Math.max(0, total - deduction));
+    const payment = Number(item.net_to_pay ?? item.netPay ?? (total - deduction));
 
     return {
       total,
       deduction: Number.isFinite(deduction) ? deduction : 0,
-      payment: Number.isFinite(payment) ? payment : Math.max(0, total - (Number.isFinite(deduction) ? deduction : 0)),
+      payment: Number.isFinite(payment) ? payment : (total - (Number.isFinite(deduction) ? deduction : 0)),
     };
   };
 
@@ -1316,13 +1377,13 @@ function ConfigurationList({ userRole }) {
   }, [editSuccessModalOpen]);
 
   return (
-    <div className="space-y-6 h-full flex flex-col min-h-0">
-      <Card className="bg-slate-800 border-slate-700 flex-1 min-h-0 flex flex-col">
+    <div className="space-y-6 h-full flex flex-col min-h-0 overflow-hidden">
+      <Card className="bg-slate-800 border-slate-700">
         <CardHeader>
           <CardTitle className="text-white">Filter Configurations</CardTitle>
           <CardDescription className="text-gray-400">Search and filter budget configurations</CardDescription>
         </CardHeader>
-        <CardContent className="flex-1 min-h-0 flex flex-col">
+        <CardContent>
           <div className="flex flex-wrap items-end gap-4">
             <div className="min-w-[260px] flex-1 space-y-2">
               <Label htmlFor="search" className="text-white">Search</Label>
@@ -1440,27 +1501,27 @@ function ConfigurationList({ userRole }) {
         </CardContent>
       </Card>
 
-      <Card className="bg-slate-800 border-slate-700">
+      <Card className="bg-slate-800 border-slate-700 flex-1 min-h-0 flex flex-col">
         <CardHeader>
           <div>
             <CardTitle className="text-white">Configurations</CardTitle>
             <CardDescription className="text-gray-400">All budget configurations</CardDescription>
           </div>
         </CardHeader>
-        <CardContent>
-          <Tabs value={statusFilter} onValueChange={setStatusFilter} className="mb-4">
+        <CardContent className="flex-1 min-h-0 overflow-hidden flex flex-col">
+          <Tabs value={statusFilter} onValueChange={setStatusFilter} className="mb-4 shrink-0">
             <TabsList className="bg-slate-700/60 border-slate-600 p-1">
               <TabsTrigger value="active" className="data-[state=active]:bg-emerald-600 data-[state=active]:text-white text-gray-300 border-0">
-                Active
+                Active ({statusCounts.active ?? 0})
               </TabsTrigger>
               <TabsTrigger value="expired" className="data-[state=active]:bg-amber-600 data-[state=active]:text-white text-gray-300 border-0">
-                Expired
+                Expired ({statusCounts.expired ?? 0})
               </TabsTrigger>
               <TabsTrigger value="deactivated" className="data-[state=active]:bg-rose-600 data-[state=active]:text-white text-gray-300 border-0">
-                Deactivated
+                Deactivated ({statusCounts.deactivated ?? 0})
               </TabsTrigger>
               <TabsTrigger value="all" className="data-[state=active]:bg-slate-600 data-[state=active]:text-white text-gray-300 border-0">
-                All
+                All ({statusCounts.all ?? 0})
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -1521,12 +1582,15 @@ function ConfigurationList({ userRole }) {
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       L3 Approver
                     </th>
-                    <th className="px-2 py-2 min-w-[90px] sticky right-0 z-30 bg-slate-700 border-l border-slate-600 whitespace-nowrap">Actions</th>
+                    <th className="px-2 py-2 min-w-[90px] sticky right-0 top-0 z-40 bg-slate-700 border-l border-slate-600 whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {paginatedConfigurations.map((config) => (
-                    <tr key={config.id} className="border-b border-slate-700 hover:bg-slate-700/50 transition-colors">
+                    <tr
+                      key={config.id}
+                      className="border-b border-slate-700 hover:bg-slate-700/50 transition-colors"
+                    >
                       <td className="px-2 py-2 border-r border-slate-600">
                         <div className="font-medium text-white">{config.name}</div>
                         {config.description && (
@@ -1619,7 +1683,7 @@ function ConfigurationList({ userRole }) {
                           )}
                         </div>
                       </td>
-                      <td className="px-2 py-2 sticky right-0 z-20 bg-slate-800 border-l border-slate-700 whitespace-nowrap hover:bg-slate-700/80 transition-colors">
+                      <td className="px-2 py-2 sticky right-0 z-30 bg-slate-800 border-l border-slate-700 whitespace-nowrap hover:bg-slate-700/80 transition-colors">
                         <Button
                           onClick={() => {
                             setSelectedConfig(config);
