@@ -88,6 +88,52 @@ const buildDeltaMetrics = (currentMetrics, latestInsight) => {
 
 const normalizeRole = (value) => String(value || '').toLowerCase();
 
+const getCreatedBudgetIdsByUser = async (userId) => {
+  if (!userId) return [];
+
+  const { data, error } = await supabase
+    .from('tblbudgetconfiguration')
+    .select('budget_id')
+    .eq('created_by', userId);
+
+  if (error) {
+    console.warn('[aiInsights] Created budget lookup failed:', error?.message || error);
+    return [];
+  }
+
+  return (data || []).map((row) => row.budget_id).filter(Boolean);
+};
+
+const getApprovalInvolvedRequestIds = async (userId, requestIds = []) => {
+  if (!userId || !Array.isArray(requestIds) || requestIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('tblbudgetapprovalrequests_approvals')
+    .select('request_id')
+    .in('request_id', requestIds)
+    .or(`assigned_to_primary.eq.${userId},assigned_to_backup.eq.${userId},approved_by.eq.${userId}`);
+
+  if (error) {
+    console.warn('[aiInsights] Approval involvement lookup failed:', error?.message || error);
+    return [];
+  }
+
+  return (data || []).map((row) => row.request_id).filter(Boolean);
+};
+
+const filterRowsByUserScope = ({ rows = [], userId, createdBudgetIds = [], involvedRequestIds = [] }) => {
+  if (!userId) return rows;
+
+  const createdBudgetSet = new Set(createdBudgetIds);
+  const involvedRequestSet = new Set(involvedRequestIds);
+
+  return rows.filter((row) =>
+    String(row?.submitted_by || '') === String(userId) ||
+    createdBudgetSet.has(row?.budget_id) ||
+    involvedRequestSet.has(row?.request_id)
+  );
+};
+
 const buildLatestUpdates = (requests) => {
   if (!Array.isArray(requests)) return [];
   const filtered = requests.filter((row) => {
@@ -200,9 +246,7 @@ export class AiInsightsService {
       if (fromDate) query.gte('created_at', fromDate);
       if (toDate) query.lte('created_at', toDate);
 
-      if (roleNormalized.includes('requestor')) {
-        query.eq('submitted_by', userId);
-      } else if (Array.isArray(budgetIds)) {
+      if (Array.isArray(budgetIds)) {
         if (!budgetIds.length) {
           return { success: true, data: buildFallbackInsights({ totalRequests: 0, totalAmount: 0, charts: {}, totals: {}, scope, requests_sample: [] }) };
         }
@@ -212,7 +256,17 @@ export class AiInsightsService {
       const { data: requests, error } = await query;
       if (error) throw error;
 
-      const requestRows = requests || [];
+      let requestRows = requests || [];
+      const initialRequestIds = requestRows.map((row) => row.request_id).filter(Boolean);
+      const createdBudgetIds = await getCreatedBudgetIdsByUser(userId);
+      const involvedRequestIds = await getApprovalInvolvedRequestIds(userId, initialRequestIds);
+      requestRows = filterRowsByUserScope({
+        rows: requestRows,
+        userId,
+        createdBudgetIds,
+        involvedRequestIds,
+      });
+
       const requestUserIds = requestRows.map((row) => row.submitted_by).filter(Boolean);
       let userNameMap = new Map();
       try {
@@ -358,33 +412,12 @@ export class AiInsightsService {
 
       let requestorTables = null;
       if (roleNormalized.includes('requestor') && userId) {
-        const { data: createdBudgets, error: createdBudgetsError } = await supabase
-          .from('tblbudgetconfiguration')
-          .select('budget_id, budget_name')
-          .eq('created_by', userId);
-
-        if (createdBudgetsError) throw createdBudgetsError;
-
-        const createdBudgetIds = (createdBudgets || []).map((row) => row.budget_id).filter(Boolean);
-        const createdBudgetMap = new Map((createdBudgets || []).map((row) => [row.budget_id, row.budget_name]));
-
-        let createdRequests = [];
-        if (createdBudgetIds.length > 0) {
-          const { data: createdRequestsData, error: createdRequestsError } = await supabase
-            .from('tblbudgetapprovalrequests')
-            .select('request_id, budget_id, overall_status, total_request_amount')
-            .in('budget_id', createdBudgetIds);
-
-          if (createdRequestsError) throw createdRequestsError;
-          createdRequests = createdRequestsData || [];
-        }
-
         const statusByBudget = new Map();
         const approvedAmountByBudget = new Map();
 
-        (createdRequests || []).forEach((request) => {
+        requestRows.forEach((request) => {
           const budgetId = request.budget_id || 'unknown';
-          const status = String(request.overall_status || '').toLowerCase();
+          const status = String(request.overall_status || request.submission_status || '').toLowerCase();
           const approvedLike = status === 'approved' || status === 'completed';
           const rejected = status === 'rejected';
           const amount = Number(request.total_request_amount || 0);
@@ -404,14 +437,14 @@ export class AiInsightsService {
         requestorTables = {
           approval_counts: Array.from(statusByBudget.entries()).map(([budgetId, stats]) => ({
             budget_id: budgetId,
-            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            budget_name: budgetMap.get(budgetId) || 'Unknown Budget',
             approved_count: stats.approved,
             rejected_count: stats.rejected,
             total_requests: stats.total,
           })),
           approved_amounts: Array.from(approvedAmountByBudget.entries()).map(([budgetId, amount]) => ({
             budget_id: budgetId,
-            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            budget_name: budgetMap.get(budgetId) || 'Unknown Budget',
             approved_amount: amount,
           })),
         };
@@ -736,9 +769,7 @@ export class AiInsightsService {
       if (fromDate) query.gte('created_at', fromDate);
       if (toDate) query.lte('created_at', toDate);
 
-      if (roleNormalized.includes('requestor')) {
-        query.eq('submitted_by', userId);
-      } else if (Array.isArray(budgetIds)) {
+      if (Array.isArray(budgetIds)) {
         if (!budgetIds.length) {
           return {
             success: true,
@@ -757,7 +788,17 @@ export class AiInsightsService {
       const { data: requests, error } = await query;
       if (error) throw error;
 
-      const requestRows = requests || [];
+      let requestRows = requests || [];
+      const initialRequestIds = requestRows.map((row) => row.request_id).filter(Boolean);
+      const createdBudgetIds = await getCreatedBudgetIdsByUser(userId);
+      const involvedRequestIds = await getApprovalInvolvedRequestIds(userId, initialRequestIds);
+      requestRows = filterRowsByUserScope({
+        rows: requestRows,
+        userId,
+        createdBudgetIds,
+        involvedRequestIds,
+      });
+
       const requestUserIds = requestRows.map((row) => row.submitted_by).filter(Boolean);
       let userNameMap = new Map();
       try {
@@ -892,33 +933,12 @@ export class AiInsightsService {
 
       let requestorTables = null;
       if (roleNormalized.includes('requestor') && userId) {
-        const { data: createdBudgets, error: createdBudgetsError } = await supabase
-          .from('tblbudgetconfiguration')
-          .select('budget_id, budget_name')
-          .eq('created_by', userId);
-
-        if (createdBudgetsError) throw createdBudgetsError;
-
-        const createdBudgetIds = (createdBudgets || []).map((row) => row.budget_id).filter(Boolean);
-        const createdBudgetMap = new Map((createdBudgets || []).map((row) => [row.budget_id, row.budget_name]));
-
-        let createdRequests = [];
-        if (createdBudgetIds.length > 0) {
-          const { data: createdRequestsData, error: createdRequestsError } = await supabase
-            .from('tblbudgetapprovalrequests')
-            .select('request_id, budget_id, overall_status, total_request_amount')
-            .in('budget_id', createdBudgetIds);
-
-          if (createdRequestsError) throw createdRequestsError;
-          createdRequests = createdRequestsData || [];
-        }
-
         const statusByBudget = new Map();
         const approvedAmountByBudget = new Map();
 
-        (createdRequests || []).forEach((request) => {
+        requestRows.forEach((request) => {
           const budgetId = request.budget_id || 'unknown';
-          const status = String(request.overall_status || '').toLowerCase();
+          const status = String(request.overall_status || request.submission_status || '').toLowerCase();
           const approvedLike = status === 'approved' || status === 'completed';
           const rejected = status === 'rejected';
           const amount = Number(request.total_request_amount || 0);
@@ -938,14 +958,14 @@ export class AiInsightsService {
         requestorTables = {
           approval_counts: Array.from(statusByBudget.entries()).map(([budgetId, stats]) => ({
             budget_id: budgetId,
-            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            budget_name: budgetMap.get(budgetId) || 'Unknown Budget',
             approved_count: stats.approved,
             rejected_count: stats.rejected,
             total_requests: stats.total,
           })),
           approved_amounts: Array.from(approvedAmountByBudget.entries()).map(([budgetId, amount]) => ({
             budget_id: budgetId,
-            budget_name: createdBudgetMap.get(budgetId) || 'Unknown Budget',
+            budget_name: budgetMap.get(budgetId) || 'Unknown Budget',
             approved_amount: amount,
           })),
         };

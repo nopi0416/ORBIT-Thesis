@@ -1,4 +1,11 @@
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001/ws';
+const getWebSocketUrl = () => {
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+};
 
 let socket;
 const listeners = new Set();
@@ -8,7 +15,7 @@ export const connectWebSocket = () => {
     return socket;
   }
 
-  socket = new WebSocket(WS_URL);
+  socket = new WebSocket(getWebSocketUrl());
 
   socket.onmessage = (event) => {
     try {

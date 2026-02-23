@@ -16,7 +16,7 @@ export default function AdminRequestItem({ id, department, status, amount }) {
         <span className={`px-3 py-1 rounded-full text-xs font-medium border ${statusStyles[status]}`}>
           {status.charAt(0).toUpperCase() + status.slice(1)}
         </span>
-        <span className="text-white font-semibold text-sm min-w-[80px] text-right">${amount.toLocaleString()}</span>
+        <span className="text-white font-semibold text-sm min-w-[80px] text-right">${amount.toLocaleString('en-US')}</span>
       </div>
     </div>
   )

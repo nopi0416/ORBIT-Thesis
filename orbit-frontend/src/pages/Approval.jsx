@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Search } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -20,6 +21,7 @@ import { resolveUserRole } from '../utils/roleUtils';
 import BulkUploadValidation from '../components/approval/BulkUploadValidation';
 import { fetchWithCache, invalidateNamespace } from '../utils/dataCache';
 import { useLocation, useNavigate } from 'react-router-dom';
+import PaginationControls from '../components/PaginationControls';
 
 const getToken = () => localStorage.getItem('authToken') || '';
 
@@ -72,6 +74,69 @@ const parseStoredPaths = (value) => {
   return parsed.map((entry) => (Array.isArray(entry) ? entry : [entry]));
 };
 
+const normalizeTenureGroup = (value = '') => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/_/g, '')
+    .replace(/\+/g, 'plus')
+    .replace(/[^a-z0-9\-]/g, '');
+
+  if (!normalized) return '';
+  if (normalized.includes('0-6')) return '0-6months';
+  if (normalized.includes('6-12')) return '6-12months';
+  if (normalized.includes('1-2')) return '1-2years';
+  if (normalized.includes('2-5')) return '2-5years';
+  if (normalized.includes('5plus') || normalized.includes('5-plus')) return '5plus-years';
+  return normalized;
+};
+
+const parseTenureGroups = (value) =>
+  parseStoredList(value)
+    .map((group) => normalizeTenureGroup(group))
+    .filter(Boolean);
+
+const getTenureGroupFromHireDate = (hireDateValue) => {
+  if (!hireDateValue) return null;
+  const hireDate = new Date(hireDateValue);
+  if (Number.isNaN(hireDate.getTime())) return null;
+
+  const now = new Date();
+  const months = (now.getFullYear() - hireDate.getFullYear()) * 12 + (now.getMonth() - hireDate.getMonth());
+
+  if (months < 6) return '0-6months';
+  if (months < 12) return '6-12months';
+  if (months < 24) return '1-2years';
+  if (months < 60) return '2-5years';
+  return '5plus-years';
+};
+
+const validateTenureScope = (hireDateValue, allowedTenureGroups = []) => {
+  const normalizedAllowed = Array.from(new Set((allowedTenureGroups || []).map((value) => normalizeTenureGroup(value)).filter(Boolean)));
+  if (!normalizedAllowed.length) {
+    return { tenureAllowed: true, employeeTenureGroup: null, reason: '' };
+  }
+
+  const employeeTenureGroup = getTenureGroupFromHireDate(hireDateValue);
+  if (!employeeTenureGroup) {
+    return {
+      tenureAllowed: false,
+      employeeTenureGroup: null,
+      reason: 'Hire date is missing or invalid for tenure group validation.',
+    };
+  }
+
+  const tenureAllowed = normalizedAllowed.includes(employeeTenureGroup);
+  return {
+    tenureAllowed,
+    employeeTenureGroup,
+    reason: tenureAllowed
+      ? ''
+      : `Employee tenure '${employeeTenureGroup}' is not within allowed tenure groups (${normalizedAllowed.join(', ')}).`,
+  };
+};
+
 const normalizeLineItem = (item = {}) => {
   const rawAmount = Number(item.amount ?? item.item_amount ?? item.total_amount ?? 0);
   const rawDeduction = item.is_deduction ?? item.isDeduction ?? item.deduction ?? false;
@@ -122,6 +187,45 @@ const blockShortcuts = (event) => {
   event.preventDefault();
 };
 
+const formatDateTimeCompact = (value) => {
+  if (!value) return '—';
+  try {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    const datePart = date.toLocaleDateString('en-US', {
+      timeZone: 'Asia/Manila',
+      month: 'numeric',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    const timePart = date
+      .toLocaleTimeString('en-US', {
+        timeZone: 'Asia/Manila',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      })
+      .replace(/\s/g, '');
+
+    return `${datePart}-${timePart}`;
+  } catch {
+    return String(value);
+  }
+};
+
+const formatCurrencyValue = (value) => `₱${Number(value || 0).toLocaleString('en-US')}`;
+
+const formatStatusText = (value, fallback = 'Pending') => {
+  const normalized = String(value || '').replace(/_/g, ' ').trim();
+  if (!normalized) return fallback;
+  return normalized
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+};
+
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
   createdBy: config.created_by || config.createdBy || null,
@@ -131,11 +235,17 @@ const normalizeConfig = (config) => ({
   maxAmount: config.max_limit || config.maxAmount || config.budgetControlLimit || config.total_budget || 0,
   totalBudget: config.total_budget || config.totalBudget || config.total_budget_amount || config.budget_total || 0,
   budgetLimit: config.budget_limit || config.budgetLimit || config.total_budget || config.totalBudget || 0,
-  usedAmount: config.budget_used || config.usedAmount || 0,
-  approvedAmount: config.approved_amount ?? config.approvedAmount ?? config.budget_used ?? config.usedAmount ?? 0,
+  usedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
+  approvedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
   ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
   minLimit: config.min_limit || config.limitMin || 0,
   maxLimit: config.max_limit || config.limitMax || config.maxAmount || 0,
+  clientSponsoredAmount:
+    config.client_sponsored_amount ??
+    config.clientSponsoredAmount ??
+    config.client_sponsored_budget ??
+    config.clientSponsoredBudget ??
+    0,
   clients: parseStoredList(config.client || config.clients),
   clientSponsored: config.is_client_sponsored ?? config.client_sponsored ?? config.clientSponsored ?? null,
   approvers: Array.isArray(config.approvers) ? config.approvers : [],
@@ -143,6 +253,7 @@ const normalizeConfig = (config) => ({
   status: config.status,
   geo: parseStoredList(config.geo || config.geos),
   location: parseStoredList(config.location || config.locations),
+  tenureGroups: parseTenureGroups(config.tenure_group || config.tenureGroup || config.selectedTenureGroups),
 });
 
 const computeStageStatus = (approvals = [], overallStatus = '') => {
@@ -184,43 +295,86 @@ const formatStageStatusLabel = (status) => {
   if (normalized === 'rejected') return 'Rejected';
   if (normalized === 'completed') return 'Completed';
   if (normalized === 'draft') return 'Draft';
-  return normalized ? normalized.replace(/_/g, ' ') : 'Ongoing Approval';
+  return formatStatusText(normalized, 'Ongoing Approval');
 };
 
 const getStageStatusBadgeClass = (status) => {
   const normalized = String(status || '').toLowerCase();
-  if (normalized === 'pending_payroll_approval') return 'bg-purple-500 text-white';
-  if (normalized === 'pending_payment_completion') return 'bg-blue-500 text-white';
+  if (normalized === 'pending_payroll_approval') return 'bg-amber-500 text-white';
+  if (normalized === 'pending_payment_completion') return 'bg-amber-500 text-white';
   if (normalized === 'rejected') return 'bg-red-600 text-white';
-  if (normalized === 'completed') return 'bg-emerald-600 text-white';
+  if (normalized === 'completed') return 'bg-blue-600 text-white';
   if (normalized === 'approved') return 'bg-green-600 text-white';
   if (normalized === 'draft') return 'bg-slate-600 text-white';
-  if (normalized === 'self_approved') return 'bg-blue-500 text-white';
-  return 'bg-amber-600 text-white'; // Muted yellow (Ongoing/Pending)
+  if (normalized === 'self_approved') return 'bg-teal-500 text-white';
+  return 'bg-amber-500 text-white';
+};
+
+const resolvePayrollCycleInfo = (request = {}) => {
+  const approvals = Array.isArray(request.approvals) ? request.approvals : [];
+  const payrollApprovalWithCycle = [...approvals]
+    .reverse()
+    .find(
+      (approval) =>
+        approval?.payroll_cycle ||
+        approval?.payrollCycle ||
+        approval?.payroll_cycle_date ||
+        approval?.payroll_cycle_Date ||
+        approval?.payrollCycleDate
+    );
+
+  const payrollCycle =
+    request.payroll_cycle ||
+    request.payrollCycle ||
+    payrollApprovalWithCycle?.payroll_cycle ||
+    payrollApprovalWithCycle?.payrollCycle ||
+    null;
+
+  const payrollCycleDate =
+    request.payroll_cycle_Date ||
+    request.payroll_cycle_date ||
+    request.payrollCycleDate ||
+    payrollApprovalWithCycle?.payroll_cycle_Date ||
+    payrollApprovalWithCycle?.payroll_cycle_date ||
+    payrollApprovalWithCycle?.payrollCycleDate ||
+    null;
+
+  return {
+    payrollCycle,
+    payrollCycleDate,
+  };
 };
 
 const normalizeRequest = (request) => {
   const rawStatus = request.approval_stage_status || request.display_status || request.overall_status || request.status || request.submission_status || 'draft';
   const submittedAt = request.submitted_at || request.created_at || '';
   const status = rawStatus === 'draft' && submittedAt ? 'submitted' : rawStatus;
+  const toSafeCount = (...values) => {
+    for (const value of values) {
+      if (value === null || value === undefined || value === '') continue;
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+    }
+    return 0;
+  };
   const rawLineItems = Array.isArray(request.line_items)
     ? request.line_items
     : Array.isArray(request.lineItems)
       ? request.lineItems
       : [];
   const lineItems = rawLineItems.map(normalizeLineItem);
-  const computedCounts = lineItems.length
-    ? {
-        lineItemsCount: lineItems.length,
-        deductionCount: lineItems.filter((item) => Boolean(item?.is_deduction)).length,
-      }
-    : null;
-  const lineItemsCount =
-    request.line_items_count ?? request.employee_count ?? request.employeeCount ?? computedCounts?.lineItemsCount ?? 0;
-  const deductionCount =
-    request.deduction_count ?? request.deductionCount ?? computedCounts?.deductionCount ?? 0;
-  const toBePaidCount =
-    request.to_be_paid_count ?? request.toBePaidCount ?? Math.max(0, lineItemsCount - deductionCount);
+  const hasLineItems = lineItems.length > 0;
+  const computedLineItemsCount = lineItems.length;
+  const computedDeductionCount = lineItems.filter((item) => Boolean(item?.is_deduction)).length;
+  const lineItemsCount = hasLineItems
+    ? computedLineItemsCount
+    : toSafeCount(request.line_items_count, request.employee_count, request.employeeCount, request.lineItemsCount);
+  const deductionCount = hasLineItems
+    ? computedDeductionCount
+    : toSafeCount(request.deduction_count, request.deductionCount);
+  const toBePaidCount = hasLineItems
+    ? Math.max(0, computedLineItemsCount - computedDeductionCount)
+    : toSafeCount(request.to_be_paid_count, request.toBePaidCount, lineItemsCount - deductionCount);
   const approvalStageStatus = request.approval_stage_status || request.display_status || null;
 
   // Calculate totals from line items if available
@@ -249,6 +403,7 @@ const normalizeRequest = (request) => {
   
   const finalDeductionAmount = isLineItemsLoaded ? calculatedDeduction : 0;
   const finalNetPay = isLineItemsLoaded ? (calculatedGross - calculatedDeduction) : totalAmount; // Fallback: Assume total amount is net if no items (risky but needed)
+  const { payrollCycle, payrollCycleDate } = resolvePayrollCycleInfo(request);
 
   return {
     id: request.approval_request_id || request.id || request.request_id,
@@ -266,11 +421,12 @@ const normalizeRequest = (request) => {
     submittedByName: request.submitted_by_name || request.submittedByName || null,
     submittedBy: request.submitted_by || request.submittedBy || null,
     clientSponsored: request.is_client_sponsored ?? request.client_sponsored ?? request.clientSponsored ?? false,
-    payrollCycle: request.payroll_cycle || request.payrollCycle || null,
-    payrollCycleDate: request.payroll_cycle_Date || request.payroll_cycle_date || request.payrollCycleDate || null,
+    payrollCycle,
+    payrollCycleDate,
     lineItemsCount,
     deductionCount,
     toBePaidCount,
+    employeeCount: lineItemsCount,
     approvalStageStatus,
     lineItems, // Pass line items through
     
@@ -278,6 +434,13 @@ const normalizeRequest = (request) => {
     total_request_amount: totalAmount,
     overall_status: status,
     submitted_at: submittedAt,
+    line_items_count: lineItemsCount,
+    deduction_count: deductionCount,
+    to_be_paid_count: toBePaidCount,
+    payroll_cycle: payrollCycle,
+    payroll_cycle_date: payrollCycleDate,
+    payroll_cycle_Date: payrollCycleDate,
+    payrollCycleDate: payrollCycleDate,
     request_number: request.request_number || request.requestNumber || null,
     budget_name: request.budget_name || request.configName || null,
     is_client_sponsored: request.is_client_sponsored ?? request.client_sponsored ?? request.clientSponsored ?? false,
@@ -286,43 +449,33 @@ const normalizeRequest = (request) => {
 };
 
 const formatDatePHT = (dateString) => {
-  if (!dateString) return '—';
-  try {
-    const date = new Date(dateString);
-    return date.toLocaleString('en-PH', {
-      timeZone: 'Asia/Manila',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
-  } catch (error) {
-    return dateString;
-  }
+  return formatDateTimeCompact(dateString);
 };
 
 const getStatusBadgeClass = (status) => {
-  switch (status) {
-    case 'pending_payroll_approval':
-      return 'bg-purple-500 text-white';
-    case 'pending_payment_completion':
-      return 'bg-blue-500 text-white';
-    case 'ongoing_approval':
-    case 'pending':
-      return 'bg-amber-600 text-white'; // Muted yellow
-    case 'submitted':
+  const normalized = String(status || '').toLowerCase();
+
+  switch (normalized) {
     case 'self_approved':
-      return 'bg-blue-500 text-white'; // Self Approved / Submitted
+    case 'self request':
+    case 'self_request':
+      return 'bg-teal-500 text-white';
     case 'approved':
       return 'bg-green-600 text-white';
+    case 'completed':
+      return 'bg-blue-600 text-white';
     case 'rejected':
       return 'bg-red-600 text-white';
+    case 'pending_payroll_approval':
+    case 'pending_payment_completion':
+    case 'ongoing_approval':
+    case 'pending':
+    case 'submitted':
+      return 'bg-amber-500 text-white';
     case 'draft':
       return 'bg-slate-600 text-white';
     default:
-      return 'bg-amber-600 text-white';
+      return 'bg-amber-500 text-white';
   }
 };
 
@@ -459,8 +612,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [requestDetailsData, setRequestDetailsData] = useState(null);
   const [requestConfigDetails, setRequestConfigDetails] = useState(null);
   const [detailSearch, setDetailSearch] = useState('');
-  const [detailVisibleCount, setDetailVisibleCount] = useState(10);
-  const detailTableRef = useRef(null);
+  const [detailLineItemsPage, setDetailLineItemsPage] = useState(1);
+  const [detailLineItemsRowsPerPage, setDetailLineItemsRowsPerPage] = useState('25');
 
   const [showModal, setShowModal] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState(null);
@@ -490,6 +643,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [bulkItems, setBulkItems] = useState([]);
   const [bulkFileName, setBulkFileName] = useState('');
   const [bulkParseError, setBulkParseError] = useState(null);
+  const [bulkUploadLoading, setBulkUploadLoading] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [submitSuccess, setSubmitSuccess] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -500,6 +654,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const [successMessage, setSuccessMessage] = useState('');
   const [countdown, setCountdown] = useState(5);
   const [isError, setIsError] = useState(false);
+  const [configCurrentPage, setConfigCurrentPage] = useState(1);
+  const [configRowsPerPage, setConfigRowsPerPage] = useState('10');
+  const [configPagination, setConfigPagination] = useState({
+    page: 1,
+    limit: 10,
+    totalItems: 0,
+    totalPages: 1,
+    hasPrev: false,
+    hasNext: false,
+  });
   const successModalWasOpen = useRef(false);
 
   const token = useMemo(() => getToken(), [refreshKey]);
@@ -548,34 +712,114 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     }
   }, [requestMode, requestDetails, individualRequest, bulkItems, selectedConfig?.minLimit, selectedConfig?.maxLimit]);
 
-  useEffect(() => {
-    const fetchConfigs = async () => {
-      setConfigLoading(true);
-      setConfigError(null);
-      try {
-        const data = await fetchWithCache(
-          'budgetConfigs',
-          `org_${user?.org_id || 'all'}`,
-          () => getBudgetConfigurations({ org_id: user?.org_id }, token),
-          5 * 60 * 1000 // 5 minutes TTL
-        );
-        setConfigurations((data || []).map(normalizeConfig).filter(config => {
-          const isActive = String(config.status || '').toLowerCase() === 'active';
-          if (userRole === 'payroll') {
-            return isActive && config.createdBy === user.id;
-          }
-          return isActive;
-        }));
-      } catch (error) {
-        setConfigError(error.message || 'Failed to load configurations');
-        setConfigurations([]);
-      } finally {
-        setConfigLoading(false);
+  const refreshBudgetConfigs = useCallback(async (forceRefresh = false) => {
+    setConfigLoading(true);
+    setConfigError(null);
+    try {
+      if (forceRefresh) {
+        invalidateNamespace('budgetConfigs');
       }
-    };
 
-    fetchConfigs();
-  }, [token, refreshKey]);
+      const data = await fetchWithCache(
+        'budgetConfigs',
+        `org_${user?.org_id || 'all'}_${configCurrentPage}_${configRowsPerPage}_${searchTerm}`,
+        () => getBudgetConfigurations({
+          org_id: user?.org_id,
+          page: configCurrentPage,
+          limit: Number(configRowsPerPage || 10),
+          search: searchTerm,
+        }, token),
+        5 * 60 * 1000,
+        forceRefresh
+      );
+
+      const items = Array.isArray(data) ? data : (data?.items || []);
+      const pagination = data?.pagination || {
+        page: configCurrentPage,
+        limit: Number(configRowsPerPage || 10),
+        totalItems: items.length,
+        totalPages: Math.max(1, Math.ceil(items.length / Number(configRowsPerPage || 10))),
+        hasPrev: configCurrentPage > 1,
+        hasNext: false,
+      };
+
+      setConfigurations((items || []).map(normalizeConfig).filter(config => {
+        const isActive = String(config.status || '').toLowerCase() === 'active';
+        if (userRole === 'payroll') {
+          return isActive && config.createdBy === user.id;
+        }
+        return isActive;
+      }));
+      setConfigPagination(pagination);
+    } catch (error) {
+      setConfigError(error.message || 'Failed to load configurations');
+      setConfigurations([]);
+      setConfigPagination((prev) => ({ ...prev, totalItems: 0, totalPages: 1, page: 1, hasPrev: false, hasNext: false }));
+    } finally {
+      setConfigLoading(false);
+    }
+  }, [token, user?.org_id, user?.id, userRole, configCurrentPage, configRowsPerPage, searchTerm]);
+
+  useEffect(() => {
+    refreshBudgetConfigs(false);
+  }, [refreshKey, refreshBudgetConfigs]);
+
+  useEffect(() => {
+    connectWebSocket();
+    const unsubscribe = addWebSocketListener(async (message) => {
+      if (message?.event !== 'budget_config_updated') return;
+
+      const payload = message?.payload || {};
+      const budgetId = payload.budget_id;
+      if (!budgetId) return;
+
+      if (payload.action === 'deleted') {
+        setConfigurations((prev) => prev.filter((config) => String(config.id) !== String(budgetId)));
+        setSelectedConfig((prev) => {
+          if (!prev || String(prev.id) !== String(budgetId)) return prev;
+          setShowModal(false);
+          return null;
+        });
+        return;
+      }
+
+      try {
+        const updated = await getBudgetConfigurationById(budgetId, token);
+        if (!updated) return;
+
+        const normalized = normalizeConfig(updated);
+        const isActive = String(normalized.status || '').toLowerCase() === 'active';
+        const isVisibleToUser = userRole === 'payroll'
+          ? isActive && String(normalized.createdBy || '') === String(user?.id || '')
+          : isActive;
+
+        setConfigurations((prev) => {
+          if (!isVisibleToUser) {
+            return prev.filter((config) => String(config.id) !== String(normalized.id));
+          }
+
+          const exists = prev.some((config) => String(config.id) === String(normalized.id));
+          if (!exists) return [normalized, ...prev];
+          return prev.map((config) => (String(config.id) === String(normalized.id) ? normalized : config));
+        });
+
+        setSelectedConfig((prev) => {
+          if (!prev || String(prev.id) !== String(normalized.id)) return prev;
+          if (!isVisibleToUser) {
+            setShowModal(false);
+            return null;
+          }
+          return normalized;
+        });
+      } catch (error) {
+        console.error('Realtime budget config sync failed:', error);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [token, userRole, user?.id]);
 
   useEffect(() => {
     const fetchApprovers = async () => {
@@ -699,7 +943,31 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           true
         );
 
-        setMyRequests((data || []).map(normalizeRequest));
+        const baseRequests = Array.isArray(data) ? data : [];
+        const detailedRequests = await Promise.allSettled(
+          baseRequests.map(async (request) => {
+            const requestId = request?.approval_request_id || request?.request_id || request?.id;
+            if (!requestId) return request;
+            try {
+              const details = await fetchWithCache(
+                'approvalRequestDetails',
+                requestId,
+                () => approvalRequestService.getApprovalRequest(requestId, token),
+                60 * 1000,
+                true
+              );
+              return details || request;
+            } catch {
+              return request;
+            }
+          })
+        );
+
+        const mergedRequests = detailedRequests.map((result, index) =>
+          result.status === 'fulfilled' && result.value ? result.value : baseRequests[index]
+        );
+
+        setMyRequests(mergedRequests.map(normalizeRequest));
       } catch (error) {
         setRequestsError(error.message || 'Failed to load requests');
         setMyRequests([]);
@@ -763,12 +1031,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       if (message?.event !== 'approval_request_updated') return;
       const payload = message?.payload || {};
       applyRequestUpdate(payload.request_id, payload.action, payload.submitted_by);
+
+      if (['submitted', 'approved', 'rejected', 'payment_completed', 'completed', 'deleted'].includes(String(payload.action || '').toLowerCase())) {
+        refreshBudgetConfigs(true);
+      }
     });
 
     return () => {
       unsubscribe();
     };
-  }, [userId, token, selectedRequest?.id]);
+  }, [userId, token, selectedRequest?.id, refreshBudgetConfigs]);
 
   const getOrgName = (orgId) => {
     const org = organizations.find((item) => item.org_id === orgId || item.id === orgId);
@@ -886,6 +1158,17 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           data?.department || data?.dept || data?.department_name || 
           data?.dept_name || data?.org_name || data?.ou_name || ''
         );
+        const employeeLocation = normalizeText(
+          data?.location || data?.Location || data?.site || data?.office || data?.site_location || ''
+        );
+
+        const configLocations = parseStoredList(
+          selectedConfig?.location || selectedConfig?.locations || selectedConfig?.siteLocation || []
+        )
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+        const hasLocationFilter = configLocations.length > 0 && !configLocations.includes('all');
+        const locationAllowed = !hasLocationFilter || configLocations.includes(employeeLocation);
 
         // 2. Resolve Budget Configuration Scope
         // Get IDs of selected OUs (leaf nodes)
@@ -935,17 +1218,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             rejectionReason = `Scope Mismatch. Employee Company Code: '${empCompanyCode}' (Allowed: ${Array.from(allowedCompanyCodes).join(', ')}). Employee Department: '${empDepartment}' (Allowed: ${Array.from(allowedDeptNames).join(', ')})`;
           }
 
-          console.log('[Strict Scope Debug]', {
-            empCompanyCode,
-            empDepartment,
-            allowedOrgsCount: allowedOrgs.length,
-            allowedCompanyCodes: Array.from(allowedCompanyCodes),
-            allowedDeptNames: Array.from(allowedDeptNames),
-            companyMatch,
-            deptMatch,
-            isScopeAllowed
-          });
-
         } else {
            // Fallback: If no specific OUs selected, check loosely against generic department field
            const rawConfigDepartments =
@@ -966,9 +1238,33 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
            }
         }
 
-        if (!isScopeAllowed) {
-          console.warn('[Employee Lookup] Validation Failed:', rejectionReason);
-          setEmployeeLookupError('Employee is not within the selected budget scope.');
+        if (!isScopeAllowed || !locationAllowed) {
+          console.warn('[Employee Lookup] Validation Failed:', rejectionReason || 'Location mismatch');
+          setEmployeeLookupError(
+            !locationAllowed
+              ? 'Employee location is not within the selected budget scope.'
+              : 'Employee is not within the selected budget scope.'
+          );
+          setIndividualRequest((prev) => ({
+            ...prev,
+            employeeName: '',
+            email: '',
+            position: '',
+            employeeStatus: '',
+            geo: '',
+            location: '',
+            department: '',
+            hireDate: '',
+            terminationDate: '',
+          }));
+          return;
+        }
+
+        const hireDateValue = data?.hire_date || data?.date_hired || data?.start_date || '';
+        const tenureValidation = validateTenureScope(hireDateValue, selectedConfig?.tenureGroups || []);
+        if (!tenureValidation.tenureAllowed) {
+          console.warn('[Employee Lookup] Tenure validation failed:', tenureValidation.reason);
+          setEmployeeLookupError(tenureValidation.reason || 'Employee hire date is not within the selected tenure group scope.');
           setIndividualRequest((prev) => ({
             ...prev,
             employeeName: '',
@@ -1027,6 +1323,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     selectedConfig?.budget_department,
     selectedConfig?.affectedOUPaths,
     selectedConfig?.affected_ou,
+    selectedConfig?.tenureGroups,
     organizations,
   ]);
 
@@ -1192,35 +1489,40 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
-    setDetailVisibleCount(10);
+    setDetailLineItemsPage(1);
     refreshSelectedRequestDetails();
     return undefined;
   }, [detailsOpen, selectedRequest?.id, token]);
 
-  const handleDetailTableScroll = useCallback((event) => {
-    const el = event.currentTarget;
-    if (!el) return;
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
-    if (nearBottom) {
-      setDetailVisibleCount((prev) => prev + 10);
-    }
-  }, []);
+  useEffect(() => {
+    setDetailLineItemsPage(1);
+  }, [detailSearch, detailLineItemsRowsPerPage]);
 
   const getApprovalBadgeClass = (status, isSelfRequest = false) => {
-    // Self request gets blue color
-    if (isSelfRequest && status === 'approved') {
-      return 'bg-blue-500 text-white';
+    const normalized = String(status || '').toLowerCase();
+
+    if (isSelfRequest && normalized === 'approved') {
+      return 'bg-teal-500 text-white';
     }
-    
-    switch (status) {
+
+    switch (normalized) {
+      case 'self_request':
+      case 'self request':
+      case 'self_approved':
+        return 'bg-teal-500 text-white';
       case 'approved':
         return 'bg-green-600 text-white';
+      case 'completed':
+        return 'bg-blue-600 text-white';
       case 'rejected':
         return 'bg-red-600 text-white';
+      case 'ongoing_approval':
+      case 'pending_payroll_approval':
+      case 'pending_payment_completion':
       case 'pending':
-        return 'bg-yellow-500 text-white';
       case 'escalated':
-        return 'bg-purple-500 text-white';
+      case 'submitted':
+        return 'bg-amber-500 text-white';
       default:
         return 'bg-slate-600 text-white';
     }
@@ -1230,8 +1532,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     if (isSelfRequest && status === 'approved') {
       return 'Self Request';
     }
-    const statusStr = String(status || 'pending');
-    return statusStr.charAt(0).toUpperCase() + statusStr.slice(1).replace(/_/g, ' ');
+    return formatStatusText(status, 'Pending');
   };
 
   const getWorkflowStatus = (request) => {
@@ -1325,25 +1626,25 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   };
   const getWorkflowBadgeClass = (stage, status, isSelfRequest = false) => {
     const currentStage = getWorkflowStage(status);
-    if (currentStage === 'APPROVED') return 'bg-emerald-500 text-white';
+    if (currentStage === 'APPROVED') return 'bg-green-600 text-white';
     if (currentStage === 'REJECTED' && stage === 'L1') return 'bg-red-500 text-white';
     
     // Handle self-request for L1
     if (stage === 'L1' && isSelfRequest && (status === 'l1_approved' || currentStage === 'L2' || currentStage === 'L3' || currentStage === 'P')) {
-      return 'bg-blue-500 text-white'; // Blue for self-approved L1
+      return 'bg-teal-500 text-white';
     }
     
     // Current stage in progress
-    if (stage === currentStage) return 'bg-amber-500 text-white'; // Yellow for pending
+    if (stage === currentStage) return 'bg-amber-500 text-white';
     
     // Approved stages
     if ((stage === 'L1' && ['L2', 'L3', 'P', 'APPROVED'].includes(currentStage)) ||
         (stage === 'L2' && ['L3', 'P', 'APPROVED'].includes(currentStage)) ||
         (stage === 'L3' && ['P', 'APPROVED'].includes(currentStage))) {
-      return 'bg-emerald-500 text-white'; // Green for approved
+      return 'bg-green-600 text-white';
     }
     
-    return 'bg-slate-600 text-slate-300'; // Gray for not reached
+    return 'bg-slate-600 text-slate-300';
   };
   
   const getWorkflowStatusLabel = (status, isSelfRequest = false) => {
@@ -1445,11 +1746,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setBulkItems([]);
       setBulkFileName('');
       setBulkParseError(null);
+      setBulkUploadLoading(false);
       return;
     }
 
     setBulkParseError(null);
     setBulkFileName(file.name);
+    setBulkUploadLoading(true);
 
     try {
       const XLSXModule = await import('xlsx');
@@ -1486,6 +1789,17 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           data?.org_id || data?.ou_id || data?.org_unit_id || data?.department_id || ''
         );
         const employeeOrgName = employeeOrgId ? getOrgName(employeeOrgId) : '';
+        const employeeLocation = normalizeText(
+          data?.location || data?.Location || data?.site || data?.office || data?.site_location || ''
+        );
+
+        const configLocations = parseStoredList(
+          selectedConfig?.location || selectedConfig?.locations || selectedConfig?.siteLocation || []
+        )
+          .map((value) => normalizeText(value))
+          .filter(Boolean);
+        const hasLocationFilter = configLocations.length > 0 && !configLocations.includes('all');
+        const locationAllowed = !hasLocationFilter || configLocations.includes(employeeLocation);
 
         const rawConfigDepartments =
           selectedConfig?.departments ||
@@ -1514,6 +1828,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         );
 
         const hasOuFilter = configOuIds.size > 0;
+        const hireDateValue = data?.hire_date || data?.date_hired || data?.start_date || '';
+        const tenureValidation = validateTenureScope(hireDateValue, selectedConfig?.tenureGroups || []);
 
         if (hasOuFilter) {
           const allowedOrgs = organizations.filter((org) =>
@@ -1535,7 +1851,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           return {
             departmentAllowed: deptMatch,
             ouAllowed: companyMatch,
-            isValid: companyMatch && deptMatch,
+            locationAllowed,
+            tenureAllowed: tenureValidation.tenureAllowed,
+            employeeTenureGroup: tenureValidation.employeeTenureGroup,
+            tenureReason: tenureValidation.reason,
+            isValid: companyMatch && deptMatch && locationAllowed && tenureValidation.tenureAllowed,
             employeeDepartment,
             employeeOrgName,
           };
@@ -1547,7 +1867,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         return {
           departmentAllowed,
           ouAllowed: true,
-          isValid: departmentAllowed,
+          locationAllowed,
+          tenureAllowed: tenureValidation.tenureAllowed,
+          employeeTenureGroup: tenureValidation.employeeTenureGroup,
+          tenureReason: tenureValidation.reason,
+          isValid: departmentAllowed && locationAllowed && tenureValidation.tenureAllowed,
           employeeDepartment,
           employeeOrgName,
         };
@@ -1568,14 +1892,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           const batchData = await approvalRequestService.getEmployeesBatch(employeeIds, companyId, token);
           
           // The API returns { found: [...], notFound: [...] }
-          console.log('[Bulk Upload] Batch API result:', {
-            batchNumber: Math.floor(i / batchSize) + 1,
-            requestedIds: employeeIds,
-            foundCount: batchData?.found?.length || 0,
-            notFoundCount: batchData?.notFound?.length || 0,
-            notFoundIds: batchData?.notFound || [],
-            rawResponse: batchData,
-          });
           
           if (batchData && (batchData.found || batchData.notFound !== undefined)) {
             // Create a map of employee data by EID for quick lookup
@@ -1592,14 +1908,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               if (employeeData) {
                 // Validate employee scope (same as individual validation)
                 const validation = validateEmployeeScope(employeeData);
-                
-                console.log(`[Bulk Upload] Employee ${item.employee_id} scope validation:`, {
-                  departmentAllowed: validation.departmentAllowed,
-                  ouAllowed: validation.ouAllowed,
-                  isValid: validation.isValid,
-                  employeeDepartment: validation.employeeDepartment,
-                  employeeOrgName: validation.employeeOrgName,
-                });
                 
                 return {
                   ...item,
@@ -1629,54 +1937,28 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         }
       }
 
-      // Count valid and warning rows with detailed logging
+      // Count valid and warning rows
       let validCount = 0;
       let warningCount = 0;
       let invalidCount = 0;
-
-      console.log('[Bulk Upload Validation] Starting validation of enriched items:', enrichedItems.length);
 
       enrichedItems.forEach((item, idx) => {
         const hasEmployeeData = item.employee_id && item.employeeData;
         const hasValidAmount = item.amount && item.amount > 0;
         const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
         
-        // Detailed logging for each item
-        console.log(`[Item ${idx + 1}] Employee ${item.employee_id}:`, {
-          hasEmployeeData,
-          hasValidAmount,
-          amount: item.amount,
-          scopeValidation: item.scopeValidation,
-          isInScope,
-          employeeData: item.employeeData ? 'Found' : 'Not Found',
-        });
-        
         // Valid: has employee data, valid amount, and is in scope
         if (hasEmployeeData && hasValidAmount && isInScope) {
           validCount++;
-          console.log(`[Item ${idx + 1}] ✓ VALID`);
         } 
         // Invalid: missing critical data or out of scope
         else if (!hasEmployeeData || !hasValidAmount || !isInScope) {
           invalidCount++;
-          console.log(`[Item ${idx + 1}] ✗ INVALID - Reasons:`, {
-            missingEmployee: !hasEmployeeData,
-            invalidAmount: !hasValidAmount,
-            outOfScope: !isInScope,
-          });
         }
         // Warning: has some data but incomplete
         else {
           warningCount++;
-          console.log(`[Item ${idx + 1}] ⚠ WARNING`);
         }
-      });
-
-      console.log('[Bulk Upload Validation] Summary:', {
-        total: enrichedItems.length,
-        valid: validCount,
-        warning: warningCount,
-        invalid: invalidCount,
       });
 
       // Only reject if ALL rows are completely invalid
@@ -1685,12 +1967,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         throw new Error('File contains only invalid data. At least one employee must be found with a valid amount and be in the budget scope.');
       }
 
-      console.log('[Bulk Upload Validation] File accepted with', validCount, 'valid and', warningCount, 'warning items');
       setBulkItems(enrichedItems);
     } catch (error) {
       console.error('Error parsing bulk template:', error);
       setBulkItems([]);
       setBulkParseError(error.message || 'Failed to parse the template file.');
+    } finally {
+      setBulkUploadLoading(false);
     }
   };
 
@@ -1715,6 +1998,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       }
       if (!item.scopeValidation.ouAllowed) {
         errors.push('Employee OU/organization not in budget scope');
+      }
+        if (item.scopeValidation.locationAllowed === false) {
+          errors.push('Employee location not in budget scope');
+        }
+      if (item.scopeValidation.tenureAllowed === false) {
+        errors.push(item.scopeValidation.tenureReason || 'Employee tenure group is not in budget scope');
       }
     }
     
@@ -1777,7 +2066,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return;
     }
 
-    const totalAmount = amountValue;
+    const totalAmount = individualRequest.isDeduction ? -amountValue : amountValue;
 
     setSubmitting(true);
     setSubmitError(null);
@@ -1862,29 +2151,20 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   };
 
   const handleSubmitBulk = async () => {
-    console.log('[handleSubmitBulk] Starting submission...', {
-      bulkItemsCount: bulkItems.length,
-      selectedConfigId: selectedConfig?.id,
-      approvalDescription: bulkItems[0]?.approval_description
-    });
-    
     const commonError = validateCommon();
     if (commonError) {
-      console.log('[handleSubmitBulk] Common validation failed:', commonError);
       setConfirmLoading(false);
       setSubmitError(commonError);
       return;
     }
     
     if (bulkParseError) {
-      console.log('[handleSubmitBulk] Parse error exists:', bulkParseError);
       setConfirmLoading(false);
       setSubmitError(bulkParseError);
       return;
     }
     
     if (!bulkItems.length) {
-      console.log('[handleSubmitBulk] No bulk items');
       setConfirmLoading(false);
       setSubmitError('Upload the template with at least one line item.');
       return;
@@ -1898,35 +2178,24 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return hasEmployeeData && hasValidAmount && isInScope;
     });
     
-    console.log('[handleSubmitBulk] Valid items filtered:', {
-      totalItems: bulkItems.length,
-      validItemsCount: validItems.length,
-      invalidItemsCount: bulkItems.length - validItems.length
-    });
-    
     if (!validItems.length) {
       setConfirmLoading(false);
       setSubmitError('No valid items to submit. Ensure at least one employee has valid data and is in scope.');
       return;
     }
 
-    // Calculate total from valid items only
-    const totalAmount = validItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    // Calculate net total from valid items only (deductions reduce total)
+    const totalAmount = validItems.reduce((sum, item) => {
+      const amount = Number(item.amount || 0);
+      return sum + (item.is_deduction ? -amount : amount);
+    }, 0);
     
-    console.log('[handleSubmitBulk] Proceeding with submission:', {
-      validItemsCount: validItems.length,
-      totalAmount,
-      skippedInvalidCount: bulkItems.length - validItems.length
-    });
-
     setSubmitting(true);
     setSubmitError(null);
     setSubmitSuccess(null);
 
     try {
-      console.log('[handleSubmitBulk] Creating approval request...');
       const created = await approvalRequestService.createApprovalRequest(buildCreatePayload(totalAmount), token);
-      console.log('[handleSubmitBulk] Created response:', created);
       
       const requestId = created?.id || created?.request_id || created?.approval_request_id;
       if (!requestId) throw new Error('Approval request ID not returned.');
@@ -1952,9 +2221,6 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         notes: item.notes || null,
       }));
 
-      console.log('[handleSubmitBulk] Transformed line items:', lineItemsForBackend);
-      console.log('[handleSubmitBulk] Adding line items...');
-      
       await approvalRequestService.addLineItemsBulk(
         requestId,
         {
@@ -1963,9 +2229,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         token
       );
 
-      console.log('[handleSubmitBulk] Submitting request...');
       const submitResult = await approvalRequestService.submitApprovalRequest(requestId, token);
-      console.log('[handleSubmitBulk] Submit result:', submitResult);
 
       invalidateNamespace('myRequests');
       invalidateNamespace('approvalRequests');
@@ -2069,9 +2333,21 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
-  const visibleLineItems = filteredLineItems.slice(0, detailVisibleCount);
+  const detailLineItemsRowsPerPageNumber = Number(detailLineItemsRowsPerPage || 10);
+  const detailLineItemsTotalPages = Math.max(1, Math.ceil(filteredLineItems.length / detailLineItemsRowsPerPageNumber));
+  const safeDetailLineItemsPage = Math.min(detailLineItemsPage, detailLineItemsTotalPages);
+  const visibleLineItems = filteredLineItems.slice(
+    (safeDetailLineItemsPage - 1) * detailLineItemsRowsPerPageNumber,
+    safeDetailLineItemsPage * detailLineItemsRowsPerPageNumber
+  );
   const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
-  const budgetUsed = Number(requestConfigDetails?.budget_used || requestConfigDetails?.usedAmount || 0);
+  const budgetUsed = Number(
+    requestConfigDetails?.approved_amount ??
+      requestConfigDetails?.approvedAmount ??
+      requestConfigDetails?.usedAmount ??
+      requestConfigDetails?.budget_used ??
+      0
+  );
   const budgetMax = Number(
     requestConfigDetails?.total_budget ||
       requestConfigDetails?.totalBudget ||
@@ -2170,10 +2446,23 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     return detailApprovals.find((approval) => String(approval.approval_level) === String(level)) || null;
   };
 
-  const filteredConfigs = configurations.filter(config => 
-    (!searchTerm || String(config.name || '').toLowerCase().includes(searchTerm.toLowerCase())) &&
+  const filteredConfigs = configurations.filter(config =>
     !(userRole === 'requestor' && ['payroll', 'l1'].includes(String(config.created_by_role || '').toLowerCase()))
   );
+  const configTotalPages = Math.max(1, Number(configPagination?.totalPages || 1));
+  const safeConfigPage = Math.min(Math.max(1, configCurrentPage), configTotalPages);
+  const paginatedConfigs = filteredConfigs;
+
+  useEffect(() => {
+    setConfigCurrentPage(1);
+  }, [searchTerm, configRowsPerPage]);
+
+  useEffect(() => {
+    if (configCurrentPage > configTotalPages) {
+      setConfigCurrentPage(configTotalPages);
+    }
+  }, [configCurrentPage, configTotalPages]);
+
   const visibleMyRequests = myRequests.filter((request) => {
     const rawStatus = String(request.overall_status || request.status || '').toLowerCase();
     return rawStatus !== 'completed';
@@ -2182,6 +2471,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   return (
     <>
       <div className="flex flex-col gap-6 h-full min-h-0">
+        {(submitting || confirmLoading) && <LoadingLine />}
         <Card className="bg-slate-800 border-slate-700 flex flex-col w-full flex-1 min-h-0 overflow-hidden">
         <CardHeader className="pb-3 border-b border-slate-700/50">
           <div className="flex items-center justify-between gap-4">
@@ -2203,7 +2493,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             </div>
           </div>
         </CardHeader>
-        <CardContent className="p-0 overflow-y-auto flex-1">
+        <CardContent className="p-0 flex-1 min-h-0 flex flex-col">
           {configLoading ? (
             <div className="p-8 text-center text-gray-400">Loading configurations...</div>
           ) : configError ? (
@@ -2211,7 +2501,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           ) : filteredConfigs.length === 0 ? (
             <div className="p-8 text-center text-gray-400">No active budget configurations found.</div>
           ) : (
-            <table className="w-full text-left text-sm text-gray-300">
+            <>
+            <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0">
+            <table className="min-w-[1400px] w-full text-left text-sm text-gray-300 border-collapse">
               <thead className="text-xs uppercase bg-slate-900/50 text-gray-400 sticky top-0 z-10 backdrop-blur-sm">
                 <tr>
                   <th className="px-4 py-3 font-medium">Budget Name</th>
@@ -2220,19 +2512,21 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   <th className="px-4 py-3 font-medium">Location</th>
                   <th className="px-4 py-3 font-medium">Clients</th>
                   <th className="px-4 py-3 font-medium">Departments</th>
+                  <th className="px-4 py-3 font-medium text-right">Client Sponsored Amount</th>
                   <th className="px-4 py-3 font-medium text-right">Used Amount</th>
                   <th className="px-4 py-3 font-medium text-right">Ongoing Amount</th>
                   <th className="px-4 py-3 font-medium text-right">Remaining</th>
-                  <th className="px-4 py-3 font-medium text-center">Action</th>
+                  <th className="px-4 py-3 font-medium text-center sticky right-0 z-30 bg-slate-900/95 border-l border-slate-700 whitespace-nowrap">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
-                {filteredConfigs.map((config) => {
+                {paginatedConfigs.map((config) => {
                   const used = Number(config.approvedAmount ?? config.usedAmount ?? 0);
                   const ongoing = Number(config.ongoingAmount ?? 0);
+                    const clientSponsoredAmount = Number(config.clientSponsoredAmount ?? 0);
                   const limitValue = Number(config.totalBudget || config.budgetLimit || 0);
                   const formattedRemaining = limitValue > 0 
-                      ? (limitValue - used).toLocaleString() 
+                      ? (limitValue - used).toLocaleString('en-US') 
                       : 'Unlimited';
                   
                   const pathsText = formatOuPaths(config.affectedOUPaths || config.affected_ou || []);
@@ -2255,16 +2549,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       <td className="px-4 py-3 max-w-[200px] truncate" title={pathsText}>
                         {pathsText}
                       </td>
+                      <td className="px-4 py-3 text-right text-fuchsia-300 font-medium">
+                        {formatCurrencyValue(clientSponsoredAmount)}
+                      </td>
                       <td className="px-4 py-3 text-right text-emerald-400 font-medium">
-                        ₱{used.toLocaleString()}
+                        {formatCurrencyValue(used)}
                       </td>
                       <td className="px-4 py-3 text-right text-amber-400 font-medium">
-                        ₱{ongoing.toLocaleString()}
+                        {formatCurrencyValue(ongoing)}
                       </td>
                       <td className="px-4 py-3 text-right text-blue-400 font-medium">
                         {limitValue > 0 ? `₱${formattedRemaining}` : '∞'}
                       </td>
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-4 py-3 text-center sticky right-0 z-20 bg-slate-800 border-l border-slate-700/60 whitespace-nowrap">
                         <Button
                           size="sm"
                           className="h-8 bg-blue-600 hover:bg-blue-700 text-white"
@@ -2278,6 +2575,17 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 })}
               </tbody>
             </table>
+            </div>
+            <div className="px-4 py-3 border-t border-slate-700/60">
+              <PaginationControls
+                page={safeConfigPage}
+                totalPages={configTotalPages}
+                rowsPerPage={configRowsPerPage}
+                onPageChange={(page) => setConfigCurrentPage(page)}
+                onRowsPerPageChange={(value) => setConfigRowsPerPage(value)}
+              />
+            </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -2358,8 +2666,8 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               const approvals = request.approvals || [];
               const stageStatus = request.approvalStageStatus || computeStageStatus(approvals, request.overall_status || request.status);
               const displayStatus = formatStageStatusLabel(stageStatus);
-              const employeeCount = request.lineItemsCount ?? request.line_items_count ?? request.employeeCount ?? 0;
-              const deductionCount = request.deductionCount ?? request.deduction_count ?? 0;
+              const employeeCount = Number(request.lineItemsCount ?? request.line_items_count ?? request.employeeCount ?? request.employee_count ?? 0) || 0;
+              const deductionCount = Number(request.deductionCount ?? request.deduction_count ?? 0) || 0;
               const payCount = request.toBePaidCount ?? request.to_be_paid_count ?? Math.max(0, employeeCount - deductionCount);
               
               return (
@@ -2395,19 +2703,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     {request.description || 'No description'}
                   </td>
                   <td className="px-4 py-3 text-xs text-right font-semibold text-emerald-400">
-                    ₱{Number(request.amount || 0).toLocaleString()}
+                    ₱{Number(request.amount || 0).toLocaleString('en-US')}
                   </td>
                   <td className="px-4 py-3 text-xs text-right text-red-400">
-                    ₱{Number(request.deductionAmount || 0).toLocaleString()}
+                    ₱{Number(request.deductionAmount || 0).toLocaleString('en-US')}
                   </td>
                   <td className="px-4 py-3 text-xs text-right font-bold text-emerald-400">
-                    ₱{Number(request.netPay || 0).toLocaleString()}
+                    ₱{Number(request.netPay || 0).toLocaleString('en-US')}
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-400">
                     {formatDatePHT(request.submittedAt)}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge className={`text-[10px] ${getStageStatusBadgeClass(stageStatus)}`}>
+                    <Badge variant="outline" className={`text-[10px] ${getStageStatusBadgeClass(stageStatus)}`}>
                       {displayStatus}
                     </Badge>
                   </td>
@@ -2436,7 +2744,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className={`bg-slate-800 border-slate-700 text-white flex flex-col ${
           requestMode === 'bulk' && bulkItems.length > 0
-            ? 'w-[95vw] max-w-[1299px] max-h-[85vh] p-0 overflow-y-auto'
+            ? '!w-[99vw] sm:!w-[98vw] md:!w-[97vw] lg:!w-[96vw] xl:!w-[95vw] 2xl:!w-[92vw] !max-w-[1800px] max-h-[90vh] p-0 overflow-y-auto'
             : 'w-[95vw] md:w-[80vw] xl:w-[60vw] max-w-none max-h-[90vh] overflow-y-auto p-4'
         }`}>
 <DialogHeader className={`flex-shrink-0 space-y-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-5 pt-4 pb-1' : 'pb-2'}`}>
@@ -2587,7 +2895,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     />
                     {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
                       <p className="text-xs text-slate-400">
-                        Range: {Number(selectedConfig.minLimit).toLocaleString()} - {Number(selectedConfig.maxLimit).toLocaleString()}
+                        Range: {Number(selectedConfig.minLimit).toLocaleString('en-US')} - {Number(selectedConfig.maxLimit).toLocaleString('en-US')}
                       </p>
                     )}
                     {(() => {
@@ -2683,6 +2991,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       type="file"
                       accept=".xlsx,.xls"
                       onChange={handleBulkFileChange}
+                      disabled={bulkUploadLoading}
                       className="bg-slate-700 border-gray-300 text-white max-w-md"
                     />
                   </div>
@@ -2691,7 +3000,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   </p>
                   {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
                     <p className="text-xs text-emerald-400 font-medium">
-                      Configured Range: {Number(selectedConfig.minLimit).toLocaleString()} - {Number(selectedConfig.maxLimit).toLocaleString()}
+                      Configured Range: {Number(selectedConfig.minLimit).toLocaleString('en-US')} - {Number(selectedConfig.maxLimit).toLocaleString('en-US')}
                     </p>
                   )}
                   {bulkFileName && (
@@ -2701,6 +3010,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                         type="button"
                         variant="ghost"
                         size="sm"
+                        disabled={bulkUploadLoading}
                         onClick={() => {
                           setBulkItems([]);
                           setBulkFileName('');
@@ -2718,6 +3028,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   )}
                   {bulkItems.length > 0 && (
                     <p className="text-xs text-green-300">Uploaded {bulkItems.length} line item(s).</p>
+                  )}
+                  {bulkUploadLoading && (
+                    <p className="text-xs text-blue-300">Uploading and validating template, please wait...</p>
                   )}
                   {bulkParseError && (
                     <p className="text-xs text-red-300">{bulkParseError}</p>
@@ -2773,7 +3086,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             {requestMode === 'individual' ? (
               <Button
                 onClick={() => setConfirmAction('submit-individual')}
-                disabled={!canProceed || submitting}
+                disabled={!canProceed || submitting || bulkUploadLoading}
                 className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {submitting ? 'Submitting...' : 'Proceed'}
@@ -2781,15 +3094,27 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             ) : (
               <Button
                 onClick={() => setConfirmAction('submit-bulk')}
-                disabled={!canProceed || submitting}
+                disabled={!canProceed || submitting || bulkUploadLoading}
                 className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {submitting ? 'Submitting...' : 'Proceed'}
               </Button>
             )}
           </DialogFooter>
+
         </DialogContent>
       </Dialog>
+
+      {bulkUploadLoading && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+            <p className="text-blue-300 font-medium text-lg">Uploading template...</p>
+            <p className="text-xs text-slate-400">Validating rows and employee scope</p>
+          </div>
+        </div>,
+        document.body
+      )}
 
       <Dialog
         open={detailsOpen}
@@ -2801,6 +3126,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
             setRequestDetailsData(null);
             setRequestConfigDetails(null);
             setDetailSearch('');
+            setDetailLineItemsPage(1);
             setPayrollCycle('');
             setPayrollCycleDate('');
             setPayrollCycleModalOpen(false);
@@ -2808,7 +3134,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           }
         }}
       >
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[98vw] md:w-[92vw] lg:w-[85vw] xl:w-[70vw] max-w-none max-h-[85vh] overflow-y-auto p-5">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[99vw] md:w-[95vw] lg:w-[90vw] xl:w-[82vw] 2xl:w-[76vw] max-w-[1800px] max-h-[85vh] overflow-y-auto p-5">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request Details</DialogTitle>
 
@@ -2825,20 +3151,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               <div className="grid gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-[2fr_1fr]">
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge className={getStageStatusBadgeClass(detailStageStatus)}>
+                    <Badge variant="outline" className={getStageStatusBadgeClass(detailStageStatus)}>
                       {detailStageLabel}
                     </Badge>
                     <span className="text-xs text-slate-300">{detailRequestNumber}</span>
                     <span className="text-xs text-slate-500">
-                      Submitted: {detailSubmittedAt ? new Date(detailSubmittedAt).toLocaleString('en-US', {
-                        timeZone: 'Asia/Manila',
-                        month: 'numeric',
-                        day: 'numeric',
-                        year: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                        hour12: true
-                      }).replace(', ', '-').replace(' ', '') : '—'}
+                      Submitted: {formatDatePHT(detailSubmittedAt)}
                     </span>
                   </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Configuration Name</div>
@@ -2863,21 +3181,21 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
-                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString('en-US')}</div>
                   <div className="flex gap-4">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Deduction Total</div>
-                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString()}</div>
+                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Net to Pay</div>
-                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString()}</div>
+                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString('en-US')}</div>
                     </div>
                   </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
-                      ? `₱${Number(budgetUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `₱${Number(budgetUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'No limit'}
                   </div>
                   <div className="h-2 rounded-full bg-slate-700">
@@ -2888,7 +3206,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   </div>
                   <div className="text-xs text-slate-400">
                     {hasTotalBudget
-                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'After approval: No limit'}
                   </div>
                 </div>
@@ -2896,9 +3214,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-semibold text-white">Uploaded Data</div>
+                  <div className="text-sm font-semibold text-white">Uploaded Data ({detailLineItems.length} total)</div>
                   {warningCount > 0 && (
-                    <Badge className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
+                    <Badge variant="outline" className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
                   )}
                 </div>
                 <div className="mt-3">
@@ -2910,11 +3228,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     className="bg-slate-700 border-gray-300 text-white"
                   />
                 </div>
-                <div
-                  ref={detailTableRef}
-                  onScroll={handleDetailTableScroll}
-                  className="mt-3 max-h-[360px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700"
-                >
+                <div className="mt-3 max-h-[360px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-800 sticky top-0 z-10">
                       <tr>
@@ -2957,10 +3271,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                               <td className="px-3 py-2 text-slate-300">{item.hire_date || '—'}</td>
                               <td className="px-3 py-2 text-slate-300">{item.termination_date || '—'}</td>
                               <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                ₱{Math.abs(amountValue).toLocaleString()}
+                                ₱{Math.abs(amountValue).toLocaleString('en-US')}
                               </td>
                               <td className="px-3 py-2 text-center">
-                                {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
+                                {item.is_deduction ? <Badge variant="outline" className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
                               </td>
                               <td className="px-3 py-2 text-slate-300">
                                 {item.notes || item.item_description || '—'}
@@ -2972,6 +3286,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     </tbody>
                   </table>
                 </div>
+                <PaginationControls
+                  page={safeDetailLineItemsPage}
+                  totalPages={detailLineItemsTotalPages}
+                  rowsPerPage={detailLineItemsRowsPerPage}
+                  onPageChange={(page) => setDetailLineItemsPage(page)}
+                  onRowsPerPageChange={(value) => setDetailLineItemsRowsPerPage(value)}
+                  rowOptions={[25, 50, 100]}
+                />
               </div>
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
@@ -2983,13 +3305,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                     const status = approval?.status || 'pending';
                     const isSelfRequest = entry.level === 1 && approval?.is_self_request === true;
                     const approvedBy = approval?.approver_name || '—';
+                    const selfRequestorName =
+                      detailRecord?.submitted_by_name ||
+                      detailRecord?.submittedByName ||
+                      selectedRequest?.submittedByName ||
+                      selectedRequest?.submitted_by_name ||
+                      approvedBy;
                     const approvedDate = approval?.approval_date ? formatDatePHT(approval.approval_date) : '—';
                     const isPayroll = entry.level === 'P';
                     
                     return (
                       <div key={entry.label} className="rounded-lg border border-slate-600 bg-slate-900/40 p-3 flex flex-col">
                         <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">{entry.title}</div>
-                        <Badge className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
+                        <Badge variant="outline" className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
                           {formatStatusLabel(status, isSelfRequest)}
                         </Badge>
                         <div className="flex-1 space-y-2 text-xs">
@@ -3036,7 +3364,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                               {status === 'approved' && (
                                 <>
                                   <div className="text-slate-400 mt-3">{isSelfRequest ? 'Submitted by:' : 'Approved by:'}</div>
-                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>{approvedBy}</div>
+                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>
+                                    {isSelfRequest ? selfRequestorName : approvedBy}
+                                  </div>
                                   <div className="text-slate-500 text-[10px]">{approvedDate}</div>
                                   {(approval?.approval_notes || approval?.rejection_reason || approval?.description) && (
                                     <>
@@ -3162,12 +3492,23 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     </>
   );
 }
-const LoadingOverlay = () => (
-  <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-    <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl animate-in fade-in zoom-in duration-200">
-      <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
-      <p className="text-emerald-400 font-medium animate-pulse text-lg">Processing Approval...</p>
-    </div>
+const LoadingOverlay = () => {
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+      <div className="flex flex-col items-center gap-4 p-6 bg-slate-900 border border-slate-700 rounded-lg shadow-xl animate-in fade-in zoom-in duration-200">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
+        <p className="text-emerald-400 font-medium animate-pulse text-lg">Processing Approval...</p>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
+const LoadingLine = () => (
+  <div className="h-1 w-full overflow-hidden rounded bg-slate-700/70">
+    <div className="h-full w-2/5 bg-gradient-to-r from-blue-500 via-cyan-400 to-blue-500 animate-pulse" />
   </div>
 );
 
@@ -3186,6 +3527,16 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('submitted');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState('10');
+  const [serverPagination, setServerPagination] = useState({
+    page: 1,
+    limit: 10,
+    totalItems: 0,
+    totalPages: 1,
+    hasPrev: false,
+    hasNext: false,
+  });
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState(null);
@@ -3195,42 +3546,38 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const [detailSearch, setDetailSearch] = useState('');
   const [decisionNotes, setDecisionNotes] = useState('');
   const [actionError, setActionError] = useState(null);
-  const [detailVisibleCount, setDetailVisibleCount] = useState(10);
-  const detailTableRef = useRef(null);
+  const [detailLineItemsPage, setDetailLineItemsPage] = useState(1);
+  const [detailLineItemsRowsPerPage, setDetailLineItemsRowsPerPage] = useState('25');
 
   const formatDatePHT = (dateString) => {
-    if (!dateString) return '—';
-    try {
-      const date = new Date(dateString);
-      return date.toLocaleString('en-PH', {
-        timeZone: 'Asia/Manila',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      });
-    } catch (error) {
-      return dateString;
-    }
+    return formatDateTimeCompact(dateString);
   };
 
   const getApprovalBadgeClass = (status, isSelfRequest = false) => {
-    // Self request gets blue color
-    if (isSelfRequest && status === 'approved') {
-      return 'bg-blue-500 text-white';
+    const normalized = String(status || '').toLowerCase();
+
+    if (isSelfRequest && normalized === 'approved') {
+      return 'bg-teal-500 text-white';
     }
-    
-    switch (status) {
+
+    switch (normalized) {
+      case 'self_request':
+      case 'self request':
+      case 'self_approved':
+        return 'bg-teal-500 text-white';
       case 'approved':
         return 'bg-green-600 text-white';
+      case 'completed':
+        return 'bg-blue-600 text-white';
       case 'rejected':
         return 'bg-red-600 text-white';
+      case 'ongoing_approval':
+      case 'pending_payroll_approval':
+      case 'pending_payment_completion':
       case 'pending':
-        return 'bg-yellow-500 text-white';
       case 'escalated':
-        return 'bg-purple-500 text-white';
+      case 'submitted':
+        return 'bg-amber-500 text-white';
       default:
         return 'bg-slate-600 text-white';
     }
@@ -3240,8 +3587,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     if (isSelfRequest && status === 'approved') {
       return 'Self Request';
     }
-    const statusStr = String(status || 'pending');
-    return statusStr.charAt(0).toUpperCase() + statusStr.slice(1).replace(/_/g, ' ');
+    return formatStatusText(status, 'Pending');
   };
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [confirmAction, setConfirmAction] = useState(null);
@@ -3251,7 +3597,23 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const successModalWasOpen = useRef(false);
   const [payrollCycleModalOpen, setPayrollCycleModalOpen] = useState(false);
   const [payrollCycle, setPayrollCycle] = useState('');
-  const [payrollCycleDate, setPayrollCycleDate] = useState('');
+  const [payrollCycleMonth, setPayrollCycleMonth] = useState('');
+  const payrollCycleYear = String(new Date().getFullYear());
+  const payrollCycleDate = payrollCycleMonth ? `${payrollCycleMonth} ${payrollCycleYear}` : '';
+  const payrollMonthOptions = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
   const [payrollCycleError, setPayrollCycleError] = useState(null);
   const handledFocusRequestRef = useRef(null);
 
@@ -3286,7 +3648,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         setDetailsOpen(false);
         setDecisionNotes('');
         setPayrollCycle('');
-        setPayrollCycleDate('');
+        setPayrollCycleMonth('');
         fetchApprovals();
       }
     }, 1000);
@@ -3339,19 +3701,37 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         const filters = {
           ...(effectiveStatusFilter === 'all' ? {} : { status: effectiveStatusFilter }),
           submitted_by: user.id,
+          search: searchTerm,
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
         };
-        const data = await getApprovalRequestsCached(filters, `requestor_${user.id}_${effectiveStatusFilter || 'all'}`);
-        setApprovals((data || []).map(normalizeRequest));
+        const data = await getApprovalRequestsCached(filters, `requestor_${user.id}_${effectiveStatusFilter || 'all'}_${searchTerm}_${currentPage}_${rowsPerPage}`);
+        const items = Array.isArray(data) ? data : (data?.items || []);
+        setApprovals((items || []).map(normalizeRequest));
+        setServerPagination(data?.pagination || {
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
+          totalItems: items.length,
+          totalPages: Math.max(1, Math.ceil(items.length / Number(rowsPerPage || 10))),
+          hasPrev: currentPage > 1,
+          hasNext: false,
+        });
         setApprovalStatusMap({});
       } else if (userRole === 'payroll') {
         // Payroll sees requests that are pending payroll approval within their org scope
         const payrollStage = 'pending_payroll_approval,pending_payment_completion';
         const data = await getApprovalRequestsCached(
-          { approval_stage_status: payrollStage },
-          `payroll_${user.id}_${payrollStage}`
+          {
+            approval_stage_status: payrollStage,
+            search: searchTerm,
+            page: currentPage,
+            limit: Number(rowsPerPage || 10),
+          },
+          `payroll_${user.id}_${payrollStage}_${searchTerm}_${currentPage}_${rowsPerPage}`
         );
 
-        const normalizedRequests = (data || []).map(normalizeRequest);
+        const items = Array.isArray(data) ? data : (data?.items || []);
+        const normalizedRequests = (items || []).map(normalizeRequest);
         const normalizedFilter = String(effectiveStatusFilter || '').toLowerCase();
         const filteredByStatus =
           normalizedFilter === 'all' || normalizedFilter === 'pending' || normalizedFilter === 'submitted'
@@ -3360,7 +3740,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                 (request) => String(request.status || '').toLowerCase() === normalizedFilter
               );
 
-        const statusMap = (data || []).reduce((acc, request) => {
+        const statusMap = (items || []).reduce((acc, request) => {
           const id = request?.request_id || request?.id;
           if (!id) return acc;
           acc[id] = request.approvals || [];
@@ -3369,6 +3749,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
         setApprovals(filteredByStatus);
         setApprovalStatusMap(statusMap);
+        setServerPagination(data?.pagination || {
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
+          totalItems: filteredByStatus.length,
+          totalPages: Math.max(1, Math.ceil(filteredByStatus.length / Number(rowsPerPage || 10))),
+          hasPrev: currentPage > 1,
+          hasNext: false,
+        });
       } else {
         // Other roles (L1/L2/L3) see pending approvals + already approved by them (but not completed/rejected)
         const pendingApprovals = await fetchWithCache(
@@ -3419,11 +3807,20 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
         setApprovals(filteredByStatus);
         setApprovalStatusMap(statusMap);
+        setServerPagination({
+          page: 1,
+          limit: Number(rowsPerPage || 10),
+          totalItems: filteredByStatus.length,
+          totalPages: Math.max(1, Math.ceil(filteredByStatus.length / Number(rowsPerPage || 10))),
+          hasPrev: false,
+          hasNext: false,
+        });
       }
     } catch (error) {
       setError(error.message || 'Failed to load approvals');
       setApprovals([]);
       setApprovalStatusMap({});
+      setServerPagination((prev) => ({ ...prev, page: 1, totalItems: 0, totalPages: 1, hasPrev: false, hasNext: false }));
     } finally {
       setLoading(false);
     }
@@ -3431,7 +3828,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
   useEffect(() => {
     fetchApprovals();
-  }, [refreshKey, statusFilter, user?.id, userRole]);
+  }, [refreshKey, statusFilter, user?.id, userRole, currentPage, rowsPerPage, searchTerm]);
 
   const applyRequestUpdate = async (requestId, action) => {
     if (!requestId) return;
@@ -3512,6 +3909,21 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
+
+  const rowsPerPageNumber = Number(rowsPerPage || 10);
+  const totalPages = Math.max(1, Number(serverPagination?.totalPages || 1));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedApprovals = filteredApprovals;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   useEffect(() => {
     if (!focusRequestId || loading) return;
@@ -3616,19 +4028,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
   useEffect(() => {
     if (!detailsOpen) return undefined;
-    setDetailVisibleCount(10);
+    setDetailLineItemsPage(1);
     refreshDetails();
     return undefined;
   }, [detailsOpen, selectedRequest?.id]);
 
-  const handleDetailTableScroll = useCallback((event) => {
-    const el = event.currentTarget;
-    if (!el) return;
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
-    if (nearBottom) {
-      setDetailVisibleCount((prev) => prev + 10);
-    }
-  }, []);
+  useEffect(() => {
+    setDetailLineItemsPage(1);
+  }, [detailSearch, detailLineItemsRowsPerPage]);
 
   const workflowStages = ['L1', 'L2', 'L3', 'P'];
   const getApprovalStatusForLevel = (requestId, level) => {
@@ -3641,7 +4048,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     if (normalized === 'approved') return 'Approved';
     if (normalized === 'rejected') return 'Rejected';
     if (normalized === 'pending') return 'Pending';
-    return normalized ? normalized.replace(/_/g, ' ') : 'Pending';
+    return formatStatusText(normalized, 'Pending');
   };
   const getWorkflowStage = (status) => {
     const normalized = String(status || '').toLowerCase();
@@ -3657,9 +4064,16 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   };
   const getWorkflowBadgeClass = (stage, status) => {
     const currentStage = getWorkflowStage(status);
-    if (currentStage === 'APPROVED') return 'bg-emerald-500 text-white';
+    if (currentStage === 'APPROVED') return 'bg-green-600 text-white';
     if (currentStage === 'REJECTED' && stage === 'L1') return 'bg-red-500 text-white';
-    if (stage === currentStage) return 'bg-blue-500 text-white';
+    if (stage === currentStage) return 'bg-amber-500 text-white';
+
+    if ((stage === 'L1' && ['L2', 'L3', 'P', 'APPROVED'].includes(currentStage)) ||
+        (stage === 'L2' && ['L3', 'P', 'APPROVED'].includes(currentStage)) ||
+        (stage === 'L3' && ['P', 'APPROVED'].includes(currentStage))) {
+      return 'bg-green-600 text-white';
+    }
+
     return 'bg-slate-700 text-slate-200';
   };
   const renderWorkflowSummary = (status) => (
@@ -3751,9 +4165,21 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(term));
   });
-  const visibleLineItems = filteredLineItems.slice(0, detailVisibleCount);
+  const detailLineItemsRowsPerPageNumber = Number(detailLineItemsRowsPerPage || 10);
+  const detailLineItemsTotalPages = Math.max(1, Math.ceil(filteredLineItems.length / detailLineItemsRowsPerPageNumber));
+  const safeDetailLineItemsPage = Math.min(detailLineItemsPage, detailLineItemsTotalPages);
+  const visibleLineItems = filteredLineItems.slice(
+    (safeDetailLineItemsPage - 1) * detailLineItemsRowsPerPageNumber,
+    safeDetailLineItemsPage * detailLineItemsRowsPerPageNumber
+  );
   const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
-  const budgetUsed = Number(requestConfigDetails?.budget_used || requestConfigDetails?.usedAmount || 0);
+  const budgetUsed = Number(
+    requestConfigDetails?.approved_amount ??
+      requestConfigDetails?.approvedAmount ??
+      requestConfigDetails?.usedAmount ??
+      requestConfigDetails?.budget_used ??
+      0
+  );
   const budgetMax = Number(
     requestConfigDetails?.total_budget ||
       requestConfigDetails?.totalBudget ||
@@ -3910,6 +4336,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
   return (
     <Card className="bg-slate-800 border-slate-700 flex flex-col h-full min-h-0">
+      {(actionSubmitting || loading) && <LoadingLine />}
       <CardHeader>
         <CardTitle className="text-white">Approval Requests</CardTitle>
         <CardDescription className="text-gray-400">
@@ -3950,8 +4377,9 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         ) : filteredApprovals.length === 0 ? (
           <div className="text-sm text-gray-400">No approval requests found.</div>
         ) : (
+          <>
           <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
-            <table className="w-full border-collapse">
+            <table className="min-w-[1400px] w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
@@ -3993,13 +4421,13 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                   <th className="border-b border-slate-600 px-3 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
                     Submitted When
                   </th>
-                  <th className="border-b border-slate-600 px-3 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                  <th className="border-b border-slate-600 px-3 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap sticky right-0 z-30 bg-slate-700 border-l border-slate-600">
                     Actions
                   </th>
                 </tr>
               </thead>
               <tbody className="bg-slate-800/50">
-                  {filteredApprovals.map((approval) => {
+                  {paginatedApprovals.map((approval) => {
                   const approvalsForRequest = approvalStatusMap[approval.id] || approval.approvals || [];
                   const stageStatus = approval.approvalStageStatus || computeStageStatus(approvalsForRequest, approval.status);
                   const displayStatus = formatStageStatusLabel(stageStatus);
@@ -4079,7 +4507,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                         </div>
                       </td>
                       <td className="px-3 py-3 text-center">
-                        <Badge className={`${getStageStatusBadgeClass(stageStatus)} mx-auto`}>
+                        <Badge variant="outline" className={`${getStageStatusBadgeClass(stageStatus)} mx-auto`}>
                           {displayStatus}
                         </Badge>
                       </td>
@@ -4089,7 +4517,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                       <td className="px-3 py-3 text-xs text-slate-400">
                         {approval.submittedAt ? formatDatePHT(approval.submittedAt) : '—'}
                       </td>
-                      <td className="px-3 py-3 text-center">
+                      <td className="px-3 py-3 text-center sticky right-0 z-20 bg-slate-800 border-l border-slate-700 group-hover:bg-slate-700/70 transition-colors">
                         <Button
                           size="sm"
                           onClick={() => handleOpenDetails(approval)}
@@ -4104,6 +4532,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               </tbody>
             </table>
           </div>
+          <PaginationControls
+            page={safeCurrentPage}
+            totalPages={totalPages}
+            rowsPerPage={rowsPerPage}
+            onPageChange={(page) => setCurrentPage(page)}
+            onRowsPerPageChange={(value) => setRowsPerPage(value)}
+          />
+          </>
         )}
       </CardContent>
 
@@ -4117,6 +4553,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
             setRequestDetailsData(null);
             setRequestConfigDetails(null);
             setDetailSearch('');
+            setDetailLineItemsPage(1);
           }
         }}
       >
@@ -4136,20 +4573,12 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               <div className="grid gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4 md:grid-cols-[2fr_1fr]">
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge className={getStageStatusBadgeClass(detailStageStatus)}>
+                    <Badge variant="outline" className={getStageStatusBadgeClass(detailStageStatus)}>
                       {detailStageLabel}
                     </Badge>
                     <span className="text-xs text-slate-300">{detailRequestNumber}</span>
                     <span className="text-xs text-slate-500">
-                      Submitted: {detailSubmittedAt ? new Date(detailSubmittedAt).toLocaleString('en-US', {
-                        timeZone: 'Asia/Manila',
-                        month: 'numeric',
-                        day: 'numeric',
-                        year: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                        hour12: true
-                      }).replace(', ', '-').replace(' ', '') : '—'}
+                      Submitted: {formatDatePHT(detailSubmittedAt)}
                     </span>
                   </div>
                   <div className="text-lg font-semibold text-white">{requestConfigDetails?.name || requestConfigDetails?.budget_name || detailRecord.budgetName || detailRecord.budget_name || 'Budget Configuration'}</div>
@@ -4172,21 +4601,21 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                 </div>
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-wide text-slate-400">Request Total Amount</div>
-                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString()}</div>
+                  <div className="text-2xl font-semibold text-emerald-400">₱{Number(detailRecord.amount || detailAmount || 0).toLocaleString('en-US')}</div>
                   <div className="flex gap-4">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Deduction Total</div>
-                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString()}</div>
+                      <div className="text-lg font-medium text-red-400">₱{Number(detailRecord.deductionAmount || 0).toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-gray-400">Net to Pay</div>
-                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString()}</div>
+                      <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString('en-US')}</div>
                     </div>
                   </div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
-                      ? `₱${Number(budgetUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `₱${Number(budgetUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'No limit'}
                   </div>
                   <div className="h-2 rounded-full bg-slate-700">
@@ -4194,7 +4623,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                   </div>
                   <div className="text-xs text-slate-400">
                     {hasTotalBudget
-                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString()} / ₱${Number(budgetMax || 0).toLocaleString()}`
+                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'After approval: No limit'}
                   </div>
                 </div>
@@ -4202,9 +4631,9 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-semibold text-white">Uploaded Data</div>
+                  <div className="text-sm font-semibold text-white">Uploaded Data ({detailLineItems.length} total)</div>
                   {warningCount > 0 && (
-                    <Badge className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
+                    <Badge variant="outline" className="bg-amber-500 text-white">⚠ {warningCount} Warning{warningCount > 1 ? 's' : ''}</Badge>
                   )}
                 </div>
                 <div className="mt-3">
@@ -4216,11 +4645,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     className="bg-slate-700 border-gray-300 text-white"
                   />
                 </div>
-                <div
-                  ref={detailTableRef}
-                  onScroll={handleDetailTableScroll}
-                  className="mt-3 max-h-[380px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700"
-                >
+                <div className="mt-3 max-h-[380px] overflow-x-auto overflow-y-auto rounded-lg border border-slate-700">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-800">
                       <tr>
@@ -4266,11 +4691,11 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                               <td className="px-3 py-2 text-slate-300">{item.termination_date || '—'}</td>
                               {(userRole === 'payroll' || detailRecord?.is_self_request) && (
                                 <td className={`px-3 py-2 text-right font-semibold ${amountValue < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                  ₱{Math.abs(amountValue).toLocaleString()}
+                                  ₱{Math.abs(amountValue).toLocaleString('en-US')}
                                 </td>
                               )}
                               <td className="px-3 py-2 text-center">
-                                {item.is_deduction ? <Badge className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
+                                {item.is_deduction ? <Badge variant="outline" className="bg-red-500/20 text-red-300 text-[10px]">Yes</Badge> : <span className="text-slate-400">—</span>}
                               </td>
                               <td className="px-3 py-2 text-slate-300">
                                 {item.notes || item.item_description || '—'}
@@ -4282,6 +4707,14 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     </tbody>
                   </table>
                 </div>
+                <PaginationControls
+                  page={safeDetailLineItemsPage}
+                  totalPages={detailLineItemsTotalPages}
+                  rowsPerPage={detailLineItemsRowsPerPage}
+                  onPageChange={(page) => setDetailLineItemsPage(page)}
+                  onRowsPerPageChange={(value) => setDetailLineItemsRowsPerPage(value)}
+                  rowOptions={[25, 50, 100]}
+                />
               </div>
 
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
@@ -4293,13 +4726,19 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     const status = approval?.status || 'pending';
                     const isSelfRequest = entry.level === 1 && approval?.is_self_request === true;
                     const approvedBy = approval?.approver_name || '—';
+                    const selfRequestorName =
+                      detailRecord?.submitted_by_name ||
+                      detailRecord?.submittedByName ||
+                      selectedRequest?.submittedByName ||
+                      selectedRequest?.submitted_by_name ||
+                      approvedBy;
                     const approvedDate = approval?.approval_date ? formatDatePHT(approval.approval_date) : '—';
                     const isPayroll = entry.level === 'P';
                     
                     return (
                       <div key={entry.label} className="rounded-lg border border-slate-600 bg-slate-900/40 p-3 flex flex-col">
                         <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">{entry.title}</div>
-                        <Badge className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
+                        <Badge variant="outline" className={`${getApprovalBadgeClass(status, isSelfRequest)} mb-3 w-fit`}>
                           {formatStatusLabel(status, isSelfRequest)}
                         </Badge>
                         <div className="flex-1 space-y-2 text-xs">
@@ -4346,7 +4785,9 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                               {status === 'approved' && (
                                 <>
                                   <div className="text-slate-400 mt-3">{isSelfRequest ? 'Submitted by:' : 'Approved by:'}</div>
-                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>{approvedBy}</div>
+                                  <div className={isSelfRequest ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold'}>
+                                    {isSelfRequest ? selfRequestorName : approvedBy}
+                                  </div>
                                   <div className="text-slate-500 text-[10px]">{approvedDate}</div>
                                   {(approval?.approval_notes || approval?.rejection_reason || approval?.description) && (
                                     <>
@@ -4404,7 +4845,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
                   {/* Payroll Cycle Selection (Visible only for Payroll during approval phase) */}
                   {userRole === 'payroll' && currentApprovalLevel === 4 && payrollApprovalStatus === 'pending' && (
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div className="space-y-2">
                         <Label className="text-white">Payroll Cycle *</Label>
                         <Select value={payrollCycle} onValueChange={setPayrollCycle}>
@@ -4418,21 +4859,26 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                         </Select>
                       </div>
                       <div className="space-y-2">
-                        <Label className="text-white">Payroll Cycle Date *</Label>
-                        <Select value={payrollCycleDate} onValueChange={setPayrollCycleDate}>
+                        <Label className="text-white">Payroll Month *</Label>
+                        <Select value={payrollCycleMonth} onValueChange={setPayrollCycleMonth}>
                           <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                            <SelectValue placeholder="Select date" />
+                            <SelectValue placeholder="Select month" />
                           </SelectTrigger>
                           <SelectContent className="bg-slate-800 border-slate-600 text-white max-h-[200px]">
-                            {/* Generate next 12 months dynamically */}
-                            {Array.from({ length: 12 }).map((_, i) => {
-                              const d = new Date();
-                              d.setMonth(d.getMonth() + i);
-                              const value = d.toLocaleString('default', { month: 'long', year: 'numeric' });
-                              return (
-                                <SelectItem key={value} value={value}>{value}</SelectItem>
-                              );
-                            })}
+                            {payrollMonthOptions.map((month) => (
+                              <SelectItem key={month} value={month}>{month}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-white">Payroll Year *</Label>
+                        <Select value={payrollCycleYear} disabled>
+                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
+                            <SelectValue placeholder="Select year" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-800 border-slate-600 text-white">
+                            <SelectItem value={payrollCycleYear}>{payrollCycleYear}</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -4517,24 +4963,30 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               </Select>
             </div>
             <div className="space-y-2">
-              <Label className="text-white">Payroll Cycle Date *</Label>
-              <Select value={payrollCycleDate} onValueChange={setPayrollCycleDate}>
+              <Label className="text-white">Payroll Month *</Label>
+              <Select value={payrollCycleMonth} onValueChange={setPayrollCycleMonth}>
                 <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
-                  <SelectValue placeholder="Select date" />
+                  <SelectValue placeholder="Select month" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-[200px]">
-                  {Array.from({ length: 12 }, (_, i) => {
-                    const date = new Date();
-                    date.setMonth(i);
-                    const monthName = date.toLocaleString('default', { month: 'long' });
-                    const year = new Date().getFullYear();
-                    const value = `${monthName} ${year}`;
-                    return (
-                      <SelectItem key={value} value={value} className="text-white">
-                        {value}
-                      </SelectItem>
-                    );
-                  })}
+                  {payrollMonthOptions.map((month) => (
+                    <SelectItem key={month} value={month} className="text-white">
+                      {month}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-white">Payroll Year *</Label>
+              <Select value={payrollCycleYear} disabled>
+                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                  <SelectValue placeholder="Select year" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700 text-white">
+                  <SelectItem value={payrollCycleYear} className="text-white">
+                    {payrollCycleYear}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -4628,10 +5080,22 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState('10');
+  const [serverPagination, setServerPagination] = useState({
+    page: 1,
+    limit: 10,
+    totalItems: 0,
+    totalPages: 1,
+    hasPrev: false,
+    hasNext: false,
+  });
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState(null);
   const [historyConfigDetails, setHistoryConfigDetails] = useState(null);
+  const [historyLineItemsPage, setHistoryLineItemsPage] = useState(1);
+  const [historyLineItemsRowsPerPage, setHistoryLineItemsRowsPerPage] = useState('25');
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportScope, setExportScope] = useState('history');
   const [detailExportSection, setDetailExportSection] = useState('budget_details');
@@ -4642,18 +5106,142 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     const fetchHistory = async () => {
       setLoading(true);
       try {
-        const data = await approvalRequestService.getApprovalRequests({}, getToken());
-        setHistory((data || []).map(normalizeRequest));
+        const data = await fetchWithCache(
+          'approvalRequests',
+          `history_${user?.id || 'all'}_${currentPage}_${rowsPerPage}_${searchTerm}`,
+          () => approvalRequestService.getApprovalRequests({
+            search: searchTerm,
+            page: currentPage,
+            limit: Number(rowsPerPage || 10),
+          }, getToken()),
+          60 * 1000
+        );
+        const items = Array.isArray(data) ? data : (data?.items || []);
+        setHistory((items || []).map(normalizeRequest));
+        setServerPagination(data?.pagination || {
+          page: currentPage,
+          limit: Number(rowsPerPage || 10),
+          totalItems: items.length,
+          totalPages: Math.max(1, Math.ceil(items.length / Number(rowsPerPage || 10))),
+          hasPrev: currentPage > 1,
+          hasNext: false,
+        });
       } catch (error) {
         toast.error(error.message || 'Failed to load history');
         setHistory([]);
+        setServerPagination((prev) => ({ ...prev, page: 1, totalItems: 0, totalPages: 1, hasPrev: false, hasNext: false }));
       } finally {
         setLoading(false);
       }
     };
 
     fetchHistory();
-  }, [refreshKey]);
+  }, [refreshKey, user?.id, currentPage, rowsPerPage, searchTerm]);
+
+  const isUserInvolvedInRecord = useCallback(
+    (record) => {
+      const userId = user?.id;
+      if (!userId || !record) return false;
+
+      const isSubmitter =
+        String(record.submittedBy || record.submitted_by || '') === String(userId);
+
+      const isApprover = Array.isArray(record.approvals)
+        ? record.approvals.some(
+            (approval) =>
+              String(approval?.assigned_to_primary || '') === String(userId) ||
+              String(approval?.assigned_to_backup || '') === String(userId) ||
+              String(approval?.approved_by || '') === String(userId) ||
+              String(approval?.user_id || '') === String(userId) ||
+              (user?.name && String(approval?.approver_name || '') === String(user.name))
+          )
+        : false;
+
+      return isSubmitter || isApprover;
+    },
+    [user?.id, user?.name]
+  );
+
+  const applyHistoryRealtimeUpdate = useCallback(
+    async (requestId, action) => {
+      if (!requestId) return;
+
+      if (action === 'deleted') {
+        invalidateNamespace('approvalRequests');
+        invalidateNamespace('approvalRequestDetails');
+        setHistory((prev) => prev.filter((record) => String(record.id) !== String(requestId)));
+
+        if (String(detailData?.id || '') === String(requestId)) {
+          setDetailOpen(false);
+          setDetailData(null);
+          setHistoryConfigDetails(null);
+        }
+        return;
+      }
+
+      try {
+        invalidateNamespace('approvalRequests');
+        invalidateNamespace('approvalRequestDetails');
+
+        const data = await fetchWithCache(
+          'approvalRequestDetails',
+          String(requestId),
+          () => approvalRequestService.getApprovalRequest(requestId, getToken()),
+          60 * 1000
+        );
+        if (!data) return;
+
+        const normalized = normalizeRequest(data);
+        const involved = isUserInvolvedInRecord(normalized);
+
+        setHistory((prev) => {
+          if (!involved) {
+            return prev.filter((record) => String(record.id) !== String(requestId));
+          }
+
+          const exists = prev.some((record) => String(record.id) === String(normalized.id));
+          if (!exists) return [normalized, ...prev];
+          return prev.map((record) => (String(record.id) === String(normalized.id) ? normalized : record));
+        });
+
+        if (String(detailData?.id || '') === String(requestId)) {
+          if (!involved) {
+            setDetailOpen(false);
+            setDetailData(null);
+            setHistoryConfigDetails(null);
+            return;
+          }
+
+          setDetailData(normalized);
+          if (normalized.budgetId) {
+            const config = await fetchWithCache(
+              'budgetConfigById',
+              String(normalized.budgetId),
+              () => getBudgetConfigurationById(normalized.budgetId, getToken()),
+              5 * 60 * 1000
+            );
+            setHistoryConfigDetails(config || null);
+          }
+        }
+      } catch (error) {
+        console.error('Realtime history update failed:', error);
+      }
+    },
+    [detailData?.id, isUserInvolvedInRecord]
+  );
+
+  useEffect(() => {
+    connectWebSocket();
+    const unsubscribe = addWebSocketListener((message) => {
+      if (message?.event !== 'approval_request_updated') return;
+      const payload = message?.payload || {};
+      applyHistoryRealtimeUpdate(payload.request_id, payload.action);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [applyHistoryRealtimeUpdate]);
 
   const filteredHistory = history.filter((record) => {
     // Personalization Filter: Only show records where user is involved
@@ -4678,19 +5266,45 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     );
   });
 
+  const rowsPerPageNumber = Number(rowsPerPage || 10);
+  const totalPages = Math.max(1, Number(serverPagination?.totalPages || 1));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedHistory = filteredHistory;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
   const handleViewHistory = async (record) => {
     if (!record?.id) return;
     setDetailOpen(true);
     setDetailLoading(true);
     setDetailData(null);
     setHistoryConfigDetails(null);
+    setHistoryLineItemsPage(1);
 
     try {
-      const data = await approvalRequestService.getApprovalRequest(record.id, getToken());
+      const data = await fetchWithCache(
+        'approvalRequestDetails',
+        String(record.id),
+        () => approvalRequestService.getApprovalRequest(record.id, getToken()),
+        60 * 1000
+      );
       setDetailData(data ? normalizeRequest(data) : null);
 
       if (data && data.budget_id) {
-        const config = await getBudgetConfigurationById(data.budget_id, getToken());
+        const config = await fetchWithCache(
+          'budgetConfigById',
+          String(data.budget_id),
+          () => getBudgetConfigurationById(data.budget_id, getToken()),
+          5 * 60 * 1000
+        );
         setHistoryConfigDetails(config || null);
       }
     } catch (error) {
@@ -4745,26 +5359,44 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   }, [focusRequestId, loading, history]);
 
   const formatDate = (value) => {
-    if (!value) return '—';
-    try {
-      return new Date(value).toLocaleString('en-PH', {
-        timeZone: 'Asia/Manila',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-      });
-    } catch {
-      return value;
-    }
+    return formatDateTimeCompact(value);
   };
 
-  const formatStatusLabel = (value) => String(value || 'pending').replace(/_/g, ' ');
+  const formatStatusLabel = (value) => formatStatusText(value, 'Pending');
   const getLevelLabel = (level) => {
     if (Number(level) === 4) return 'Payroll';
     return `L${level || '—'}`;
+  };
+
+  const getHistorySelfApproverName = () =>
+    detailData?.submittedByName ||
+    detailData?.submitted_by_name ||
+    detailData?.submittedBy ||
+    detailData?.submitted_by ||
+    '—';
+
+  const isSelfApprovedEntry = (approval = {}) => {
+    const normalizedStatus = String(approval?.status || '').toLowerCase();
+    const normalizedNotes = String(approval?.approval_notes || approval?.description || '').toLowerCase();
+    const level = Number(approval?.approval_level);
+
+    if (normalizedStatus === 'self_approved') return true;
+    if (approval?.is_self_request === true && normalizedStatus === 'approved') return true;
+    if (detailData?.is_self_request && level === 1 && normalizedStatus === 'approved') return true;
+    if (level === 1 && normalizedStatus === 'approved' && normalizedNotes.includes('auto-approved') && normalizedNotes.includes('self-request')) return true;
+
+    return false;
+  };
+
+  const getApprovalHistoryStatusLabel = (approval = {}) =>
+    isSelfApprovedEntry(approval) ? 'Self Approved' : formatStatusLabel(approval?.status);
+
+  const getApprovalHistoryApproverName = (approval = {}) => {
+    if (isSelfApprovedEntry(approval)) {
+      return getHistorySelfApproverName();
+    }
+
+    return approval?.approver_name || approval?.approved_by || '—';
   };
 
   // Calculate totals for history details
@@ -4776,9 +5408,20 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   const historyLineItems = Array.isArray(detailData?.line_items)
     ? detailData.line_items.map(normalizeLineItem)
     : [];
+  const historyLineItemsRowsPerPageNumber = Number(historyLineItemsRowsPerPage || 10);
+  const historyLineItemsTotalPages = Math.max(1, Math.ceil(historyLineItems.length / historyLineItemsRowsPerPageNumber));
+  const safeHistoryLineItemsPage = Math.min(historyLineItemsPage, historyLineItemsTotalPages);
+  const visibleHistoryLineItems = historyLineItems.slice(
+    (safeHistoryLineItemsPage - 1) * historyLineItemsRowsPerPageNumber,
+    safeHistoryLineItemsPage * historyLineItemsRowsPerPageNumber
+  );
   const canViewHistoryLineItems =
     userRole === 'payroll' ||
     String(detailData?.submitted_by || detailData?.submittedBy || '') === String(user?.id || '');
+
+  useEffect(() => {
+    setHistoryLineItemsPage(1);
+  }, [detailData?.id, historyLineItemsRowsPerPage]);
 
   const escapeCsvValue = (value) => {
     if (value === null || value === undefined) return '';
@@ -4801,6 +5444,9 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     return filteredHistory.map((record) => ({
       request_number: record.requestNumber || '',
       budget_name: record.budgetName || '',
+      total_employees: Number(record.lineItemsCount ?? record.line_items_count ?? record.employeeCount ?? 0) || 0,
+      deductions_count: Number(record.deductionCount ?? record.deduction_count ?? 0) || 0,
+      to_be_paid_count: Number(record.toBePaidCount ?? record.to_be_paid_count ?? 0) || 0,
       status: formatStatusLabel(record.status || 'pending'),
       amount: Number(record.amount || 0),
       submitted_at: formatDate(record.submittedAt),
@@ -4830,7 +5476,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
       payroll_cycle: `${detailData?.payroll_cycle || ''} ${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date ? `(${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date})` : ''}`.trim(),
       total_amount: Number(totalAmount || 0),
       deduction_total: Number(deductionTotal || 0),
-      net_to_pay: Math.max(0, Number(totalAmount || 0) - Number(deductionTotal || 0)),
+      net_to_pay: Number(totalAmount || 0),
     }];
   };
 
@@ -4838,8 +5484,8 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     const approvals = detailData?.approvals || detailData?.approval_history || [];
     return approvals.map((approval) => ({
       level: getLevelLabel(approval.approval_level),
-      status: formatStatusLabel(approval.status),
-      approver: approval.approver_name || approval.approved_by || '',
+      status: getApprovalHistoryStatusLabel(approval),
+      approver: getApprovalHistoryApproverName(approval),
       date: formatDate(approval.approval_date || approval.updated_at),
       notes: approval.approval_notes || approval.rejection_reason || '',
     }));
@@ -4944,6 +5590,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
   return (
     <Card className="bg-slate-800 border-slate-700 flex flex-col h-full min-h-0">
+      {loading && <LoadingLine />}
       <CardHeader>
         <CardTitle className="text-white">Approval History & Logs</CardTitle>
         <CardDescription className="text-gray-400">
@@ -4975,8 +5622,9 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
         ) : filteredHistory.length === 0 ? (
           <div className="text-sm text-gray-400">No history records found where you are a participant.</div>
         ) : (
+          <>
           <div className="flex-1 min-h-0 border border-slate-600 rounded-md overflow-auto">
-            <table className="w-full border-collapse">
+            <table className="min-w-[1300px] w-full border-collapse">
               <thead className="bg-slate-700 sticky top-0 z-10">
                 <tr>
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
@@ -4985,7 +5633,16 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Budget Name
                   </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    Total Employees
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    Deductions
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap">
+                    To Be Paid
+                  </th>
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Status
                   </th>
                   <th className="border-b border-slate-600 px-4 py-3 text-right text-xs font-semibold text-slate-200 uppercase tracking-wider">
@@ -4997,27 +5654,43 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                   <th className="border-b border-slate-600 px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider">
                     Requested By
                   </th>
-                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                  <th className="border-b border-slate-600 px-4 py-3 text-center text-xs font-semibold text-slate-200 uppercase tracking-wider sticky right-0 z-30 bg-slate-700 border-l border-slate-600 whitespace-nowrap">
                     Action
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700">
-                {filteredHistory.map((record) => (
+                {paginatedHistory.map((record) => (
                   <tr key={record.id} className="hover:bg-slate-700/50">
+                    {(() => {
+                      const employeeCount = Number(record.lineItemsCount ?? record.line_items_count ?? record.employeeCount ?? 0) || 0;
+                      const deductionCount = Number(record.deductionCount ?? record.deduction_count ?? 0) || 0;
+                      const toBePaidCount = Number(record.toBePaidCount ?? record.to_be_paid_count ?? Math.max(0, employeeCount - deductionCount)) || 0;
+
+                      return (
+                        <>
                     <td className="px-4 py-3 text-xs text-slate-300">
                       {record.requestNumber || '—'}
                     </td>
                     <td className="px-4 py-3">
                       <div className="text-sm font-medium text-white">{record.budgetName || '—'}</div>
                     </td>
-                    <td className="px-4 py-3">
-                      <Badge className={getStatusBadgeClass(record.status || 'pending')}>
-                        {(record.status || 'pending').replace(/_/g, ' ')}
+                    <td className="px-4 py-3 text-xs text-center text-white font-semibold">
+                      {employeeCount}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-center text-red-400">
+                      {deductionCount}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-center text-emerald-400">
+                      {toBePaidCount}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <Badge variant="outline" className={getStatusBadgeClass(record.status || 'pending')}>
+                        {formatStatusText(record.status || 'pending', 'Pending')}
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-white">
-                      ₱{Number(record.amount || 0).toLocaleString()}
+                      ₱{Number(record.amount || 0).toLocaleString('en-US')}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-300">
                         {formatDate(record.submittedAt)}
@@ -5025,7 +5698,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                     <td className="px-4 py-3 text-xs text-slate-300">
                       {record.submittedByName || record.submitted_by_name || record.submittedBy || record.submitted_by || '—'}
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-4 py-3 text-center sticky right-0 z-20 bg-slate-800 border-l border-slate-700 group-hover:bg-slate-700 transition-colors">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -5035,16 +5708,35 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                         View
                       </Button>
                     </td>
+                        </>
+                      );
+                    })()}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <PaginationControls
+            page={safeCurrentPage}
+            totalPages={totalPages}
+            rowsPerPage={rowsPerPage}
+            onPageChange={(page) => setCurrentPage(page)}
+            onRowsPerPageChange={(value) => setRowsPerPage(value)}
+          />
+          </>
         )}
       </CardContent>
 
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[95vw] md:w-[80vw] xl:w-[70vw] max-w-[1200px] max-h-[85vh] overflow-y-auto flex flex-col">
+      <Dialog
+        open={detailOpen}
+        onOpenChange={(open) => {
+          setDetailOpen(open);
+          if (!open) {
+            setHistoryLineItemsPage(1);
+          }
+        }}
+      >
+        <DialogContent className="bg-slate-900 border-slate-700 text-white !w-[99vw] md:!w-[95vw] lg:!w-[90vw] xl:!w-[82vw] 2xl:!w-[76vw] !max-w-none max-h-[85vh] overflow-y-auto flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request History Details</DialogTitle>
             <DialogDescription className="text-gray-400">
@@ -5076,7 +5768,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                     <div className="space-y-2 md:flex md:flex-col md:ml-8 md:min-w-[220px]">
                       <div>
                         <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
-                        <Badge className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
+                        <Badge variant="outline" className={getStatusBadgeClass(detailData?.overall_status || 'pending')}>
                           {formatStatusLabel(detailData?.overall_status)}
                         </Badge>
                       </div>
@@ -5090,15 +5782,15 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-4 pt-3 border-t border-slate-700">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Total Amount</div>
-                      <div className="text-lg font-semibold text-emerald-400">₱{totalAmount.toLocaleString()}</div>
+                      <div className="text-lg font-semibold text-emerald-400">₱{totalAmount.toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Deductions</div>
-                      <div className="text-lg font-semibold text-rose-400">₱{deductionTotal.toLocaleString()}</div>
+                      <div className="text-lg font-semibold text-rose-400">₱{deductionTotal.toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Net To Pay</div>
-                      <div className="text-lg font-semibold text-blue-400">₱{Math.max(0, totalAmount - deductionTotal).toLocaleString()}</div>
+                      <div className="text-lg font-semibold text-blue-400">₱{Number(totalAmount || 0).toLocaleString('en-US')}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-400">Client Sponsored</div>
@@ -5134,11 +5826,14 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                             <tr key={`${approval.request_id || 'req'}-${approval.approval_level || index}`}>
                               <td className="px-3 py-2 text-slate-200">{getLevelLabel(approval.approval_level)}</td>
                               <td className="px-3 py-2">
-                                <Badge className={getStatusBadgeClass(approval.status || 'pending')}>
-                                  {formatStatusLabel(approval.status)}
+                                <Badge
+                                  variant="outline"
+                                  className={getStatusBadgeClass(isSelfApprovedEntry(approval) ? 'self_approved' : (approval.status || 'pending'))}
+                                >
+                                  {getApprovalHistoryStatusLabel(approval)}
                                 </Badge>
                               </td>
-                              <td className="px-3 py-2 text-slate-300">{approval.approver_name || approval.approved_by || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{getApprovalHistoryApproverName(approval)}</td>
                               <td className="px-3 py-2 text-slate-300">{formatDate(approval.approval_date || approval.updated_at)}</td>
                               <td className="px-3 py-2 text-slate-300">
                                 {approval.approval_notes || approval.rejection_reason || '—'}
@@ -5153,44 +5848,54 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
                 {canViewHistoryLineItems && (
                   <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
-                    <div className="text-sm font-semibold text-white mb-2">Submitted Line Items</div>
+                    <div className="text-sm font-semibold text-white mb-2">Submitted Line Items ({historyLineItems.length} total)</div>
                     {historyLineItems.length === 0 ? (
                       <div className="text-xs text-slate-400">No line items available.</div>
                     ) : (
-                      <div className="border border-slate-700 rounded-md max-h-[320px] overflow-y-auto overflow-x-auto">
-                        <table className="w-full text-xs text-left text-slate-300 border-collapse">
-                          <thead className="bg-slate-800 sticky top-0">
-                            <tr>
-                              <th className="px-3 py-2 border-b border-slate-600">Employee ID</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Name</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Department</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Position</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Status</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Geo</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Location</th>
-                              <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
-                              <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
-                              <th className="px-3 py-2 border-b border-slate-600">Notes</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-700">
-                            {historyLineItems.map((item, index) => (
-                              <tr key={`${item.item_id || item.employee_id || 'line'}-${index}`}>
-                                <td className="px-3 py-2 text-slate-200">{item.employee_id || '—'}</td>
-                                <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.employee_status || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.geo || '—'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.location || item.Location || '—'}</td>
-                                <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString()}</td>
-                                <td className="px-3 py-2 text-center text-slate-300">{item.is_deduction ? 'Yes' : 'No'}</td>
-                                <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
+                      <>
+                        <div className="border border-slate-700 rounded-md max-h-[320px] overflow-y-auto overflow-x-auto">
+                          <table className="w-full text-xs text-left text-slate-300 border-collapse">
+                            <thead className="bg-slate-800 sticky top-0">
+                              <tr>
+                                <th className="px-3 py-2 border-b border-slate-600">Employee ID</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Name</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Department</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Position</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Status</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Geo</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Location</th>
+                                <th className="px-3 py-2 border-b border-slate-600 text-right">Amount</th>
+                                <th className="px-3 py-2 border-b border-slate-600 text-center">Deduction</th>
+                                <th className="px-3 py-2 border-b border-slate-600">Notes</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                            </thead>
+                            <tbody className="divide-y divide-slate-700">
+                              {visibleHistoryLineItems.map((item, index) => (
+                                <tr key={`${item.item_id || item.employee_id || 'line'}-${index}`}>
+                                  <td className="px-3 py-2 text-slate-200">{item.employee_id || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-200">{item.employee_name || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.department || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.position || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.employee_status || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.geo || '—'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.location || item.Location || '—'}</td>
+                                  <td className="px-3 py-2 text-right text-slate-200">₱{Number(item.amount || 0).toLocaleString('en-US')}</td>
+                                  <td className="px-3 py-2 text-center text-slate-300">{item.is_deduction ? 'Yes' : 'No'}</td>
+                                  <td className="px-3 py-2 text-slate-300">{item.notes || item.item_description || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <PaginationControls
+                          page={safeHistoryLineItemsPage}
+                          totalPages={historyLineItemsTotalPages}
+                          rowsPerPage={historyLineItemsRowsPerPage}
+                          onPageChange={(page) => setHistoryLineItemsPage(page)}
+                          onRowsPerPageChange={(value) => setHistoryLineItemsRowsPerPage(value)}
+                          rowOptions={[25, 50, 100]}
+                        />
+                      </>
                     )}
                   </div>
                 )}
