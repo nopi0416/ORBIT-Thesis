@@ -32,8 +32,9 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { clearAllCache } from '../utils/dataCache';
 
-const API_URL = 'http://localhost:3001/api';
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 export const AuthContext = createContext();
 
@@ -152,6 +153,7 @@ export function AuthProvider({ children }) {
           localStorage.removeItem(key);
         }
       });
+      clearAllCache();
       setUser(null);
       setUser(null);
     }
@@ -206,12 +208,14 @@ export function AuthProvider({ children }) {
               console.log('[AUTH] Token invalid or expired, clearing session');
               localStorage.removeItem('authToken');
               localStorage.removeItem('authUser');
+              clearAllCache();
             }
           } catch (error) {
             // Token verification failed, clear everything
             console.log('[AUTH] Token verification failed, clearing session:', error.message);
             localStorage.removeItem('authToken');
             localStorage.removeItem('authUser');
+            clearAllCache();
           }
         } else {
           // No token found, user is not logged in
@@ -221,6 +225,7 @@ export function AuthProvider({ children }) {
         console.error('Auth check failed:', error);
         localStorage.removeItem('authToken');
         localStorage.removeItem('authUser');
+        clearAllCache();
       } finally {
         setLoading(false);
       }

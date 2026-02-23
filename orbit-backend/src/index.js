@@ -12,6 +12,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const BODY_SIZE_LIMIT = process.env.BODY_SIZE_LIMIT || '10mb';
 
 // ============================================================================
 // MIDDLEWARE
@@ -30,8 +31,8 @@ app.use(helmet());
 app.use(corsMiddleware);
 
 // Body Parsing
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: BODY_SIZE_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: BODY_SIZE_LIMIT }));
 
 // ============================================================================
 // ROUTES
