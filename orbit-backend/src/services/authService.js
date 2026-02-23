@@ -148,20 +148,30 @@ export class AuthService {
           // Increment failed attempts and lock account if needed
           const newFailedAttempts = (adminUser.failed_login_attempts || 0) + 1;
           const shouldLock = newFailedAttempts >= 3;
+          const lockoutDuration = 30; // 30 minutes
           
           await supabase
             .from('tbladminusers')
             .update({
               failed_login_attempts: newFailedAttempts,
-              account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
+              account_locked_until: shouldLock ? new Date(Date.now() + lockoutDuration * 60 * 1000).toISOString() : null
             })
             .eq('admin_id', adminUser.admin_id);
           
           console.log(`[LOGIN] Admin failed attempts: ${newFailedAttempts}`);
-          return {
-            success: false,
-            error: 'Invalid Username or Password',
-          };
+          
+          // Provide informative error message
+          if (shouldLock) {
+            return {
+              success: false,
+              error: `Account locked due to multiple failed login attempts. Please try again in ${lockoutDuration} minutes.`,
+            };
+          } else {
+            return {
+              success: false,
+              error: 'Invalid login credentials. Please try again.\nFor security reasons, your account may be temporarily locked after multiple failed attempts.',
+            };
+          }
         }
 
         // Reset failed attempts on successful admin login
@@ -286,20 +296,30 @@ export class AuthService {
         // Increment failed attempts and lock account if needed
         const newFailedAttempts = (user.failed_login_attempts || 0) + 1;
         const shouldLock = newFailedAttempts >= 3;
+        const lockoutDuration = 30; // 30 minutes
         
         await supabase
           .from('tblusers')
           .update({
             failed_login_attempts: newFailedAttempts,
-            account_locked_until: shouldLock ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null
+            account_locked_until: shouldLock ? new Date(Date.now() + lockoutDuration * 60 * 1000).toISOString() : null
           })
           .eq('user_id', user.user_id);
         
         console.log(`[LOGIN] User failed attempts: ${newFailedAttempts}`);
-        return {
-          success: false,
-          error: 'Invalid Username or Password',
-        };
+        
+        // Provide informative error message
+        if (shouldLock) {
+          return {
+            success: false,
+            error: `Account locked due to multiple failed login attempts. Please try again in ${lockoutDuration} minutes.`,
+          };
+        } else {
+          return {
+            success: false,
+            error: 'Invalid login credentials. Please try again.\nFor security reasons, your account may be temporarily locked after multiple failed attempts.',
+          };
+        }
       }
 
       // Reset failed attempts on successful login
@@ -367,12 +387,7 @@ export class AuthService {
       if (adminUser) {
         console.log(`[COMPLETE LOGIN] Found admin user: ${email}`);
         // Generate JWT token for admin
-        const token = this.generateToken(
-          adminUser.admin_id,
-          adminUser.email,
-          adminUser.admin_role,
-          adminUser.org_id || null,
-        );
+        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role);
 
         // Update last login
         try {
@@ -393,7 +408,6 @@ export class AuthService {
             firstName: adminUser.full_name || '',
             lastName: '',
             role: adminUser.admin_role,
-            orgId: adminUser.org_id || null,
             userType: 'admin',
           },
           message: 'Login successful',
@@ -542,6 +556,22 @@ export class AuthService {
       }
 
       console.log(`[OTP] User found: ${email}, generating OTP`);
+
+      // Invalidate all previous unused OTPs for this email and type
+      console.log(`[OTP] Invalidating previous unused OTPs for ${email}, type: ${type}`);
+      const { error: invalidateError } = await supabase
+        .from('tblotp')
+        .update({ is_used: true })
+        .eq('email', email)
+        .eq('type', type)
+        .eq('is_used', false);
+
+      if (invalidateError) {
+        console.log(`[OTP] Warning: Failed to invalidate previous OTPs:`, invalidateError);
+        // Continue anyway, just log the warning
+      } else {
+        console.log(`[OTP] Previous OTPs have been invalidated`);
+      }
 
       // Generate 6-digit OTP
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -783,6 +813,7 @@ export class AuthService {
         .update({
           password_hash: hashedPassword,
           is_first_login: false, // Mark as no longer first-time user
+          status: 'Active', // Update status from First_Time to Active
           updated_at: new Date().toISOString(),
         })
         .eq('email', email)
@@ -797,7 +828,7 @@ export class AuthService {
         };
       }
 
-      console.log(`[PASSWORD CHANGE] User ${email} has changed password and is_first_login set to false`);
+      console.log(`[PASSWORD CHANGE] User ${email} has changed password, is_first_login set to false, and status updated to Active`);
 
       return {
         success: true,
@@ -857,13 +888,14 @@ export class AuthService {
         .from('tblusers')
         .update({
           is_first_login: false,
+          status: 'Active', // Update status from First_Time to Active
           updated_at: new Date().toISOString(),
         })
         .eq('user_id', userId);
 
       if (updateError) throw updateError;
 
-      console.log(`[SECURITY QUESTIONS] User ${userId} completed first-time setup`);
+      console.log(`[SECURITY QUESTIONS] User ${userId} completed first-time setup with status updated to Active`);
 
       return {
         success: true,
@@ -1205,6 +1237,59 @@ export class AuthService {
         success: false,
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Log login attempt to audit trail
+   */
+  static async logLoginAttempt(email, loginStatus, userType, ipAddress = null, userAgent = null, userId = null) {
+    try {
+      console.log(`[LOGIN AUDIT] Logging ${loginStatus} login for ${email} (${userType})`);
+      
+      // If userId not provided, try to look it up
+      let actualUserId = userId;
+      if (!actualUserId && email) {
+        if (userType === 'admin') {
+          const { data: adminUser } = await supabase
+            .from('tbladminusers')
+            .select('admin_id')
+            .eq('email', email)
+            .single();
+          actualUserId = adminUser?.admin_id;
+        } else if (userType === 'user') {
+          const { data: regularUser } = await supabase
+            .from('tblusers')
+            .select('user_id')
+            .eq('email', email)
+            .single();
+          actualUserId = regularUser?.user_id;
+        }
+      }
+      
+      const { error } = await supabase
+        .from('tbllogin_audit')
+        .insert([
+          {
+            email,
+            user_id: actualUserId,
+            login_status: loginStatus, // 'success', 'pending', or 'failed'
+            user_type: userType, // 'admin', 'user', or 'unknown'
+            ip_address: ipAddress,
+            user_agent: userAgent,
+            logged_at: new Date().toISOString(),
+          },
+        ]);
+
+      if (error) {
+        console.error('[LOGIN AUDIT] Error logging login attempt:', error);
+        // Don't throw - logging failure shouldn't break login
+      } else {
+        console.log(`[LOGIN AUDIT] ${loginStatus} login logged for ${email}`);
+      }
+    } catch (error) {
+      console.error('[LOGIN AUDIT] Exception logging login attempt:', error);
+      // Silently fail - logging shouldn't prevent login
     }
   }
 }

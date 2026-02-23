@@ -56,6 +56,7 @@ export const createBudgetConfiguration = async (configData, token) => {
  */
 export const getBudgetConfigurations = async (filters = {}, token) => {
   try {
+    const wantsPaginated = Boolean(filters.page || filters.limit);
     const queryParams = new URLSearchParams();
     
     // Add filters to query parameters if provided
@@ -65,6 +66,8 @@ export const getBudgetConfigurations = async (filters = {}, token) => {
     if (filters.location) queryParams.append('location', filters.location);
     if (filters.search) queryParams.append('search', filters.search);
     if (filters.org_id) queryParams.append('org_id', filters.org_id);
+    if (filters.page) queryParams.append('page', String(filters.page));
+    if (filters.limit) queryParams.append('limit', String(filters.limit));
     
     const url = `${API_BASE_URL}/budget-configurations${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
     
@@ -79,7 +82,31 @@ export const getBudgetConfigurations = async (filters = {}, token) => {
     }
 
     const data = await response.json();
-    return data.data || [];
+    const payload = data.data;
+
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+
+    if (payload && typeof payload === 'object') {
+      if (!wantsPaginated) {
+        return Array.isArray(payload.items) ? payload.items : [];
+      }
+
+      return {
+        items: Array.isArray(payload.items) ? payload.items : [],
+        pagination: payload.pagination || {
+          page: Number(filters.page || 1),
+          limit: Number(filters.limit || 10),
+          totalItems: Array.isArray(payload.items) ? payload.items.length : 0,
+          totalPages: 1,
+          hasPrev: false,
+          hasNext: false,
+        },
+      };
+    }
+
+    return [];
   } catch (error) {
     console.error('Error fetching budget configurations:', error);
     throw error;

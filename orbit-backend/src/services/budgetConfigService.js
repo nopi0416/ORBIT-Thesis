@@ -1,20 +1,7 @@
 import supabase from '../config/database.js';
 import { getUserUUID, isValidUser, getUserNameFromUUID, getUserDetailsFromUUID } from '../utils/userMapping.js';
 
-const getNetworkNow = async () => {
-  try {
-    const response = await fetch('https://worldtimeapi.org/api/timezone/Etc/UTC');
-    if (!response.ok) throw new Error(`Time API error: ${response.status}`);
-    const data = await response.json();
-    const timestamp = data?.utc_datetime || data?.datetime;
-    const parsed = new Date(timestamp);
-    if (Number.isNaN(parsed.getTime())) throw new Error('Invalid time API response');
-    return parsed;
-  } catch (error) {
-    console.warn('[getNetworkNow] Falling back to local time:', error?.message || error);
-    return new Date();
-  }
-};
+const getNetworkNow = async () => new Date();
 
 const parseStoredList = (value) => {
   if (!value) return [];
@@ -41,6 +28,25 @@ const containsOrgId = (value, orgId) => {
     return entry === orgId;
   });
 };
+
+const normalizeRole = (role) => String(role || '').trim().toLowerCase();
+
+const normalizeIdentityText = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+const toDateOnlyKey = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().split('T')[0];
+};
+
+const isRequestorRole = (role) => normalizeRole(role).includes('requestor');
+const isPayrollRole = (role) => normalizeRole(role).includes('payroll');
+const isAdminRole = (role) => normalizeRole(role).includes('admin');
 
 const logBudgetConfigAction = async ({
   budgetId,
@@ -78,6 +84,99 @@ const logBudgetConfigAction = async ({
  */
 
 export class BudgetConfigService {
+  static async getApproverBudgetIdsByUser(userId, budgetIds = []) {
+    if (!userId) return new Set();
+
+    let query = supabase
+      .from('tblbudgetconfig_approvers')
+      .select('budget_id')
+      .or(`primary_approver.eq.${userId},backup_approver.eq.${userId}`);
+
+    const uniqueBudgetIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
+    if (uniqueBudgetIds.length) {
+      query = query.in('budget_id', uniqueBudgetIds);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return new Set((data || []).map((row) => row.budget_id).filter(Boolean));
+  }
+
+  static async getOrganizationAncestryIds(orgId) {
+    if (!orgId) return [];
+
+    const { data, error } = await supabase
+      .from('tblorganizations')
+      .select('org_id, parent_org_id, parent_id');
+
+    if (error) throw error;
+
+    const orgMap = new Map((data || []).map((row) => [row.org_id, row]));
+    const ancestry = [];
+    const visited = new Set();
+    let current = orgId;
+
+    while (current && !visited.has(current)) {
+      ancestry.push(current);
+      visited.add(current);
+      const row = orgMap.get(current);
+      current = row?.parent_org_id || row?.parent_id || null;
+    }
+
+    return ancestry;
+  }
+
+  static canUserViewBudgetConfig(config, context = {}) {
+    const {
+      userId,
+      userRole,
+      orgAncestryIds = [],
+      approverBudgetIds = new Set(),
+      isAdmin = false,
+    } = context;
+
+    if (!config) return false;
+    if (isAdmin || isAdminRole(userRole)) return true;
+
+    const budgetId = config.budget_id || config.id;
+    const createdBy = config.created_by || config.createdBy || null;
+
+    if (userId && String(createdBy || '') === String(userId)) return true;
+    if (budgetId && approverBudgetIds?.has?.(budgetId)) return true;
+    if (isPayrollRole(userRole)) return true;
+
+    if (isRequestorRole(userRole)) {
+      if (!orgAncestryIds.length) return false;
+      return orgAncestryIds.some((orgId) => containsOrgId(config.access_ou, orgId));
+    }
+
+    return false;
+  }
+
+  static async canUserAccessBudgetConfig({ budgetConfig, userId, userRole, orgId, isAdmin = false }) {
+    try {
+      const budgetId = budgetConfig?.budget_id || budgetConfig?.id;
+      const [orgAncestryIds, approverBudgetIds] = await Promise.all([
+        this.getOrganizationAncestryIds(orgId),
+        this.getApproverBudgetIdsByUser(userId, budgetId ? [budgetId] : []),
+      ]);
+
+      const allowed = this.canUserViewBudgetConfig(budgetConfig, {
+        userId,
+        userRole,
+        orgAncestryIds,
+        approverBudgetIds,
+        isAdmin,
+      });
+
+      return { success: true, data: allowed };
+    } catch (error) {
+      console.error('Error checking user budget access:', error);
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
   static async getUserNameMap(userIds = []) {
     const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
     if (!uniqueIds.length) return new Map();
@@ -131,23 +230,96 @@ export class BudgetConfigService {
     const uniqueIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
     if (!uniqueIds.length) return new Map();
 
+    const toBoolean = (value) => {
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'number') return value === 1;
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', ''].includes(normalized)) return false;
+      }
+      return Boolean(value);
+    };
+
+    const isDeductionLineItem = (item) => {
+      const itemType = String(item?.item_type || '').trim().toLowerCase();
+      const amount = Number(item?.amount || 0);
+      return toBoolean(item?.is_deduction) || itemType.includes('deduction') || amount < 0;
+    };
+
     const { data, error } = await supabase
       .from('tblbudgetapprovalrequests')
-      .select('budget_id, total_request_amount, overall_status')
+      .select('request_id, budget_id, total_request_amount, overall_status, is_client_sponsored')
       .in('budget_id', uniqueIds);
 
     if (error) throw error;
 
+    const requestRows = data || [];
+    const requestIds = Array.from(
+      new Set(
+        requestRows
+          .map((row) => row?.request_id)
+          .filter(Boolean)
+      )
+    );
+
+    const netAmountByRequest = new Map();
+    if (requestIds.length) {
+      const requestChunkSize = 100;
+      const pageSize = 1000;
+
+      for (let i = 0; i < requestIds.length; i += requestChunkSize) {
+        const requestChunk = requestIds.slice(i, i + requestChunkSize);
+        let from = 0;
+
+        while (true) {
+          const to = from + pageSize - 1;
+          const { data: lineItemRows, error: lineItemError } = await supabase
+            .from('tblbudgetapprovalrequests_line_items')
+            .select('request_id, amount, is_deduction, item_type')
+            .in('request_id', requestChunk)
+            .order('request_id', { ascending: true })
+            .order('item_number', { ascending: true })
+            .range(from, to);
+
+          if (lineItemError) throw lineItemError;
+
+          const rows = lineItemRows || [];
+          rows.forEach((item) => {
+            const requestId = item?.request_id;
+            if (!requestId) return;
+
+            const rawAmount = Number(item?.amount || 0);
+            const signedAmount = isDeductionLineItem(item) ? -Math.abs(rawAmount) : Math.abs(rawAmount);
+            netAmountByRequest.set(requestId, Number(netAmountByRequest.get(requestId) || 0) + signedAmount);
+          });
+
+          if (rows.length < pageSize) break;
+          from += pageSize;
+        }
+      }
+    }
+
     const totals = new Map();
-    (data || []).forEach((row) => {
+    requestRows.forEach((row) => {
       const key = row.budget_id;
       const status = String(row.overall_status || '').toLowerCase();
-      const amount = Number(row.total_request_amount || 0);
-      const current = totals.get(key) || { approvedAmount: 0, ongoingAmount: 0 };
+      const fallbackAmount = Number(row.total_request_amount || 0);
+      const computedNetAmount = netAmountByRequest.get(row.request_id);
+      const resolvedAmount = Number.isFinite(computedNetAmount) ? computedNetAmount : fallbackAmount;
+      const amount = Number(resolvedAmount || 0);
+      const isClientSponsored = Boolean(row.is_client_sponsored);
+      const current = totals.get(key) || { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
 
-      if (status === 'approved' || status === 'completed') {
+      const isDiscardedStatus = status === 'rejected' || status === 'draft';
+      const isApprovedOrCompleted = status === 'approved' || status === 'completed';
+
+      if (!isDiscardedStatus && isClientSponsored) {
+        // Client-sponsored requests should be tracked separately and must never consume budget.
+        current.clientSponsoredAmount += amount;
+      } else if (isApprovedOrCompleted) {
         current.approvedAmount += amount;
-      } else if (status !== 'rejected' && status !== 'draft') {
+      } else if (!isDiscardedStatus) {
         current.ongoingAmount += amount;
       }
 
@@ -219,6 +391,39 @@ export class BudgetConfigService {
         status,
         log_meta,
       } = configData;
+
+      const normalizedName = normalizeIdentityText(budget_name);
+      const normalizedDescription = normalizeIdentityText(budget_description);
+      const normalizedStartDate = toDateOnlyKey(start_date);
+      const normalizedEndDate = toDateOnlyKey(end_date);
+
+      if (normalizedName && normalizedStartDate && normalizedEndDate) {
+        const { data: possibleDuplicates, error: duplicateLookupError } = await supabase
+          .from('tblbudgetconfiguration')
+          .select('budget_id, budget_name, budget_description, start_date, end_date')
+          .eq('start_date', normalizedStartDate)
+          .eq('end_date', normalizedEndDate);
+
+        if (duplicateLookupError) throw duplicateLookupError;
+
+        const hasExactDuplicate = (possibleDuplicates || []).some((record) => {
+          const existingName = normalizeIdentityText(record?.budget_name);
+          const existingDescription = normalizeIdentityText(record?.budget_description);
+          const existingStartDate = toDateOnlyKey(record?.start_date);
+          const existingEndDate = toDateOnlyKey(record?.end_date);
+
+          return (
+            existingName === normalizedName &&
+            existingDescription === normalizedDescription &&
+            existingStartDate === normalizedStartDate &&
+            existingEndDate === normalizedEndDate
+          );
+        });
+
+        if (hasExactDuplicate) {
+          throw new Error('A budget configuration with the same Budget Name, Description, and Config Date already exists.');
+        }
+      }
 
       // Step 1: Create main budget configuration (without geo/location/department scopes)
       const { data: budgetData, error: budgetError } = await supabase
@@ -324,6 +529,8 @@ export class BudgetConfigService {
    */
   static async getAllBudgetConfigs(filters = {}) {
     try {
+      const page = Math.max(parseInt(filters.page, 10) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(filters.limit, 10) || 10, 1), 100);
       let query = supabase.from('tblbudgetconfiguration').select('*');
 
       // Apply filters if provided
@@ -348,7 +555,7 @@ export class BudgetConfigService {
       if (error) throw error;
 
       let filteredByOrg = data || [];
-      if (filters.org_id) {
+      if (filters.org_id && !filters.user_id) {
         const subtreeResult = await this.getOrganizationSubtreeIds(filters.org_id);
         const allowedOrgIds = new Set(subtreeResult.data || [filters.org_id]);
         filteredByOrg = (data || []).filter((row) => {
@@ -358,10 +565,35 @@ export class BudgetConfigService {
         });
       }
 
+      let visibilityFiltered = filteredByOrg;
+      if (filters.user_id) {
+        let orgAncestryIds = [];
+        let approverBudgetIds = new Set();
+
+        try {
+          [orgAncestryIds, approverBudgetIds] = await Promise.all([
+            this.getOrganizationAncestryIds(filters.org_id),
+            this.getApproverBudgetIdsByUser(filters.user_id, (filteredByOrg || []).map((row) => row.budget_id)),
+          ]);
+        } catch (visibilityError) {
+          console.warn('[getAllBudgetConfigs] Visibility context lookup failed:', visibilityError?.message || visibilityError);
+        }
+
+        visibilityFiltered = (filteredByOrg || []).filter((row) =>
+          this.canUserViewBudgetConfig(row, {
+            userId: filters.user_id,
+            userRole: filters.user_role,
+            orgAncestryIds,
+            approverBudgetIds,
+            isAdmin: Boolean(filters.is_admin),
+          })
+        );
+      }
+
       let approvalAmounts = new Map();
       try {
         approvalAmounts = await this.getBudgetApprovalAmounts(
-          (filteredByOrg || []).map((row) => row.budget_id)
+          (visibilityFiltered || []).map((row) => row.budget_id)
         );
       } catch (amountError) {
         console.warn('[getAllBudgetConfigs] Failed to compute approval amounts:', amountError?.message || amountError);
@@ -369,7 +601,7 @@ export class BudgetConfigService {
 
       let decisionMap = new Map();
       try {
-        decisionMap = await this.getBudgetDecisionMap((filteredByOrg || []).map((row) => row.budget_id));
+        decisionMap = await this.getBudgetDecisionMap((visibilityFiltered || []).map((row) => row.budget_id));
       } catch (decisionError) {
         console.warn('[getAllBudgetConfigs] Failed to compute approval decisions:', decisionError?.message || decisionError);
       }
@@ -377,7 +609,7 @@ export class BudgetConfigService {
       // Fetch related data for each config
       let userNameMap = new Map();
       let userRoleMap = new Map();
-      const creatorIds = (filteredByOrg || []).map((row) => row.created_by);
+      const creatorIds = (visibilityFiltered || []).map((row) => row.created_by);
       try {
         [userNameMap, userRoleMap] = await Promise.all([
           this.getUserNameMap(creatorIds),
@@ -388,14 +620,14 @@ export class BudgetConfigService {
       }
 
       const configsWithRelations = await Promise.all(
-        filteredByOrg.map(async (config) => {
+        visibilityFiltered.map(async (config) => {
           const [approvers] = await Promise.all([
             this.getApproversByBudgetId(config.budget_id),
           ]);
           const creatorName = userNameMap.get(config.created_by);
           const creatorRole = userRoleMap.get(config.created_by);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
-          const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0 };
+          const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
           const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
 
           const computedStatus = BudgetConfigService.computeConfigStatus(config);
@@ -409,6 +641,7 @@ export class BudgetConfigService {
             created_by_role: creatorRole || null,
             approved_amount: totals.approvedAmount,
             ongoing_amount: totals.ongoingAmount,
+            client_sponsored_amount: totals.clientSponsoredAmount,
             has_approval_activity: hasApprovalActivity,
           };
         })
@@ -419,9 +652,37 @@ export class BudgetConfigService {
         ? configsWithRelations.filter((config) => String(config.status || '').toLowerCase() === statusFilter)
         : configsWithRelations;
 
+      const currentUserId = String(filters.user_id || '');
+      const prioritizedConfigs = currentUserId
+        ? [...filteredByStatus].sort((a, b) => {
+            const aMine = String(a.created_by || '') === currentUserId;
+            const bMine = String(b.created_by || '') === currentUserId;
+            if (aMine !== bMine) return aMine ? -1 : 1;
+            const aTime = new Date(a.created_at || 0).getTime();
+            const bTime = new Date(b.created_at || 0).getTime();
+            return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+          })
+        : filteredByStatus;
+
+      const totalItems = prioritizedConfigs.length;
+      const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+      const safePage = Math.min(page, totalPages);
+      const offset = (safePage - 1) * limit;
+      const pagedItems = prioritizedConfigs.slice(offset, offset + limit);
+
       return {
         success: true,
-        data: filteredByStatus,
+        data: {
+          items: pagedItems,
+          pagination: {
+            page: safePage,
+            limit,
+            totalItems,
+            totalPages,
+            hasPrev: safePage > 1,
+            hasNext: safePage < totalPages,
+          },
+        },
       };
     } catch (error) {
       console.error('Error fetching budget configs:', error);
@@ -450,7 +711,7 @@ export class BudgetConfigService {
         this.getApproversByBudgetId(budgetId),
       ]);
 
-      let approvalTotals = { approvedAmount: 0, ongoingAmount: 0 };
+      let approvalTotals = { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
       try {
         const totalsMap = await this.getBudgetApprovalAmounts([budgetId]);
         approvalTotals = totalsMap.get(budgetId) || approvalTotals;
@@ -485,6 +746,7 @@ export class BudgetConfigService {
           created_by_name: creatorDetails?.name || data.created_by,
           approved_amount: approvalTotals.approvedAmount,
           ongoing_amount: approvalTotals.ongoingAmount,
+          client_sponsored_amount: approvalTotals.clientSponsoredAmount,
           has_approval_activity: hasApprovalActivity,
         },
       };
@@ -1400,6 +1662,190 @@ export class BudgetConfigService {
   }
 
   /**
+   * Create organization
+   */
+  static async createOrganization(payload) {
+    try {
+      const {
+        org_name,
+        company_code,
+        parent_org_id,
+        org_description,
+        created_by,
+      } = payload || {};
+
+      if (!org_name?.trim()) {
+        return {
+          success: false,
+          error: 'org_name is required',
+        };
+      }
+
+      let resolvedCompanyCode = company_code || null;
+      if (parent_org_id && !resolvedCompanyCode) {
+        const { data: parentOrg, error: parentError } = await supabase
+          .from('tblorganization')
+          .select('company_code')
+          .eq('org_id', parent_org_id)
+          .single();
+
+        if (parentError) throw parentError;
+        resolvedCompanyCode = parentOrg?.company_code || null;
+      }
+
+      const resolvedCreatedBy = getUserUUID(created_by) || getUserUUID('john-smith');
+      const now = new Date().toISOString();
+
+      const { data, error } = await supabase
+        .from('tblorganization')
+        .insert([
+          {
+            org_name: org_name.trim(),
+            company_code: resolvedCompanyCode,
+            parent_org_id: parent_org_id || null,
+            org_description: org_description?.trim() || null,
+            created_by: resolvedCreatedBy,
+            updated_by: resolvedCreatedBy,
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error creating organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Update organization
+   */
+  static async updateOrganization(orgId, payload) {
+    try {
+      if (!orgId) {
+        return {
+          success: false,
+          error: 'orgId is required',
+        };
+      }
+
+      const {
+        org_name,
+        org_description,
+        company_code,
+        parent_org_id,
+        updated_by,
+      } = payload || {};
+
+      const updateData = {
+        ...(org_name !== undefined && { org_name: org_name?.trim() || '' }),
+        ...(org_description !== undefined && { org_description: org_description?.trim() || null }),
+        ...(company_code !== undefined && { company_code: company_code?.trim() || null }),
+        ...(parent_org_id !== undefined && { parent_org_id: parent_org_id || null }),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (updated_by !== undefined) {
+        updateData.updated_by = getUserUUID(updated_by) || getUserUUID('john-smith');
+      }
+
+      if (Object.keys(updateData).length === 1 && updateData.updated_at) {
+        return {
+          success: false,
+          error: 'No fields provided to update',
+        };
+      }
+
+      const { data, error } = await supabase
+        .from('tblorganization')
+        .update(updateData)
+        .eq('org_id', orgId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error updating organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Delete organization (and descendants)
+   */
+  static async deleteOrganization(orgId) {
+    try {
+      if (!orgId) {
+        return {
+          success: false,
+          error: 'orgId is required',
+        };
+      }
+
+      const { data: orgRows, error: orgRowsError } = await supabase
+        .from('tblorganization')
+        .select('org_id, parent_org_id');
+
+      if (orgRowsError) throw orgRowsError;
+
+      const childrenMap = new Map();
+      (orgRows || []).forEach((org) => {
+        if (!childrenMap.has(org.parent_org_id)) {
+          childrenMap.set(org.parent_org_id, []);
+        }
+        childrenMap.get(org.parent_org_id).push(org.org_id);
+      });
+
+      const orderedIds = [];
+      const walk = (id) => {
+        const children = childrenMap.get(id) || [];
+        children.forEach((childId) => walk(childId));
+        orderedIds.push(id);
+      };
+      walk(orgId);
+
+      for (const id of orderedIds) {
+        const { error } = await supabase
+          .from('tblorganization')
+          .delete()
+          .eq('org_id', id);
+
+        if (error) throw error;
+      }
+
+      return {
+        success: true,
+        data: { org_id: orgId, deleted_count: orderedIds.length },
+      };
+    } catch (error) {
+      console.error('Error deleting organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
    * Get all organization IDs under a given org (including itself)
    */
   static async getOrganizationSubtreeIds(rootOrgId) {
@@ -2266,7 +2712,20 @@ export class BudgetConfigService {
    */
   static async getAllUsers(orgId = null) {
     try {
-      let query = supabase
+      const subtreeResult = orgId
+        ? await this.getOrganizationSubtreeIds(orgId)
+        : { success: true, data: [] };
+
+      if (!subtreeResult.success) {
+        throw new Error(subtreeResult.error || 'Failed to resolve organization scope');
+      }
+
+      const allowedOrgIds = new Set(subtreeResult.data || []);
+
+      let data = null;
+      let error = null;
+
+      ({ data, error } = await supabase
         .from('tblusers')
         .select(`
           user_id,
@@ -2276,6 +2735,7 @@ export class BudgetConfigService {
           email,
           geo_id,
           org_id,
+          department_id,
           status,
           tbluserroles (
             is_active,
@@ -2285,13 +2745,28 @@ export class BudgetConfigService {
             )
           )
         `)
-        .order('first_name', { ascending: true });
+        .order('first_name', { ascending: true }));
 
-      if (orgId) {
-        query = query.eq('org_id', orgId);
+      if (error) {
+        console.warn('User-role relational query failed, retrying with base user data:', error.message);
+        const fallback = await supabase
+          .from('tblusers')
+          .select(`
+            user_id,
+            employee_id,
+            first_name,
+            last_name,
+            email,
+            geo_id,
+            org_id,
+            department_id,
+            status
+          `)
+          .order('first_name', { ascending: true });
+
+        data = fallback.data;
+        error = fallback.error;
       }
-
-      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -2312,15 +2787,25 @@ export class BudgetConfigService {
           email: user.email,
           geo_id: user.geo_id,
           org_id: user.org_id,
+          department_id: user.department_id || null,
+          department: null,
           status: user.status,
           roles,
           full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
         };
       });
 
+      const scopedUsers = !orgId
+        ? formatted
+        : formatted.filter((u) => {
+          const userOrg = String(u.org_id || '');
+          const userDept = String(u.department_id || '');
+          return allowedOrgIds.has(userOrg) || allowedOrgIds.has(userDept);
+        });
+
       return {
         success: true,
-        data: formatted,
+        data: scopedUsers,
       };
     } catch (error) {
       console.error('Error fetching users:', error);

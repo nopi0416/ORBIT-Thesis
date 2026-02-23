@@ -3,6 +3,12 @@ import { BudgetConfigService } from '../services/budgetConfigService.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { broadcast } from '../realtime/websocketServer.js';
 
+const normalizeRole = (role) => String(role || '').toLowerCase();
+const isAdminUser = (req) => {
+  const role = normalizeRole(req.user?.role);
+  return req.user?.userType === 'admin' || ['admin', 'administrator', 'system admin', 'system administrator'].includes(role);
+};
+
 /**
  * Approval Request Controller
  * Handles HTTP requests for approval workflows
@@ -181,6 +187,27 @@ export class ApprovalRequestController {
         }
       }
 
+      const budgetConfigResult = await BudgetConfigService.getBudgetConfigById(budget_id);
+      if (!budgetConfigResult.success) {
+        return sendError(res, budgetConfigResult.error || 'Budget configuration not found', 404);
+      }
+
+      const userAccessResult = await BudgetConfigService.canUserAccessBudgetConfig({
+        budgetConfig: budgetConfigResult.data,
+        userId,
+        userRole: req.user?.role,
+        orgId,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!userAccessResult.success) {
+        return sendError(res, userAccessResult.error || 'Failed to validate budget configuration access', 500);
+      }
+
+      if (!userAccessResult.data) {
+        return sendError(res, 'Access denied: you are not authorized to submit requests for this budget configuration', 403);
+      }
+
       const result = await ApprovalRequestService.createApprovalRequest({
         budget_id,
         description,
@@ -236,6 +263,8 @@ export class ApprovalRequestController {
   static async getAllApprovalRequests(req, res) {
     try {
       const { budget_id, status, search, submitted_by, approval_stage_status } = req.query;
+      const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
       const orgId = req.user?.org_id || null;
       const isUuid = (value) =>
         typeof value === 'string' &&
@@ -247,6 +276,8 @@ export class ApprovalRequestController {
         ...(search && { search }),
         ...(submitted_by && isUuid(submitted_by) && { submitted_by }),
         ...(approval_stage_status && { approval_stage_status }),
+        page,
+        limit,
       };
 
       if (orgId) {
@@ -308,6 +339,37 @@ export class ApprovalRequestController {
       const { id } = req.params;
       const { id: userId } = req.user;
 
+      const requestResult = await ApprovalRequestService.getApprovalRequestById(id);
+      if (!requestResult.success || !requestResult.data) {
+        return sendError(res, requestResult.error || 'Approval request not found', 404);
+      }
+
+      const budgetId = requestResult.data?.budget_id;
+      if (!budgetId) {
+        return sendError(res, 'Budget configuration is missing for this request', 400);
+      }
+
+      const budgetConfigResult = await BudgetConfigService.getBudgetConfigById(budgetId);
+      if (!budgetConfigResult.success) {
+        return sendError(res, budgetConfigResult.error || 'Budget configuration not found', 404);
+      }
+
+      const userAccessResult = await BudgetConfigService.canUserAccessBudgetConfig({
+        budgetConfig: budgetConfigResult.data,
+        userId,
+        userRole: req.user?.role,
+        orgId: req.user?.org_id || null,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!userAccessResult.success) {
+        return sendError(res, userAccessResult.error || 'Failed to validate budget configuration access', 500);
+      }
+
+      if (!userAccessResult.data) {
+        return sendError(res, 'Access denied: you are not authorized to submit this request', 403);
+      }
+
       const result = await ApprovalRequestService.submitApprovalRequest(id, userId);
 
       if (!result.success) {
@@ -361,6 +423,10 @@ export class ApprovalRequestController {
 
       if (!Array.isArray(line_items) || line_items.length === 0) {
         return sendError(res, 'line_items must be a non-empty array', 400);
+      }
+
+      if (line_items.length > 500) {
+        return sendError(res, 'Maximum 500 line items per bulk request', 400);
       }
 
       const result = await ApprovalRequestService.addLineItemsBulk(id, line_items, userId);

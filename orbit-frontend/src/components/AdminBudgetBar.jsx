@@ -6,7 +6,7 @@ export default function AdminBudgetBar({ department, current, total }) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-white font-medium text-sm">{department}</span>
         <span className="text-slate-400 text-sm">
-          ${current.toLocaleString()} / ${total.toLocaleString()}
+          ${current.toLocaleString('en-US')} / ${total.toLocaleString('en-US')}
         </span>
       </div>
       <div className="w-full h-2 bg-slate-700/50 rounded-full overflow-hidden">
