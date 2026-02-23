@@ -67,7 +67,33 @@ export class AuthController {
         return sendError(res, 'Username and password are required', 400);
       }
 
+      // Extract IP address and user agent for audit logging
+      const ipAddress = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'] || 'unknown';
+      const userAgent = req.headers['user-agent'] || 'unknown';
+
       const result = await AuthService.loginUser(employeeId, password);
+
+      // Log the login attempt
+      if (result.success && result.data) {
+        // Successful login attempt (OTP sent stage)
+        AuthService.logLoginAttempt(
+          result.data.email,
+          'pending', // OTP sent, awaiting verification
+          result.data.userType || 'user',
+          ipAddress,
+          userAgent
+        );
+      } else {
+        // Failed login attempt - try to determine email for logging
+        // First try to find if it's an admin or user
+        AuthService.logLoginAttempt(
+          employeeId, // Use the credential they provided
+          'failed',
+          'unknown', // We don't know if admin or user since lookup failed
+          ipAddress,
+          userAgent
+        );
+      }
 
       if (!result.success) {
         return sendError(res, result.error || 'Invalid Username or Password', 401);
@@ -103,11 +129,25 @@ export class AuthController {
         return sendError(res, validation.error, 400);
       }
 
+      // Extract IP address and user agent for audit logging
+      const ipAddress = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'] || 'unknown';
+      const userAgent = req.headers['user-agent'] || 'unknown';
+
       const result = await AuthService.completeLogin(email, otp);
 
       if (!result.success) {
         return sendError(res, result.error, 401);
       }
+
+      // Log successful login
+      AuthService.logLoginAttempt(
+        email,
+        'success',
+        result.data.userType || 'user',
+        ipAddress,
+        userAgent,
+        result.data.userId
+      );
 
       sendSuccess(res, result.data, result.message);
     } catch (error) {
@@ -538,6 +578,34 @@ export class AuthController {
     } catch (error) {
       console.error('Error in verifyToken:', error);
       sendError(res, 'Token verification failed', 500);
+    }
+  }
+
+  /**
+   * POST /api/auth/test-email
+   * Test email sending (development only)
+   */
+  static async testEmail(req, res) {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return sendError(res, 'Email is required', 400);
+      }
+
+      // Import here to avoid circular dependency at top
+      const { sendOTPEmail } = await import('../config/email.js');
+
+      const result = await sendOTPEmail(email, '123456');
+
+      if (!result.success) {
+        return sendError(res, result.error || 'Failed to send email', 500);
+      }
+
+      return sendSuccess(res, { message: 'Test email sent successfully' }, 'Check your inbox');
+    } catch (error) {
+      console.error('Error in testEmail:', error);
+      sendError(res, error.message, 500);
     }
   }
 }

@@ -40,4 +40,7 @@ router.get('/user/:userId', AuthController.getUserDetails);
 // Token Verification Routes
 router.post('/verify-token', AuthController.verifyToken);
 
+// Test Email Route (Development only)
+router.post('/test-email', AuthController.testEmail);
+
 export default router;
