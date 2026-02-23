@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const toast = useToast();
   const userRole = resolveUserRole(user);
   const [aiLoading, setAiLoading] = useState(false);
+  const [dashboardExportLoading, setDashboardExportLoading] = useState(false);
   const [aiData, setAiData] = useState(null);
   const [metricsData, setMetricsData] = useState(null);
   const [notifications, setNotifications] = useState([]);
@@ -327,6 +328,240 @@ export default function DashboardPage() {
     loadLatest();
   }, [cacheKey]);
 
+  const handleExportDashboard = async () => {
+    try {
+      setDashboardExportLoading(true);
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const safeRole = String(userRole || 'user').replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+      const baseName = `dashboard_${safeRole}_${timestamp}`;
+
+      let exportAiData = aiData;
+      const hasAiData =
+        Boolean(exportAiData?.summary) ||
+        (Array.isArray(exportAiData?.insights) && exportAiData.insights.length > 0) ||
+        (Array.isArray(exportAiData?.risks) && exportAiData.risks.length > 0) ||
+        (Array.isArray(exportAiData?.actions) && exportAiData.actions.length > 0);
+
+      if (!hasAiData) {
+        try {
+          const latest = await aiInsightsService.getLatestAiInsights(token);
+          if (latest) {
+            exportAiData = latest;
+            setAiData(latest);
+          }
+        } catch {
+          // no-op; we'll still export with placeholders
+        }
+      }
+
+      const ExcelJSModule = await import('exceljs');
+      const ExcelJS = ExcelJSModule.default || ExcelJSModule;
+      const workbook = new ExcelJS.Workbook();
+
+      const insightsSheet = workbook.addWorksheet('Insights');
+      insightsSheet.columns = [
+        { header: 'section', key: 'section', width: 24 },
+        { header: 'content', key: 'content', width: 120 },
+      ];
+
+      const pushSectionRows = (section, rows = [], fallback = 'No data available.') => {
+        if (Array.isArray(rows) && rows.length) {
+          rows.forEach((content) => insightsSheet.addRow({ section, content: String(content || '').trim() || fallback }));
+          return;
+        }
+        insightsSheet.addRow({ section, content: fallback });
+      };
+
+      pushSectionRows('Executive Summary', [exportAiData?.summary], 'No summary available.');
+      pushSectionRows('Insights', exportAiData?.insights || [], 'No insights available.');
+      pushSectionRows('Risks', exportAiData?.risks || [], 'No risks available.');
+      pushSectionRows('Actions', exportAiData?.actions || [], 'No actions available.');
+
+      const toNumber = (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
+      const chartsSheet = workbook.addWorksheet('Charts');
+
+      const coerceChartArray = (value) => {
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        if (typeof value === 'object') {
+          return Object.entries(value).map(([label, rawValue]) => ({
+            label,
+            value: toNumber(rawValue),
+          }));
+        }
+        return [];
+      };
+
+      const toHeaderLabel = (key) => String(key || '')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+
+      const normalizeRows = (rawRows) => {
+        if (!Array.isArray(rawRows)) return [];
+
+        return rawRows
+          .map((row) => {
+            if (row == null) return null;
+            if (typeof row !== 'object') return { value: row };
+
+            const out = {};
+            Object.entries(row).forEach(([key, value]) => {
+              if (value == null) {
+                out[key] = '—';
+                return;
+              }
+
+              if (typeof value === 'number') {
+                out[key] = value;
+                return;
+              }
+
+              if (typeof value === 'boolean' || typeof value === 'string') {
+                out[key] = value;
+                return;
+              }
+
+              out[key] = JSON.stringify(value);
+            });
+            return out;
+          })
+          .filter(Boolean);
+      };
+
+      const chartTables = [];
+      const pushTable = (title, rawRows, preferredOrder = []) => {
+        const rows = normalizeRows(rawRows);
+        if (!rows.length) return;
+
+        const discoveredKeys = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+        const excludedKeys = ['budget_id', 'budgetId'];
+        const keys = [
+          ...preferredOrder.filter((key) => discoveredKeys.includes(key) && !excludedKeys.includes(key)),
+          ...discoveredKeys.filter((key) => !preferredOrder.includes(key) && !excludedKeys.includes(key)),
+        ];
+
+        if (!keys.length) return;
+        chartTables.push({ title, keys, rows });
+      };
+
+      pushTable('Status Breakdown', coerceChartArray(metricsData?.charts?.status_breakdown), ['label', 'value']);
+      pushTable('Status Amounts', coerceChartArray(metricsData?.charts?.status_amounts), ['label', 'value']);
+      pushTable('Top Budgets', metricsData?.charts?.top_budgets || [], ['budget_name', 'budget_id', 'total_amount', 'completed_amount', 'ongoing_amount']);
+      pushTable('Monthly Series', metricsData?.charts?.monthly_series || [], ['month', 'amount', 'value', 'count']);
+
+      pushTable('Requestor Approval Counts', requestorTables?.approval_counts || [], ['budget_name', 'budget_id', 'approved_count', 'rejected_count', 'total_requests']);
+      pushTable('Requestor Approved Amounts', requestorTables?.approved_amounts || [], ['budget_name', 'budget_id', 'approved_amount']);
+
+      pushTable('Approver Submitted Counts', metricsData?.approver_tables?.submitted_counts || [], ['budget_name', 'budget_id', 'approved_count', 'rejected_count', 'total_requests']);
+      pushTable('Approver Submitted Amounts', metricsData?.approver_tables?.submitted_amounts || [], ['budget_name', 'budget_id', 'approved_amount']);
+      pushTable('Approver Approved Counts', metricsData?.approver_tables?.approved_counts || [], ['budget_name', 'budget_id', 'approved_count', 'rejected_count', 'total_requests']);
+      pushTable('Approver Approved Amounts', metricsData?.approver_tables?.approved_amounts || [], ['budget_name', 'budget_id', 'approved_amount']);
+
+      const approvedAmount = toNumber(metricsData?.totals?.completed_amount);
+      const ongoingAmount = toNumber(metricsData?.totals?.ongoing_amount);
+      const l2AmountRows = [
+        { status: 'approved', amount: approvedAmount },
+        { status: 'ongoing_approval', amount: ongoingAmount },
+      ].filter((row) => row.amount > 0);
+      pushTable('Approved vs Ongoing Amounts', l2AmountRows, ['status', 'amount']);
+
+      let rowCursor = 1;
+      if (!chartTables.length) {
+        chartsSheet.getCell('A1').value = 'No chart data available for current role/data source.';
+      }
+
+      for (const table of chartTables) {
+        const titleRow = chartsSheet.getRow(rowCursor);
+        titleRow.getCell(1).value = table.title;
+        titleRow.getCell(1).font = { bold: true, size: 13 };
+        titleRow.getCell(1).fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFE2E8F0' },
+        };
+        rowCursor += 1;
+
+        const headerRow = chartsSheet.getRow(rowCursor);
+        table.keys.forEach((key, index) => {
+          const columnIndex = index + 1;
+          const headerCell = headerRow.getCell(columnIndex);
+          headerCell.value = toHeaderLabel(key);
+          headerCell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+          headerCell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FF1E3A8A' },
+          };
+          headerCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+          headerCell.border = {
+            top: { style: 'thin', color: { argb: 'FF334155' } },
+            left: { style: 'thin', color: { argb: 'FF334155' } },
+            bottom: { style: 'thin', color: { argb: 'FF334155' } },
+            right: { style: 'thin', color: { argb: 'FF334155' } },
+          };
+          const column = chartsSheet.getColumn(columnIndex);
+          column.width = Math.max(column.width || 10, key.includes('amount') ? 18 : 26);
+        });
+        headerRow.height = 22;
+        rowCursor += 1;
+
+        table.rows.forEach((row, rowIndex) => {
+          const dataRow = chartsSheet.getRow(rowCursor);
+          table.keys.forEach((key, index) => {
+            const cell = dataRow.getCell(index + 1);
+            cell.value = row[key] ?? '—';
+            cell.alignment = { vertical: 'middle', horizontal: index === 0 ? 'left' : 'right', wrapText: true };
+            cell.border = {
+              top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+              left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+              bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+              right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+            };
+            if (typeof cell.value === 'number') {
+              cell.numFmt = key.toLowerCase().includes('amount') ? '#,##0.00' : '#,##0';
+            }
+            if (rowIndex % 2 === 1) {
+              cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FFF8FAFC' },
+              };
+            }
+          });
+          dataRow.height = 20;
+          rowCursor += 1;
+        });
+
+        rowCursor += 2;
+      }
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob(
+        [buffer],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${baseName}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast.success('Dashboard exported.');
+    } catch (error) {
+      toast.error(error?.message || 'Failed to export dashboard.');
+    } finally {
+      setDashboardExportLoading(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -339,9 +574,11 @@ export default function DashboardPage() {
           <>
             <PayrollInsightsLayout
               loading={aiLoading}
+              exportLoading={dashboardExportLoading}
               data={aiData}
               metrics={metricsData}
               onGenerate={handleGenerateInsights}
+              onExport={handleExportDashboard}
             />
             <LatestUpdatesTable updates={metricsData?.latest_updates} />
           </>
@@ -349,10 +586,12 @@ export default function DashboardPage() {
           <>
             <RoleInsightsLayout
               loading={aiLoading}
+              exportLoading={dashboardExportLoading}
               data={aiData}
               role={userRole}
               metrics={metricsData}
               onGenerate={handleGenerateInsights}
+              onExport={handleExportDashboard}
             />
             {userRole === 'requestor' && (
               <RequestorSubmissionTables
@@ -553,7 +792,7 @@ function ApprovalNotificationsTable({ items = [], role }) {
   );
 }
 
-function RoleInsightsLayout({ loading, data, role, metrics, onGenerate }) {
+function RoleInsightsLayout({ loading, exportLoading, data, role, metrics, onGenerate, onExport }) {
   const charts = metrics?.charts || {};
   const statusBreakdown = Array.isArray(charts.status_breakdown)
     ? charts.status_breakdown
@@ -574,13 +813,22 @@ function RoleInsightsLayout({ loading, data, role, metrics, onGenerate }) {
             AI insights tailored to your role scope.
           </p>
         </div>
-        <Button
-          onClick={onGenerate}
-          className="bg-blue-600 hover:bg-blue-700 text-white"
-          disabled={loading}
-        >
-          {loading ? 'Generating…' : 'Run AI Insights'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={onGenerate}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+            disabled={loading}
+          >
+            {loading ? 'Generating…' : 'Run AI Insights'}
+          </Button>
+          <Button
+            onClick={onExport}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            disabled={exportLoading}
+          >
+            {exportLoading ? 'Exporting...' : 'Export Dashboard'}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {!data && !loading && (
@@ -605,7 +853,7 @@ function RoleInsightsLayout({ loading, data, role, metrics, onGenerate }) {
   );
 }
 
-function PayrollInsightsLayout({ loading, data, metrics, onGenerate }) {
+function PayrollInsightsLayout({ loading, exportLoading, data, metrics, onGenerate, onExport }) {
   const coerceChartArray = (value) => {
     if (!value) return [];
     if (Array.isArray(value)) return value;
@@ -638,13 +886,22 @@ function PayrollInsightsLayout({ loading, data, metrics, onGenerate }) {
             Financial insights based on your role scope · Generated: {generatedLabel}
           </p>
         </div>
-        <Button
-          onClick={onGenerate}
-          className="bg-blue-600 hover:bg-blue-700 text-white"
-          disabled={loading}
-        >
-          {loading ? 'Generating…' : 'Run AI Insights'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={onGenerate}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+            disabled={loading}
+          >
+            {loading ? 'Generating…' : 'Run AI Insights'}
+          </Button>
+          <Button
+            onClick={onExport}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            disabled={exportLoading}
+          >
+            {exportLoading ? 'Exporting...' : 'Export Dashboard'}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {!data && !loading && (
