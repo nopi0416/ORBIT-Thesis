@@ -1,5 +1,10 @@
 import supabase from '../config/database.js';
 import bcrypt from 'bcrypt';
+import {
+  sendAdminAccountCredentialsEmail,
+  sendAdminCredentialsCopyEmail,
+  sendNewUserCredentialsEmail,
+} from '../config/email.js';
 
 /**
  * Admin User Management Service
@@ -24,6 +29,21 @@ export class AdminUserManagementService {
    */
   static generateDefaultPassword() {
     const basePassword = 'P@ssword';
+    const suffix = this.generateUniquePasswordSuffix();
+    return {
+      password: `${basePassword}${suffix}`,
+      suffix,
+    };
+  }
+
+  static isValidBaselinePassword(basePassword) {
+    const value = (basePassword || '').toString().trim();
+    return value.length > 0
+      && value.length <= 10
+      && /^(?=.*[@._-])[A-Za-z0-9@._-]+$/.test(value);
+  }
+
+  static generatePasswordFromBaseline(basePassword) {
     const suffix = this.generateUniquePasswordSuffix();
     return {
       password: `${basePassword}${suffix}`,
@@ -137,6 +157,32 @@ export class AdminUserManagementService {
     }
   }
 
+  static async getLoginLogs(adminContext) {
+    try {
+      const normalizedRole = (adminContext?.role || '').toLowerCase();
+      const isSuperAdmin = normalizedRole.includes('super admin');
+
+      let query = supabase
+        .from('tbllogin_audit')
+        .select('id, user_id, email, login_status, ip_address, user_agent, logged_at, user_type')
+        .order('logged_at', { ascending: false });
+
+      if (!isSuperAdmin && adminContext?.email) {
+        query = query.eq('email', adminContext.email);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      return { success: true, data: data || [] };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
   /**
    * Check if employee_id already exists
    */
@@ -208,6 +254,25 @@ export class AdminUserManagementService {
     return !!data;
   }
 
+  static async getRoleById(roleId) {
+    const { data, error } = await supabase
+      .from('tblroles')
+      .select('role_id, role_name')
+      .eq('role_id', roleId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    return data || null;
+  }
+
+  static isRequestorRole(roleName) {
+    const normalized = (roleName || '').toString().trim().toLowerCase();
+    return normalized.includes('requestor') || normalized.includes('requester');
+  }
+
   /**
    * Verify that organization exists in tblorganization
    */
@@ -242,14 +307,15 @@ export class AdminUserManagementService {
    * @param {Object} userData - User data from request
    * @param {string} adminUUID - UUID of admin creating the user (from created_by)
    */
-  static async createAdminUser(userData, adminUUID) {
+  static async createAdminUser(userData, adminContext = {}) {
     try {
+      const adminUUID = adminContext?.id || adminContext;
+      const adminEmail = typeof adminContext === 'object' ? adminContext?.email : null;
       const {
         firstName,
         lastName,
         email,
         employeeId,
-        department,
         departmentId,
         roleId,
         organizationId,
@@ -257,10 +323,17 @@ export class AdminUserManagementService {
       } = userData;
 
       // Validation
-      if (!firstName || !lastName || !email || !employeeId || !roleId || !geoId || !departmentId) {
+      if (!firstName || !lastName || !email || !employeeId || !roleId || !geoId) {
         return {
           success: false,
-          error: 'Missing required fields: firstName, lastName, email, employeeId, roleId, geoId, departmentId',
+          error: 'Missing required fields: firstName, lastName, email, employeeId, roleId, geoId',
+        };
+      }
+
+      if (!/^[a-zA-Z0-9]+$/.test(employeeId)) {
+        return {
+          success: false,
+          error: 'Employee ID must be alphanumeric only',
         };
       }
 
@@ -282,11 +355,22 @@ export class AdminUserManagementService {
       }
 
       // Verify role exists
-      const roleValid = await this.roleExists(roleId);
-      if (!roleValid) {
+      const roleData = await this.getRoleById(roleId);
+      if (!roleData) {
         return {
           success: false,
           error: `Role with ID "${roleId}" does not exist`,
+        };
+      }
+
+      const roleName = roleData.role_name || '';
+      const requiresDepartment = this.isRequestorRole(roleName);
+      const normalizedDepartmentId = requiresDepartment ? departmentId : null;
+
+      if (requiresDepartment && !departmentId) {
+        return {
+          success: false,
+          error: 'Department ID is required for Requestor role',
         };
       }
 
@@ -310,13 +394,37 @@ export class AdminUserManagementService {
         }
       }
 
-      // Verify department exists
-      const deptValid = await this.organizationExists(departmentId);
-      if (!deptValid) {
-        return {
-          success: false,
-          error: `Department with ID "${departmentId}" does not exist`,
-        };
+      if (normalizedDepartmentId) {
+        // Verify department exists
+        const deptValid = await this.organizationExists(normalizedDepartmentId);
+        if (!deptValid) {
+          return {
+            success: false,
+            error: `Department with ID "${normalizedDepartmentId}" does not exist`,
+          };
+        }
+
+        if (organizationId) {
+          const { data: departmentOrg, error: deptError } = await supabase
+            .from('tblorganization')
+            .select('org_id, parent_org_id')
+            .eq('org_id', normalizedDepartmentId)
+            .single();
+
+          if (deptError) {
+            return {
+              success: false,
+              error: deptError.message,
+            };
+          }
+
+          if (departmentOrg?.parent_org_id && departmentOrg.parent_org_id !== organizationId) {
+            return {
+              success: false,
+              error: 'Department does not belong to selected OU',
+            };
+          }
+        }
       }
 
       // Generate password
@@ -333,7 +441,7 @@ export class AdminUserManagementService {
             last_name: lastName,
             email,
             org_id: organizationId || null,
-            department_id: departmentId,
+            department_id: normalizedDepartmentId,
             geo_id: geoId,
             status: 'First_Time',
             is_first_login: true,
@@ -387,6 +495,32 @@ export class AdminUserManagementService {
         },
       ]);
 
+      const firstNameSafe = (firstName || 'User').toString().trim() || 'User';
+      const credentialsEmailResult = await sendNewUserCredentialsEmail({
+        email,
+        firstName: firstNameSafe,
+        employeeId,
+        temporaryPassword: password,
+      });
+
+      const emailWarnings = [];
+      if (!credentialsEmailResult?.success) {
+        emailWarnings.push(`Credentials email failed: ${credentialsEmailResult?.error || 'Unknown error'}`);
+      }
+
+      const adminCopyEmailResult = await sendAdminCredentialsCopyEmail({
+        adminEmail,
+        targetEmail: email,
+        targetName: `${firstNameSafe} ${lastName || ''}`.trim(),
+        employeeId,
+        temporaryPassword: password,
+        action: 'created',
+      });
+
+      if (adminEmail && !adminCopyEmailResult?.success) {
+        emailWarnings.push(`Admin copy email failed: ${adminCopyEmailResult?.error || 'Unknown error'}`);
+      }
+
       // Organization is already set in the department field during user creation
       // so no additional update is needed
 
@@ -402,11 +536,533 @@ export class AdminUserManagementService {
           is_first_login: true,
           generated_password: password,
           password_suffix: suffix,
+          emails_sent: {
+            credentials_email: !!credentialsEmailResult?.success,
+            admin_copy_email: !!adminCopyEmailResult?.success,
+          },
+          ...(emailWarnings.length > 0 ? { email_warnings: emailWarnings } : {}),
         },
-        message: 'User created successfully',
+        message: emailWarnings.length > 0
+          ? 'User created successfully, but one or more onboarding emails failed to send'
+          : 'User created successfully',
       };
     } catch (error) {
       console.error('Error in createAdminUser:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Bulk create users/admins
+   * @param {Array} entries - Validated entries from frontend bulk import
+   * @param {Object} adminContext - Authenticated admin context
+   */
+  static async createUsersBulk(entries = [], adminContext = {}) {
+    try {
+      if (!Array.isArray(entries) || entries.length === 0) {
+        return {
+          success: false,
+          error: 'No users provided for bulk creation',
+        };
+      }
+
+      const creatorRole = adminContext?.role || '';
+      const creatorId = adminContext?.id || null;
+      const creatorOrgId = adminContext?.orgId || adminContext?.org_id || null;
+      const creatorIsSuperAdmin = this.isSuperAdmin(creatorRole);
+      const creatorIsCompanyAdmin = this.isCompanyAdmin(creatorRole);
+
+      const failures = [];
+      const normalizedEntries = entries.map((raw, index) => {
+        const accountType = (raw?.accountType || 'user').toString().trim().toLowerCase() === 'admin' ? 'admin' : 'user';
+        const email = (raw?.email || '').toString().trim();
+        const employeeId = (raw?.employeeId || '').toString().trim();
+        const fullName = (raw?.name || '').toString().trim().replace(/\s+/g, ' ');
+        const nameParts = fullName ? fullName.split(' ') : [];
+        const lastName = nameParts.length > 0 ? nameParts[nameParts.length - 1] : fullName;
+        const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : fullName;
+
+        return {
+          rowNumber: raw?.rowNumber ?? index + 2,
+          accountType,
+          adminRole: (raw?.adminRole || '').toString().trim(),
+          employeeId,
+          name: fullName,
+          firstName,
+          lastName,
+          email,
+          roleId: raw?.roleId || null,
+          geoId: raw?.geoId || null,
+          orgId: raw?.orgId || null,
+          departmentId: raw?.departmentId || null,
+        };
+      });
+
+      const emailToRows = new Map();
+      const employeeIdToRows = new Map();
+      const roleIds = new Set();
+      const geoIds = new Set();
+      const orgIds = new Set();
+      const departmentIds = new Set();
+
+      for (const entry of normalizedEntries) {
+        const rowErrors = [];
+        const emailKey = entry.email.toLowerCase();
+        const adminRoleNormalized = this.normalizeAdminRole(entry.adminRole);
+
+        if (!entry.email) rowErrors.push('Missing Email');
+
+        if (emailKey) {
+          const rows = emailToRows.get(emailKey) || [];
+          rows.push(entry.rowNumber);
+          emailToRows.set(emailKey, rows);
+        }
+
+        if (entry.accountType === 'admin') {
+          if (!adminRoleNormalized) {
+            rowErrors.push('Admin role must be Super Admin or Company Admin');
+          }
+
+          if (adminRoleNormalized && this.isSuperAdmin(adminRoleNormalized) && !creatorIsSuperAdmin) {
+            rowErrors.push('Only Super Admins can create Super Admin accounts');
+          }
+
+          if (adminRoleNormalized && this.isCompanyAdmin(adminRoleNormalized) && !entry.orgId) {
+            rowErrors.push('Organization is required for Company Admin accounts');
+          }
+
+          if (creatorIsCompanyAdmin && entry.orgId && creatorOrgId && entry.orgId !== creatorOrgId) {
+            rowErrors.push('Company Admin can only create admins in their own OU');
+          }
+
+          if (entry.orgId) orgIds.add(entry.orgId);
+        } else {
+          if (!entry.name) rowErrors.push('Missing Name');
+          if (!entry.employeeId) rowErrors.push('Missing Employee ID');
+          if (!entry.roleId) rowErrors.push('Missing Role');
+          if (!entry.geoId) rowErrors.push('Missing Geo');
+          if (!entry.orgId) rowErrors.push('Missing Organizational Unit');
+
+          if (entry.employeeId && !/^[a-zA-Z0-9]+$/.test(entry.employeeId)) {
+            rowErrors.push('Employee ID must be alphanumeric only');
+          }
+
+          const employeeKey = entry.employeeId.toLowerCase();
+          if (employeeKey) {
+            const rows = employeeIdToRows.get(employeeKey) || [];
+            rows.push(entry.rowNumber);
+            employeeIdToRows.set(employeeKey, rows);
+          }
+
+          if (entry.roleId) roleIds.add(entry.roleId);
+          if (entry.geoId) geoIds.add(entry.geoId);
+          if (entry.orgId) orgIds.add(entry.orgId);
+          if (entry.departmentId) departmentIds.add(entry.departmentId);
+
+          if (creatorIsCompanyAdmin && entry.orgId && creatorOrgId && entry.orgId !== creatorOrgId) {
+            rowErrors.push('Company Admin can only add users to their own OU');
+          }
+        }
+
+        if (rowErrors.length > 0) {
+          failures.push({
+            rowNumber: entry.rowNumber,
+            accountType: entry.accountType,
+            email: entry.email,
+            error: rowErrors.join(', '),
+          });
+        }
+      }
+
+      for (const [email, rows] of emailToRows.entries()) {
+        if (rows.length > 1) {
+          rows.forEach((rowNumber) => {
+            failures.push({
+              rowNumber,
+              accountType: normalizedEntries.find((entry) => entry.rowNumber === rowNumber)?.accountType || 'user',
+              email,
+              error: 'Duplicate Email in file',
+            });
+          });
+        }
+      }
+
+      for (const [employeeId, rows] of employeeIdToRows.entries()) {
+        if (rows.length > 1) {
+          rows.forEach((rowNumber) => {
+            failures.push({
+              rowNumber,
+              accountType: 'user',
+              email: normalizedEntries.find((entry) => entry.rowNumber === rowNumber)?.email || '',
+              error: `Duplicate Employee ID in file (${employeeId})`,
+            });
+          });
+        }
+      }
+
+      const distinctEmails = Array.from(emailToRows.keys());
+      const distinctEmployeeIds = Array.from(employeeIdToRows.keys());
+
+      if (distinctEmails.length > 0) {
+        const { data: existingUserEmails, error: existingUserEmailError } = await supabase
+          .from('tblusers')
+          .select('email')
+          .in('email', distinctEmails);
+
+        if (existingUserEmailError) throw existingUserEmailError;
+
+        const { data: existingAdminEmails, error: existingAdminEmailError } = await supabase
+          .from('tbladminusers')
+          .select('email')
+          .in('email', distinctEmails);
+
+        if (existingAdminEmailError) throw existingAdminEmailError;
+
+        const existingEmailSet = new Set([
+          ...(existingUserEmails || []).map((row) => (row.email || '').toLowerCase()),
+          ...(existingAdminEmails || []).map((row) => (row.email || '').toLowerCase()),
+        ]);
+
+        for (const entry of normalizedEntries) {
+          if (existingEmailSet.has(entry.email.toLowerCase())) {
+            failures.push({
+              rowNumber: entry.rowNumber,
+              accountType: entry.accountType,
+              email: entry.email,
+              error: 'Email already exists',
+            });
+          }
+        }
+      }
+
+      if (distinctEmployeeIds.length > 0) {
+        const { data: existingEmployeeRows, error: existingEmployeeError } = await supabase
+          .from('tblusers')
+          .select('employee_id')
+          .in('employee_id', distinctEmployeeIds);
+
+        if (existingEmployeeError) throw existingEmployeeError;
+
+        const existingEmployeeSet = new Set((existingEmployeeRows || []).map((row) => (row.employee_id || '').toLowerCase()));
+        for (const entry of normalizedEntries) {
+          if (entry.accountType === 'user' && existingEmployeeSet.has(entry.employeeId.toLowerCase())) {
+            failures.push({
+              rowNumber: entry.rowNumber,
+              accountType: 'user',
+              email: entry.email,
+              error: 'Employee ID already exists',
+            });
+          }
+        }
+      }
+
+      const roleMap = new Map();
+      if (roleIds.size > 0) {
+        const { data: roleRows, error: roleError } = await supabase
+          .from('tblroles')
+          .select('role_id, role_name')
+          .in('role_id', Array.from(roleIds));
+
+        if (roleError) throw roleError;
+        (roleRows || []).forEach((row) => roleMap.set(row.role_id, row));
+      }
+
+      const geoSet = new Set();
+      if (geoIds.size > 0) {
+        const { data: geoRows, error: geoError } = await supabase
+          .from('tblgeo')
+          .select('geo_id')
+          .in('geo_id', Array.from(geoIds));
+
+        if (geoError) throw geoError;
+        (geoRows || []).forEach((row) => geoSet.add(row.geo_id));
+      }
+
+      const orgMap = new Map();
+      const orgLookupIds = Array.from(new Set([...orgIds, ...departmentIds]));
+      if (orgLookupIds.length > 0) {
+        const { data: orgRows, error: orgError } = await supabase
+          .from('tblorganization')
+          .select('org_id, parent_org_id')
+          .in('org_id', orgLookupIds);
+
+        if (orgError) throw orgError;
+        (orgRows || []).forEach((row) => orgMap.set(row.org_id, row));
+      }
+
+      for (const entry of normalizedEntries) {
+        if (entry.accountType !== 'user') {
+          if (entry.orgId && !orgMap.has(entry.orgId)) {
+            failures.push({
+              rowNumber: entry.rowNumber,
+              accountType: entry.accountType,
+              email: entry.email,
+              error: 'Organization not found',
+            });
+          }
+          continue;
+        }
+
+        const roleData = roleMap.get(entry.roleId);
+        if (!roleData) {
+          failures.push({
+            rowNumber: entry.rowNumber,
+            accountType: 'user',
+            email: entry.email,
+            error: 'Role not found',
+          });
+          continue;
+        }
+
+        const requiresDepartment = this.isRequestorRole(roleData?.role_name);
+        if (!geoSet.has(entry.geoId)) {
+          failures.push({
+            rowNumber: entry.rowNumber,
+            accountType: 'user',
+            email: entry.email,
+            error: 'Geo not found',
+          });
+        }
+
+        if (!entry.orgId || !orgMap.has(entry.orgId)) {
+          failures.push({
+            rowNumber: entry.rowNumber,
+            accountType: 'user',
+            email: entry.email,
+            error: 'Organization not found',
+          });
+        }
+
+        if (requiresDepartment && !entry.departmentId) {
+          failures.push({
+            rowNumber: entry.rowNumber,
+            accountType: 'user',
+            email: entry.email,
+            error: 'Department is required for Requestor role',
+          });
+        }
+
+        if (requiresDepartment && entry.departmentId && !orgMap.has(entry.departmentId)) {
+          failures.push({
+            rowNumber: entry.rowNumber,
+            accountType: 'user',
+            email: entry.email,
+            error: 'Department not found',
+          });
+        }
+
+        if (requiresDepartment && entry.departmentId && orgMap.has(entry.departmentId) && entry.orgId && orgMap.has(entry.orgId)) {
+          const departmentOrg = orgMap.get(entry.departmentId);
+          if (departmentOrg?.parent_org_id && departmentOrg.parent_org_id !== entry.orgId) {
+            failures.push({
+              rowNumber: entry.rowNumber,
+              accountType: 'user',
+              email: entry.email,
+              error: 'Department does not belong to selected OU',
+            });
+          }
+        }
+      }
+
+      const mergedFailures = Array.from(
+        new Map(
+          failures.map((failure) => {
+            const key = `${failure.rowNumber}-${failure.email}-${failure.error}`;
+            return [key, failure];
+          })
+        ).values()
+      ).sort((a, b) => a.rowNumber - b.rowNumber);
+
+      if (mergedFailures.length > 0) {
+        return {
+          success: false,
+          error: {
+            message: 'Bulk validation failed. No records were created.',
+            failures: mergedFailures,
+          },
+        };
+      }
+
+      const now = new Date().toISOString();
+      const userEntries = normalizedEntries.filter((entry) => entry.accountType === 'user');
+      const adminEntries = normalizedEntries.filter((entry) => entry.accountType === 'admin');
+
+      const userPayload = [];
+      const userMeta = [];
+      for (const entry of userEntries) {
+        const roleData = roleMap.get(entry.roleId);
+        const requiresDepartment = this.isRequestorRole(roleData?.role_name);
+        const { password, suffix } = this.generateDefaultPassword();
+        const passwordHash = await this.hashPassword(password);
+
+        userPayload.push({
+          employee_id: entry.employeeId,
+          first_name: entry.firstName,
+          last_name: entry.lastName,
+          email: entry.email,
+          org_id: entry.orgId || null,
+          department_id: requiresDepartment ? entry.departmentId : null,
+          geo_id: entry.geoId,
+          status: 'First_Time',
+          is_first_login: true,
+          password_hash: passwordHash,
+          created_by: creatorId,
+          updated_by: creatorId,
+          created_at: now,
+          updated_at: now,
+        });
+
+        userMeta.push({
+          rowNumber: entry.rowNumber,
+          email: entry.email,
+          employeeId: entry.employeeId,
+          roleId: entry.roleId,
+          firstName: entry.firstName,
+          generatedPassword: password,
+          passwordSuffix: suffix,
+        });
+      }
+
+      const adminPayload = [];
+      const adminMeta = [];
+      for (const entry of adminEntries) {
+        const { password, suffix } = this.generateDefaultPassword();
+        const passwordHash = await this.hashPassword(password);
+
+        adminPayload.push({
+          email: entry.email,
+          full_name: entry.name,
+          admin_role: entry.adminRole,
+          password_hash: passwordHash,
+          is_active: true,
+          org_id: entry.orgId || null,
+          created_by: creatorId,
+          updated_by: creatorId,
+          created_at: now,
+          updated_at: now,
+        });
+
+        adminMeta.push({
+          rowNumber: entry.rowNumber,
+          email: entry.email,
+          adminRole: entry.adminRole,
+          generatedPassword: password,
+          passwordSuffix: suffix,
+        });
+      }
+
+      const createdUserIds = [];
+      const createdAdminIds = [];
+
+      const rollbackCreatedRecords = async () => {
+        if (createdUserIds.length > 0) {
+          await supabase.from('tbluserroles').delete().in('user_id', createdUserIds);
+          await supabase.from('tblusers').delete().in('user_id', createdUserIds);
+        }
+
+        if (createdAdminIds.length > 0) {
+          await supabase.from('tbladminusers').delete().in('admin_id', createdAdminIds);
+        }
+      };
+
+      let insertedUsers = [];
+      let insertedAdmins = [];
+
+      try {
+        if (userPayload.length > 0) {
+          const { data: usersInserted, error: usersInsertError } = await supabase
+            .from('tblusers')
+            .insert(userPayload)
+            .select('user_id, email, employee_id');
+
+          if (usersInsertError) throw usersInsertError;
+          insertedUsers = usersInserted || [];
+          insertedUsers.forEach((row) => createdUserIds.push(row.user_id));
+
+          const userIdByEmail = new Map(insertedUsers.map((row) => [(row.email || '').toLowerCase(), row.user_id]));
+          const userRolePayload = userMeta.map((meta) => ({
+            user_id: userIdByEmail.get((meta.email || '').toLowerCase()),
+            role_id: meta.roleId,
+          }));
+
+          const invalidRoleAssignment = userRolePayload.some((item) => !item.user_id || !item.role_id);
+          if (invalidRoleAssignment) {
+            throw new Error('Unable to map inserted users to roles for bulk assignment');
+          }
+
+          const { error: userRoleInsertError } = await supabase
+            .from('tbluserroles')
+            .insert(userRolePayload);
+
+          if (userRoleInsertError) throw userRoleInsertError;
+        }
+
+        if (adminPayload.length > 0) {
+          const { data: adminsInserted, error: adminsInsertError } = await supabase
+            .from('tbladminusers')
+            .insert(adminPayload)
+            .select('admin_id, email, admin_role');
+
+          if (adminsInsertError) throw adminsInsertError;
+          insertedAdmins = adminsInserted || [];
+          insertedAdmins.forEach((row) => createdAdminIds.push(row.admin_id));
+        }
+      } catch (insertError) {
+        await rollbackCreatedRecords();
+        throw insertError;
+      }
+
+      const userInsertByEmail = new Map(insertedUsers.map((row) => [(row.email || '').toLowerCase(), row]));
+      const adminInsertByEmail = new Map(insertedAdmins.map((row) => [(row.email || '').toLowerCase(), row]));
+
+      await this.logAdminActions(creatorId, [
+        ...userMeta.map((meta) => ({
+          action: 'create_user',
+          targetTable: 'tblusers',
+          targetId: userInsertByEmail.get((meta.email || '').toLowerCase())?.user_id,
+          description: `Bulk created user ${meta.email}`,
+        })),
+        ...adminMeta.map((meta) => ({
+          action: 'create_admin_user',
+          targetTable: 'tbladminusers',
+          targetId: adminInsertByEmail.get((meta.email || '').toLowerCase())?.admin_id,
+          description: `Bulk created admin ${meta.email} (${meta.adminRole})`,
+        })),
+      ]);
+
+      const emailWarnings = [];
+      for (const meta of userMeta) {
+        const credentialsEmailResult = await sendNewUserCredentialsEmail({
+          email: meta.email,
+          firstName: meta.firstName || 'User',
+          employeeId: meta.employeeId,
+          temporaryPassword: meta.generatedPassword,
+        });
+
+        if (!credentialsEmailResult?.success) {
+          emailWarnings.push({
+            rowNumber: meta.rowNumber,
+            email: meta.email,
+            error: credentialsEmailResult?.error || 'Unknown email error',
+          });
+        }
+      }
+
+      return {
+        success: true,
+        data: {
+          total: entries.length,
+          successCount: entries.length,
+          failureCount: 0,
+          createdUsers: insertedUsers.length,
+          createdAdmins: insertedAdmins.length,
+          emailWarnings,
+        },
+      };
+    } catch (error) {
       return {
         success: false,
         error: error.message,
@@ -513,6 +1169,21 @@ export class AdminUserManagementService {
           description: `Created admin account ${email} (${adminRole})`,
         },
       ]);
+
+      await sendAdminCredentialsCopyEmail({
+        adminEmail: adminContext?.email,
+        targetEmail: email,
+        targetName: fullName,
+        employeeId: 'N/A',
+        temporaryPassword: password,
+        action: 'created',
+      });
+
+      await sendAdminAccountCredentialsEmail({
+        email,
+        fullName,
+        temporaryPassword: password,
+      });
 
       return {
         success: true,
@@ -818,7 +1489,7 @@ export class AdminUserManagementService {
         geoId,
       } = payload || {};
 
-      if (!firstName || !lastName || !email || !roleId || !geoId || !departmentId) {
+      if (!firstName || !lastName || !email || !roleId || !geoId) {
         return { success: false, error: 'Missing required fields' };
       }
       
@@ -833,9 +1504,19 @@ export class AdminUserManagementService {
         }
       }
 
-      const roleValid = await this.roleExists(roleId);
-      if (!roleValid) {
+      const roleData = await this.getRoleById(roleId);
+      if (!roleData) {
         return { success: false, error: `Role with ID "${roleId}" does not exist` };
+      }
+
+      const roleNameLower = (roleData.role_name || '').toLowerCase();
+      const isAdminLikeRole = roleNameLower.includes('super admin') || roleNameLower.includes('company admin');
+
+      const requiresDepartment = this.isRequestorRole(roleData.role_name || '');
+      const normalizedDepartmentId = requiresDepartment ? departmentId : null;
+
+      if (requiresDepartment && !departmentId) {
+        return { success: false, error: 'Department ID is required for Requestor role' };
       }
 
       if (isCompanyAdmin) {
@@ -866,16 +1547,18 @@ export class AdminUserManagementService {
         }
       }
 
-      const deptValid = await this.organizationExists(departmentId);
-      if (!deptValid) {
-        return { success: false, error: `Department with ID "${departmentId}" does not exist` };
+      if (normalizedDepartmentId) {
+        const deptValid = await this.organizationExists(normalizedDepartmentId);
+        if (!deptValid) {
+          return { success: false, error: `Department with ID "${normalizedDepartmentId}" does not exist` };
+        }
       }
 
-      if (organizationId && departmentId) {
+      if (organizationId && normalizedDepartmentId) {
         const { data: departmentOrg, error: deptError } = await supabase
           .from('tblorganization')
           .select('org_id, parent_org_id')
-          .eq('org_id', departmentId)
+          .eq('org_id', normalizedDepartmentId)
           .single();
 
         if (deptError) {
@@ -894,7 +1577,7 @@ export class AdminUserManagementService {
           last_name: lastName,
           email,
           org_id: organizationId || null,
-          department_id: departmentId,
+          department_id: normalizedDepartmentId,
           geo_id: geoId,
           updated_by: adminContext?.id || null,
           updated_at: new Date().toISOString(),
@@ -920,6 +1603,42 @@ export class AdminUserManagementService {
 
       if (roleInsertError) {
         return { success: false, error: roleInsertError.message };
+      }
+
+      if (isAdminLikeRole) {
+        const { password } = this.generateDefaultPassword();
+        const passwordHash = await this.hashPassword(password);
+
+        const { error: passwordUpdateError } = await supabase
+          .from('tblusers')
+          .update({
+            password_hash: passwordHash,
+            status: 'First_Time',
+            is_first_login: true,
+            updated_by: adminContext?.id || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', userId);
+
+        if (passwordUpdateError) {
+          return { success: false, error: passwordUpdateError.message };
+        }
+
+        await sendNewUserCredentialsEmail({
+          email,
+          firstName,
+          employeeId: existingUser?.employee_id || 'N/A',
+          temporaryPassword: password,
+        });
+
+        await sendAdminCredentialsCopyEmail({
+          adminEmail: adminContext?.email,
+          targetEmail: email,
+          targetName: `${firstName} ${lastName}`.trim(),
+          employeeId: existingUser?.employee_id || 'N/A',
+          temporaryPassword: password,
+          action: 'reset',
+        });
       }
 
       await this.logAdminActions(adminContext?.id, [
@@ -1009,6 +1728,154 @@ export class AdminUserManagementService {
         success: false,
         error: error.message,
       };
+    }
+  }
+
+  static async resetUserCredentials(userId, basePassword, adminContext = {}) {
+    try {
+      const adminRole = adminContext?.role || '';
+      const adminOrgId = adminContext?.orgId || adminContext?.org_id || null;
+      const isSuperAdmin = this.isSuperAdmin(adminRole);
+      const isCompanyAdmin = this.isCompanyAdmin(adminRole);
+
+      if (!isSuperAdmin && !isCompanyAdmin) {
+        return { success: false, error: 'Admin role not authorized to reset credentials' };
+      }
+
+      if (!userId) {
+        return { success: false, error: 'User ID is required' };
+      }
+
+      if (!this.isValidBaselinePassword(basePassword)) {
+        return {
+          success: false,
+          error: 'Baseline password must be 1-10 chars, include at least one symbol (@, -, _, .), and only use letters, numbers, @, -, _, .',
+        };
+      }
+
+      const { data: existingUser, error: existingError } = await supabase
+        .from('tblusers')
+        .select('user_id, email, first_name, employee_id, org_id')
+        .eq('user_id', userId)
+        .single();
+
+      if (existingError) {
+        return { success: false, error: existingError.message };
+      }
+
+      if (isCompanyAdmin && adminOrgId && existingUser?.org_id !== adminOrgId) {
+        return { success: false, error: 'Company Admin can only reset users in their own OU' };
+      }
+
+      const { password } = this.generatePasswordFromBaseline(basePassword);
+      const passwordHash = await this.hashPassword(password);
+
+      const now = new Date().toISOString();
+      const adminId = adminContext?.id || null;
+
+      const { error: updateUserError } = await supabase
+        .from('tblusers')
+        .update({
+          password_hash: passwordHash,
+          status: 'First_Time',
+          is_first_login: true,
+          updated_by: adminId,
+          updated_at: now,
+        })
+        .eq('user_id', userId);
+
+      if (updateUserError) {
+        return { success: false, error: updateUserError.message };
+      }
+
+      const { error: securityDeleteError } = await supabase
+        .from('tblsecurity_questions')
+        .delete()
+        .eq('user_id', userId);
+
+      if (securityDeleteError) {
+        return { success: false, error: securityDeleteError.message };
+      }
+
+      const firstNameSafe = (existingUser?.first_name || 'User').toString().trim() || 'User';
+      const credentialsEmailResult = await sendNewUserCredentialsEmail({
+        email: existingUser.email,
+        firstName: firstNameSafe,
+        employeeId: existingUser.employee_id,
+        temporaryPassword: password,
+      });
+
+      const adminCopyEmailResult = await sendAdminCredentialsCopyEmail({
+        adminEmail: adminContext?.email,
+        targetEmail: existingUser.email,
+        targetName: firstNameSafe,
+        employeeId: existingUser.employee_id,
+        temporaryPassword: password,
+        action: 'reset',
+      });
+
+      await this.logAdminActions(adminId, [
+        {
+          action: 'reset_user_credentials',
+          targetTable: 'tblusers',
+          targetId: userId,
+          description: `Reset credentials and security questions for ${existingUser.email}`,
+        },
+      ]);
+
+      return {
+        success: true,
+        data: {
+          user_id: userId,
+          email: existingUser.email,
+          status: 'First_Time',
+          is_first_login: true,
+          credentials_email_sent: !!credentialsEmailResult?.success,
+          admin_copy_email_sent: !!adminCopyEmailResult?.success,
+        },
+      };
+    } catch (error) {
+      console.error('Error resetting user credentials:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  static async resetUsersCredentials(userIds = [], basePassword, adminContext = {}) {
+    try {
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        return { success: false, error: 'No user IDs provided' };
+      }
+
+      if (!this.isValidBaselinePassword(basePassword)) {
+        return {
+          success: false,
+          error: 'Baseline password must be 1-10 chars, include at least one symbol (@, -, _, .), and only use letters, numbers, @, -, _, .',
+        };
+      }
+
+      const resetResults = [];
+      for (const userId of userIds) {
+        const result = await this.resetUserCredentials(userId, basePassword, adminContext);
+        if (!result.success) {
+          return {
+            success: false,
+            error: result.error || 'Failed to reset one or more users',
+          };
+        }
+
+        resetResults.push(result.data);
+      }
+
+      return {
+        success: true,
+        data: {
+          resetCount: resetResults.length,
+          users: resetResults,
+        },
+      };
+    } catch (error) {
+      console.error('Error resetting users credentials:', error);
+      return { success: false, error: error.message };
     }
   }
 }

@@ -10,12 +10,17 @@ const getHeaders = (token) => ({
  */
 export const createUser = async (userData, token) => {
   try {
+    const normalizedName = (userData.name || '').trim().replace(/\s+/g, ' ');
+    const nameParts = normalizedName ? normalizedName.split(' ') : [];
+    const lastName = nameParts.length > 0 ? nameParts[nameParts.length - 1] : normalizedName;
+    const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : normalizedName;
+
     const response = await fetch(`${API_BASE_URL}/admin/users`, {
       method: 'POST',
       headers: getHeaders(token),
       body: JSON.stringify({
-        firstName: userData.name.split(' ')[0],
-        lastName: userData.name.split(' ').slice(1).join(' ') || userData.name,
+        firstName,
+        lastName,
         email: userData.email,
         employeeId: userData.employeeId,
         roleId: userData.role,
@@ -105,6 +110,43 @@ export const createAdminUser = async (adminData, token) => {
 };
 
 /**
+ * Bulk create users/admins
+ */
+export const createUsersBulk = async (users, token, options = {}) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/users/bulk`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ users }),
+      signal: options?.signal,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to create users in bulk';
+      let details = null;
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = data.error.message || JSON.stringify(data.error);
+          details = data.error;
+        }
+      }
+      const error = new Error(errorMessage);
+      if (details) error.details = details;
+      throw error;
+    }
+
+    return data.data;
+  } catch (error) {
+    console.error('Error creating users in bulk:', error);
+    throw error;
+  }
+};
+
+/**
  * Get all users
  */
 export const getAllUsers = async (token, filters = {}) => {
@@ -143,7 +185,7 @@ export const getAllUsers = async (token, filters = {}) => {
         geo: user.tblgeo?.geo_name || user.tblgeo?.geo_code || (user.user_type === 'admin' ? '—' : 'Unassigned'),
         role: user.tbluserroles?.[0]?.tblroles?.role_name || 'N/A',
         status: user.status || (user.user_type === 'admin' ? 'Active' : 'Unknown'),
-        department: user.department_org?.org_name || user.department_name || (user.user_type === 'admin' ? '—' : 'Unassigned'),
+        department: user.department_org?.org_name || user.department_name || '--',
         orgId: user.org_id || null,
         geoId: user.geo_id || null,
         roleId: user.tbluserroles?.[0]?.role_id || null,
@@ -213,19 +255,96 @@ export const updateUser = async (userId, userData, token) => {
 
     if (!response.ok) {
       let errorMessage = 'Failed to update user';
+      let details = null;
       if (data?.error) {
         if (typeof data.error === 'string') {
           errorMessage = data.error;
         } else if (typeof data.error === 'object') {
-          errorMessage = JSON.stringify(data.error);
+          errorMessage = data.error.error || data.error.message || JSON.stringify(data.error);
+          details = data.error;
         }
       }
-      throw new Error(errorMessage);
+      const error = new Error(errorMessage);
+      error.status = response.status;
+      if (details) error.details = details;
+      throw error;
     }
 
     return data.data;
   } catch (error) {
     console.error('Error updating user:', error);
+    throw error;
+  }
+};
+
+export const resetUserCredentials = async (userId, basePassword, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/users/${userId}/reset-credentials`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify({ basePassword }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to reset user credentials';
+      let details = null;
+
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = data.error.error || data.error.message || JSON.stringify(data.error);
+          details = data.error;
+        }
+      }
+
+      const error = new Error(errorMessage);
+      error.status = response.status;
+      if (details) error.details = details;
+      throw error;
+    }
+
+    return data.data;
+  } catch (error) {
+    console.error('Error resetting user credentials:', error);
+    throw error;
+  }
+};
+
+export const resetUsersCredentials = async (userIds, basePassword, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/users/reset-credentials`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify({ userIds, basePassword }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to reset user credentials';
+      let details = null;
+
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = data.error.error || data.error.message || JSON.stringify(data.error);
+          details = data.error;
+        }
+      }
+
+      const error = new Error(errorMessage);
+      error.status = response.status;
+      if (details) error.details = details;
+      throw error;
+    }
+
+    return data.data;
+  } catch (error) {
+    console.error('Error resetting users credentials:', error);
     throw error;
   }
 };
@@ -257,6 +376,37 @@ export const getAdminLogs = async (token) => {
     return data.data || [];
   } catch (error) {
     console.error('Error fetching admin logs:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get login logs
+ */
+export const getLoginLogs = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/logs/login`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to fetch login logs';
+      if (data?.error) {
+        if (typeof data.error === 'string') {
+          errorMessage = data.error;
+        } else if (typeof data.error === 'object') {
+          errorMessage = JSON.stringify(data.error);
+        }
+      }
+      throw new Error(errorMessage);
+    }
+
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching login logs:', error);
     throw error;
   }
 };

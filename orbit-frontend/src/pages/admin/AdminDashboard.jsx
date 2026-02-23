@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { getAdminLogs, getAllUsers } from "../../services/userService"
+import { getAdminLogs, getAllUsers, getLoginLogs } from "../../services/userService"
 import { useAuth } from "../../context/AuthContext"
 
 export default function Dashboard() {
@@ -7,6 +7,7 @@ export default function Dashboard() {
   const [totalUsers, setTotalUsers] = useState(0)
   const [activeUsers, setActiveUsers] = useState(0)
   const [recentAdminActivity, setRecentAdminActivity] = useState([])
+  const [recentLoginActivity, setRecentLoginActivity] = useState([])
 
   const adminName = user?.name || user?.email || "Admin"
 
@@ -33,23 +34,37 @@ export default function Dashboard() {
   }, [])
 
   useEffect(() => {
-    const loadAdminActivity = async () => {
+    const loadRecentLogs = async () => {
       try {
         const token = localStorage.getItem('authToken')
-        const logs = await getAdminLogs(token)
-        const items = (Array.isArray(logs) ? logs : []).slice(0, 8).map((log) => ({
+        const [adminLogs, loginLogs] = await Promise.all([
+          getAdminLogs(token),
+          getLoginLogs(token),
+        ])
+
+        const adminItems = (Array.isArray(adminLogs) ? adminLogs : []).slice(0, 6).map((log) => ({
           id: log.admin_log_id,
           user: log.tbladminusers?.full_name || log.admin_id || "Admin",
           action: log.description || log.action || "Activity",
           time: log.created_at,
         }))
-        setRecentAdminActivity(items)
+
+        const loginItems = (Array.isArray(loginLogs) ? loginLogs : []).slice(0, 6).map((log) => ({
+          id: log.id,
+          user: log.email || log.user_id || "Unknown user",
+          action: `Login ${log.login_status || "Unknown"}`,
+          time: log.logged_at,
+        }))
+
+        setRecentAdminActivity(adminItems)
+        setRecentLoginActivity(loginItems)
       } catch (error) {
         setRecentAdminActivity([])
+        setRecentLoginActivity([])
       }
     }
 
-    loadAdminActivity()
+    loadRecentLogs()
   }, [])
 
   const timeAgo = (value) => {
@@ -65,12 +80,19 @@ export default function Dashboard() {
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`
   }
 
-  const activityItems = useMemo(() => {
+  const adminActivityItems = useMemo(() => {
     return recentAdminActivity.map((activity) => ({
       ...activity,
       time: timeAgo(activity.time),
     }))
   }, [recentAdminActivity])
+
+  const loginActivityItems = useMemo(() => {
+    return recentLoginActivity.map((activity) => ({
+      ...activity,
+      time: timeAgo(activity.time),
+    }))
+  }, [recentLoginActivity])
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
@@ -130,17 +152,16 @@ export default function Dashboard() {
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 px-6 pb-4 grid grid-cols-1 gap-4 overflow-hidden">
-        {/* Recent Admin Activity */}
+      <div className="flex-1 px-6 pb-4 grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
         <div className="bg-slate-800/80 backdrop-blur-sm rounded-lg border border-slate-700 flex flex-col overflow-hidden">
           <div className="p-4 border-b border-slate-700">
             <h3 className="text-sm font-semibold text-white">Recent Admin Activity</h3>
             <p className="text-xs text-slate-400 mt-1">Latest admin actions in the system</p>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {activityItems.length === 0 ? (
+            {adminActivityItems.length === 0 ? (
               <div className="text-xs text-slate-400">No recent admin activity.</div>
-            ) : activityItems.map((activity) => (
+            ) : adminActivityItems.map((activity) => (
               <div
                 key={activity.id}
                 className="flex items-start gap-3 p-3 bg-slate-700/50 rounded border border-slate-600 hover:border-fuchsia-500/50 transition-colors"
@@ -148,6 +169,30 @@ export default function Dashboard() {
                 <div className="w-2 h-2 rounded-full mt-1.5 bg-fuchsia-400" />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-white">{activity.user}</p>
+                  <p className="text-xs text-slate-400">{activity.action}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{activity.time}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-slate-800/80 backdrop-blur-sm rounded-lg border border-slate-700 flex flex-col overflow-hidden">
+          <div className="p-4 border-b border-slate-700">
+            <h3 className="text-sm font-semibold text-white">Recent Login Activity</h3>
+            <p className="text-xs text-slate-400 mt-1">Latest user login attempts in the system</p>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {loginActivityItems.length === 0 ? (
+              <div className="text-xs text-slate-400">No recent login activity.</div>
+            ) : loginActivityItems.map((activity) => (
+              <div
+                key={activity.id}
+                className="flex items-start gap-3 p-3 bg-slate-700/50 rounded border border-slate-600 hover:border-fuchsia-500/50 transition-colors"
+              >
+                <div className="w-2 h-2 rounded-full mt-1.5 bg-purple-400" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-white truncate" title={activity.user}>{activity.user}</p>
                   <p className="text-xs text-slate-400">{activity.action}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{activity.time}</p>
                 </div>

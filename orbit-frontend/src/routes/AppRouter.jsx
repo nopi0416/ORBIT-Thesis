@@ -15,7 +15,7 @@ import ResetPassword from '../pages/ResetPassword';
 import SecurityQuestions from '../pages/SecurityQuestions';
 import FirstTimePassword from '../pages/FirstTimePassword';
 import UserAgreement from '../pages/UserAgreement';
-import AdminDashboard from '../pages/AdminDashboard';
+import AdminDashboard from '../pages/admin/AdminDashboard';
 import AdminLogs from '../pages/admin/AdminLogs';
 import AdminUserManagement from '../pages/admin/AdminUserManagement';
 import AdminOUManagement from '../pages/admin/AdminOUManagement';

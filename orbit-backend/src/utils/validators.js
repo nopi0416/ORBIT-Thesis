@@ -126,6 +126,11 @@ export const validateAdminUserCreation = (data) => {
 
   if (!data.employeeId || data.employeeId.trim() === '') {
     errors.employeeId = 'Employee ID is required';
+  } else {
+    const employeeIdRegex = /^[a-zA-Z0-9]+$/;
+    if (!employeeIdRegex.test(data.employeeId.trim())) {
+      errors.employeeId = 'Employee ID must be alphanumeric only';
+    }
   }
 
   if (!data.roleId || data.roleId.trim() === '') {
@@ -134,10 +139,6 @@ export const validateAdminUserCreation = (data) => {
 
   if (!data.geoId || data.geoId.trim() === '') {
     errors.geoId = 'Geo ID is required';
-  }
-
-  if (!data.departmentId || data.departmentId.trim() === '') {
-    errors.departmentId = 'Department ID is required';
   }
 
   return {
