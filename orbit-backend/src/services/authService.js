@@ -1177,9 +1177,9 @@ export class AuthService {
       role,
     };
 
-    // Sign JWT token with 24 hour expiry
+    // Sign JWT token with 12 hour expiry
     return jwt.sign(payload, JWT_SECRET, { 
-      expiresIn: '24h',
+      expiresIn: '12h',
       issuer: 'orbit-auth',
       subject: userId.toString(),
     });
