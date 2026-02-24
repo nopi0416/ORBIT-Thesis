@@ -230,15 +230,15 @@ export default function BudgetConfigurationPage() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       <PageHeader
         title="Budget Configuration"
         description="Manage budget configurations and access controls"
       />
 
       <div className="flex-1 p-6 overflow-hidden">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6 h-full flex flex-col min-h-0">
-          <TabsList className="bg-slate-800 border-slate-700 p-1">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full gap-6">
+          <TabsList className="bg-slate-800 border-slate-700 p-1 w-max flex-shrink-0">
             <TabsTrigger
               value="list"
               className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
