@@ -4367,6 +4367,11 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     currentApprovalLevel === 4 &&
     payrollApprovalStatus === 'pending' &&
     !String(decisionNotes || '').trim();
+  const payrollSelectionMissing =
+    isPayrollUser &&
+    currentApprovalLevel === 4 &&
+    payrollApprovalStatus === 'pending' &&
+    (!String(payrollCycle || '').trim() || !String(payrollCycleDate || '').trim());
 
   const canStandardApprove =
     Boolean(pendingApprovalForUser) && userRole !== 'requestor' && !userHasApproved;
@@ -4497,9 +4502,17 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     
     if (!confirmAction) {
       if (isPayrollUser && currentApprovalLevel === 4 && payrollApprovalStatus === 'pending') {
+        const validation = validatePayrollSelection({
+          payrollCycle,
+          payrollCycleDate,
+          availableMonths: payrollMonthOptions,
+        });
+        if (!validation.isValid) {
+          setPayrollCycleError(validation.error || 'Payroll cycle and date are required before approving.');
+          setPayrollCycleModalOpen(true);
+          return;
+        }
         setPayrollCycleError(null);
-        setPayrollCycleModalOpen(true);
-        return;
       }
       // Show confirmation modal
       setConfirmAction('approve');
@@ -5259,8 +5272,8 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                       (canStandardApprove || canPayrollApprove) && (
                         <Button
                           className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                          onClick={() => setConfirmAction('approve')}
-                          disabled={actionSubmitting || payrollNotesMissing}
+                          onClick={handleApprove}
+                          disabled={actionSubmitting || payrollNotesMissing || payrollSelectionMissing}
                         >
                           Approve
                         </Button>
@@ -5415,7 +5428,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
             <Button
               className={confirmAction === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : confirmAction === 'complete-payment' ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-rose-600 hover:bg-rose-700 text-white'}
               onClick={confirmAction === 'approve' ? handleApprove : confirmAction === 'complete-payment' ? handleCompletePayment : handleReject}
-              disabled={actionSubmitting}
+              disabled={actionSubmitting || (confirmAction === 'approve' && (payrollNotesMissing || payrollSelectionMissing))}
             >
               {actionSubmitting ? 'Processing...' : `Confirm ${confirmAction === 'approve' ? 'Approval' : confirmAction === 'complete-payment' ? 'Completion' : 'Rejection'}`}
             </Button>
