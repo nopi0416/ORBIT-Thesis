@@ -3094,7 +3094,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                 </div>
               </TabsContent>
 
-              <TabsContent value="bulk" className="flex-1 flex flex-col space-y-3 min-h-0">
+              <TabsContent value="bulk" className="flex-1 flex flex-col space-y-1 min-h-0">
                 <div className="space-y-2">
                   <Label className="text-white">Bulk Template Upload *</Label>
                   <div className="flex flex-wrap items-center gap-2">
@@ -3113,18 +3113,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       disabled={bulkUploadLoading}
                       className="bg-slate-700 border-gray-300 text-white max-w-md"
                     />
-                  </div>
-                  <p className="text-xs text-gray-400">
-                    Required columns: Employee ID, Amount, Is Deduction, Notes.
-                  </p>
-                  {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
-                    <p className="text-xs text-emerald-400 font-medium">
-                      Configured Range: {Number(selectedConfig.minLimit).toLocaleString('en-US')} - {Number(selectedConfig.maxLimit).toLocaleString('en-US')}
-                    </p>
-                  )}
-                  {bulkFileName && (
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-gray-300">Uploaded: {bulkFileName}</p>
+                    {bulkFileName && (
                       <Button
                         type="button"
                         variant="ghost"
@@ -3139,14 +3128,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                           const fileInput = document.querySelector('input[type="file"]');
                           if (fileInput) fileInput.value = '';
                         }}
-                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10 h-6 px-2"
+                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10 h-8 px-2"
                       >
                         ✕ Clear
                       </Button>
-                    </div>
-                  )}
-                  {bulkItems.length > 0 && (
-                    <p className="text-xs text-green-300">Uploaded {bulkItems.length} line item(s).</p>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Required columns: Employee ID, Amount, Is Deduction, Notes.
+                  </p>
+                  {selectedConfig && (Number(selectedConfig.minLimit) > 0 || Number(selectedConfig.maxLimit) > 0) && (
+                    <p className="text-xs text-emerald-400 font-medium">
+                      Configured Range: {Number(selectedConfig.minLimit).toLocaleString('en-US')} - {Number(selectedConfig.maxLimit).toLocaleString('en-US')}
+                    </p>
                   )}
                   {bulkUploadLoading && (
                     <p className="text-xs text-blue-300">Uploading and validating template, please wait...</p>
@@ -3156,7 +3150,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   )}
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <Label className="text-white">Approval Description *</Label>
                   <Textarea
                     value={requestDetails.details}
@@ -3173,7 +3167,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   />
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2" style={{ marginBottom: "5px" }}>
                   <Checkbox
                     id="clientSponsoredBulk"
                     checked={requestDetails.clientSponsored}
@@ -3183,13 +3177,16 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                   <Label htmlFor="clientSponsoredBulk" className="text-white text-sm">Client Sponsored?</Label>
                 </div>
 
-                <BulkUploadValidation
-                  bulkItems={bulkItems}
-                  setBulkItems={setBulkItems}
-                  selectedConfig={selectedConfig}
-                  organizations={organizations}
-                  validateEmployee={validateEmployeeCb}
-                />
+                <div className="mt-2" style={{ marginBottom: "-12px" }}>
+                  <BulkUploadValidation
+                    bulkItems={bulkItems}
+                    setBulkItems={setBulkItems}
+                    selectedConfig={selectedConfig}
+                    organizations={organizations}
+                    validateEmployee={validateEmployeeCb}
+                  />
+                </div>
+
               </TabsContent>
             </Tabs>
           </div>
@@ -3253,7 +3250,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           }
         }}
       >
-        <DialogContent className="bg-slate-900 border-slate-700 text-white w-[99vw] md:w-[95vw] lg:w-[90vw] xl:w-[82vw] 2xl:w-[76vw] max-w-[1800px] max-h-[85vh] overflow-y-auto p-5">
+        <DialogContent className="bg-slate-900 border-slate-700 text-white !w-[97vw] md:!w-[94vw] lg:!w-[90vw] xl:!w-[85vw] 2xl:!w-[78vw] !max-w-none max-h-[88vh] overflow-y-auto p-5">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Request Details</DialogTitle>
 
@@ -5045,12 +5042,6 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               )}
             </div>
           )}
-
-          <DialogFooter className="flex justify-end gap-3">
-            <Button variant="outline" className="border-slate-600 text-white hover:bg-slate-800" onClick={() => setDetailsOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
