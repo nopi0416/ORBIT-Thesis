@@ -9,12 +9,200 @@ const isAdminUser = (req) => {
   return req.user?.userType === 'admin' || ['admin', 'administrator', 'system admin', 'system administrator'].includes(role);
 };
 
+const PAYROLL_TIMEZONE = 'Asia/Manila';
+const PAYROLL_MIN_LEAD_DAYS = 5;
+
+const getDatePartsForTimezone = (date = new Date(), timeZone = PAYROLL_TIMEZONE) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(date);
+
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+  };
+};
+
+const getMonthLabel = (year, monthIndex) =>
+  new Date(Date.UTC(year, monthIndex, 1)).toLocaleString('en-US', {
+    month: 'long',
+    timeZone: 'UTC',
+  });
+
+const normalizePayrollCycle = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === '15th of month' || normalized === '15th') return '15th of Month';
+  if (normalized === 'end of month' || normalized === 'eom') return 'End of Month';
+  return String(value || '').trim();
+};
+
+const parsePayrollCycleDate = (value = '') => {
+  const match = String(value || '').trim().match(/^([A-Za-z]+)\s+(\d{4})$/);
+  if (!match) return null;
+
+  const monthName = match[1];
+  const year = Number(match[2]);
+  if (!Number.isInteger(year)) return null;
+
+  const monthIndex = [
+    'january',
+    'february',
+    'march',
+    'april',
+    'may',
+    'june',
+    'july',
+    'august',
+    'september',
+    'october',
+    'november',
+    'december',
+  ].indexOf(monthName.toLowerCase());
+
+  if (monthIndex < 0) return null;
+
+  return {
+    year,
+    monthIndex,
+    monthLabel: getMonthLabel(year, monthIndex),
+  };
+};
+
+const getAvailablePayrollOptions = (now = new Date()) => {
+  const nowParts = getDatePartsForTimezone(now, PAYROLL_TIMEZONE);
+  const currentMonthIndex = nowParts.month - 1;
+
+  return [0, 1].map((offset) => {
+    const monthIndex = (currentMonthIndex + offset) % 12;
+    const year = nowParts.year + (currentMonthIndex + offset >= 12 ? 1 : 0);
+    const monthLabel = getMonthLabel(year, monthIndex);
+
+    const cycleCandidates = [
+      { value: '15th of Month', day: 15 },
+      { value: 'End of Month', day: new Date(year, monthIndex + 1, 0).getDate() },
+    ];
+
+    const availableCycles = cycleCandidates
+      .map((cycle) => {
+        const todayUtc = Date.UTC(nowParts.year, currentMonthIndex, nowParts.day);
+        const targetUtc = Date.UTC(year, monthIndex, cycle.day);
+        const daysUntilCycle = Math.floor((targetUtc - todayUtc) / (1000 * 60 * 60 * 24));
+
+        return {
+          value: cycle.value,
+          daysUntilCycle,
+          isAvailable: daysUntilCycle > PAYROLL_MIN_LEAD_DAYS,
+        };
+      })
+      .filter((cycle) => cycle.isAvailable);
+
+    return {
+      year,
+      monthIndex,
+      monthLabel,
+      monthValue: `${monthLabel} ${year}`,
+      cycles: availableCycles,
+    };
+  });
+};
+
+const validatePayrollSelection = ({ payrollCycle, payrollCycleDate }) => {
+  const normalizedCycle = normalizePayrollCycle(payrollCycle);
+  const parsedDate = parsePayrollCycleDate(payrollCycleDate);
+
+  if (!normalizedCycle || !parsedDate) {
+    return {
+      isValid: false,
+      error: 'payroll_cycle and payroll_cycle_date are required and payroll_cycle_date must be in "Month YYYY" format',
+    };
+  }
+
+  if (!['15th of Month', 'End of Month'].includes(normalizedCycle)) {
+    return {
+      isValid: false,
+      error: 'Invalid payroll_cycle. Allowed values are "15th of Month" or "End of Month"',
+    };
+  }
+
+  const availableMonths = getAvailablePayrollOptions().filter((month) => month.cycles.length > 0);
+  const selectedMonth = availableMonths.find(
+    (month) => month.year === parsedDate.year && month.monthIndex === parsedDate.monthIndex
+  );
+
+  if (!selectedMonth) {
+    return {
+      isValid: false,
+      error: 'Invalid payroll_cycle_date. Only currently available current/next payroll month can be selected.',
+    };
+  }
+
+  const cycleAllowed = selectedMonth.cycles.some((cycle) => cycle.value === normalizedCycle);
+  if (!cycleAllowed) {
+    return {
+      isValid: false,
+      error: 'Selected payroll cycle is too close. Payroll cycle must be more than 5 days from today.',
+    };
+  }
+
+  return {
+    isValid: true,
+    normalizedCycle,
+    normalizedCycleDate: `${selectedMonth.monthLabel} ${selectedMonth.year}`,
+  };
+};
+
 /**
  * Approval Request Controller
  * Handles HTTP requests for approval workflows
  */
 
 export class ApprovalRequestController {
+  /**
+   * Get available payroll cycle options for current/next month
+   * GET /api/approval-requests/payroll-options
+   */
+  static async getPayrollOptions(req, res) {
+    try {
+      const months = getAvailablePayrollOptions()
+        .filter((month) => month.cycles.length > 0)
+        .map((month) => ({
+          month: month.monthLabel,
+          year: month.year,
+          value: month.monthValue,
+          cycles: month.cycles.map((cycle) => ({
+            value: cycle.value,
+            label: cycle.value === '15th of Month' ? '15th' : 'End of Month',
+            daysUntilCycle: cycle.daysUntilCycle,
+          })),
+        }));
+
+      const helperLabel =
+        months.length === 1
+          ? `Current month cycles are unavailable. Use next month only. Cycle must be more than ${PAYROLL_MIN_LEAD_DAYS} days from today (${PAYROLL_TIMEZONE}).`
+          : `Cycle must be more than ${PAYROLL_MIN_LEAD_DAYS} days from today (${PAYROLL_TIMEZONE}).`;
+
+      return sendSuccess(
+        res,
+        {
+          timezone: PAYROLL_TIMEZONE,
+          minLeadDays: PAYROLL_MIN_LEAD_DAYS,
+          helperLabel,
+          months,
+        },
+        'Payroll options retrieved',
+        200
+      );
+    } catch (error) {
+      console.error('Error in getPayrollOptions:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
+
   /**
    * Get notification list for requestor/approver dashboards
    * GET /api/approval-requests/notifications
@@ -493,10 +681,24 @@ export class ApprovalRequestController {
       }
 
       const normalizedLevel = Number(approval_level);
+      let normalizedPayrollCycle = payroll_cycle;
+      let normalizedCycleDate = normalizedPayrollCycleDate;
       if (normalizedLevel === 4) {
-        if (!payroll_cycle || !normalizedPayrollCycleDate) {
-          return sendError(res, 'payroll_cycle and payroll_cycle_date are required for payroll approval', 400);
+        if (!String(approval_notes || '').trim()) {
+          return sendError(res, 'approval_notes is required for payroll approval', 400);
         }
+
+        const payrollValidation = validatePayrollSelection({
+          payrollCycle: payroll_cycle,
+          payrollCycleDate: normalizedPayrollCycleDate,
+        });
+
+        if (!payrollValidation.isValid) {
+          return sendError(res, payrollValidation.error, 400);
+        }
+
+        normalizedPayrollCycle = payrollValidation.normalizedCycle;
+        normalizedCycleDate = payrollValidation.normalizedCycleDate;
       }
 
       const result = await ApprovalRequestService.approveRequestAtLevel(id, approval_level, {
@@ -505,8 +707,8 @@ export class ApprovalRequestController {
         approver_title,
         approval_notes,
         conditions_applied,
-        payroll_cycle,
-        payroll_cycle_date: normalizedPayrollCycleDate,
+        payroll_cycle: normalizedPayrollCycle,
+        payroll_cycle_date: normalizedCycleDate,
       });
 
       if (!result.success) {
@@ -523,6 +725,46 @@ export class ApprovalRequestController {
     } catch (error) {
       console.error('Error in approveRequest:', error);
       sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * Check duplicate payroll cycle/date usage under same budget configuration
+   * GET /api/approval-requests/:id/payroll-duplicate-check?payroll_cycle=...&payroll_cycle_date=...
+   */
+  static async checkPayrollDuplicate(req, res) {
+    try {
+      const { id } = req.params;
+      const { payroll_cycle, payroll_cycle_date, payroll_cycle_Date } = req.query;
+      const cycleDate = payroll_cycle_date || payroll_cycle_Date;
+
+      if (!payroll_cycle || !cycleDate) {
+        return sendError(res, 'payroll_cycle and payroll_cycle_date are required', 400);
+      }
+
+      const payrollValidation = validatePayrollSelection({
+        payrollCycle: payroll_cycle,
+        payrollCycleDate: cycleDate,
+      });
+
+      if (!payrollValidation.isValid) {
+        return sendError(res, payrollValidation.error, 400);
+      }
+
+      const result = await ApprovalRequestService.checkPayrollDuplicateForRequest(
+        id,
+        payrollValidation.normalizedCycle,
+        payrollValidation.normalizedCycleDate
+      );
+
+      if (!result.success) {
+        return sendError(res, result.error, 500);
+      }
+
+      return sendSuccess(res, result.data, 'Payroll duplicate check completed', 200);
+    } catch (error) {
+      console.error('Error in checkPayrollDuplicate:', error);
+      return sendError(res, error.message, 500);
     }
   }
 

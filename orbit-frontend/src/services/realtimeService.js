@@ -1,6 +1,48 @@
+const isLocalhostHost = (host = '') => /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host);
+
+const isSafeForCurrentOrigin = (urlString) => {
+  try {
+    const parsed = new URL(urlString);
+    // If app is running on a real domain, don't allow localhost websocket targets.
+    if (!isLocalhostHost(window.location.host) && isLocalhostHost(parsed.host)) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const buildWsFromApiUrl = (apiUrl) => {
+  try {
+    const parsed = new URL(apiUrl);
+    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    parsed.pathname = '/ws';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
 const getWebSocketUrl = () => {
-  if (import.meta.env.VITE_WS_URL) {
-    return import.meta.env.VITE_WS_URL;
+  const configuredWsUrl = import.meta.env.VITE_WS_URL;
+  if (configuredWsUrl && isSafeForCurrentOrigin(configuredWsUrl)) {
+    return configuredWsUrl;
+  }
+
+  const configuredApiUrl = import.meta.env.VITE_API_URL;
+  if (configuredApiUrl) {
+    const derivedWsUrl = buildWsFromApiUrl(configuredApiUrl);
+    if (derivedWsUrl && isSafeForCurrentOrigin(derivedWsUrl)) {
+      return derivedWsUrl;
+    }
+  }
+
+  // Only use same-origin fallback for local development.
+  if (!isLocalhostHost(window.location.host)) {
+    return null;
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -9,13 +51,31 @@ const getWebSocketUrl = () => {
 
 let socket;
 const listeners = new Set();
+let lastConnectionAttemptAt = 0;
+const CONNECTION_THROTTLE_MS = 5000;
+let hasLoggedMissingWsConfig = false;
 
 export const connectWebSocket = () => {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return socket;
   }
 
-  socket = new WebSocket(getWebSocketUrl());
+  const wsUrl = getWebSocketUrl();
+  if (!wsUrl) {
+    if (!hasLoggedMissingWsConfig) {
+      console.info('WebSocket disabled: configure VITE_WS_URL (or VITE_API_URL) for production realtime.');
+      hasLoggedMissingWsConfig = true;
+    }
+    return null;
+  }
+
+  const now = Date.now();
+  if (now - lastConnectionAttemptAt < CONNECTION_THROTTLE_MS) {
+    return socket || null;
+  }
+  lastConnectionAttemptAt = now;
+
+  socket = new WebSocket(wsUrl);
 
   socket.onmessage = (event) => {
     try {
@@ -28,6 +88,10 @@ export const connectWebSocket = () => {
 
   socket.onerror = (error) => {
     console.error('WebSocket error:', error);
+  };
+
+  socket.onclose = () => {
+    socket = null;
   };
 
   return socket;

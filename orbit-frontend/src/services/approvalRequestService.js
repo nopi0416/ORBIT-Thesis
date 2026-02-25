@@ -88,6 +88,33 @@ const getPendingApprovals = async (userId, token) => {
   return parseResponse(response);
 };
 
+const getPayrollOptions = async (token) => {
+  const response = await fetch(`${API_BASE_URL}/approval-requests/payroll-options`, {
+    method: 'GET',
+    headers: getHeaders(token),
+  });
+
+  return parseResponse(response);
+};
+
+const getPayrollDuplicateCheck = async (requestId, payrollCycle, payrollCycleDate, token) => {
+  const queryParams = new URLSearchParams();
+  if (payrollCycle) queryParams.append('payroll_cycle', payrollCycle);
+  if (payrollCycleDate) queryParams.append('payroll_cycle_date', payrollCycleDate);
+
+  const response = await fetch(
+    `${API_BASE_URL}/approval-requests/${requestId}/payroll-duplicate-check${
+      queryParams.toString() ? `?${queryParams.toString()}` : ''
+    }`,
+    {
+      method: 'GET',
+      headers: getHeaders(token),
+    }
+  );
+
+  return parseResponse(response);
+};
+
 const approveRequest = async (requestId, payload, token) => {
   const response = await fetch(`${API_BASE_URL}/approval-requests/${requestId}/approvals/approve`, {
     method: 'POST',
@@ -272,6 +299,8 @@ export default {
   markNotificationRead,
   markAllNotificationsRead,
   getPendingApprovals,
+  getPayrollOptions,
+  getPayrollDuplicateCheck,
   approveRequest,
   rejectRequest,
   completePayrollPayment,
