@@ -176,12 +176,15 @@ export const getAllUsers = async (token, filters = {}) => {
 
     // Transform backend data to match frontend format
     if (data.data && Array.isArray(data.data)) {
-      return data.data.map((user) => ({
+      return data.data.map((user) => {
+        const organizationName = user.organization?.org_name || user.tblorganization?.org_name || 'Unassigned';
+
+        return {
         id: user.user_id,
         employeeId: user.employee_id || (user.user_type === 'admin' ? 'ADMIN' : user.user_id),
         name: `${user.first_name} ${user.last_name}`.trim() || 'Admin User',
         email: user.email,
-        ou: user.organization?.org_name || 'Unassigned',
+        ou: organizationName,
         geo: user.tblgeo?.geo_name || user.tblgeo?.geo_code || (user.user_type === 'admin' ? '—' : 'Unassigned'),
         role: user.tbluserroles?.[0]?.tblroles?.role_name || 'N/A',
         status: user.status || (user.user_type === 'admin' ? 'Active' : 'Unknown'),
@@ -191,7 +194,7 @@ export const getAllUsers = async (token, filters = {}) => {
         roleId: user.tbluserroles?.[0]?.role_id || null,
         departmentId: user.department_id || null,
         userType: user.user_type || 'user',
-      }));
+      }});
     }
     return [];
   } catch (error) {

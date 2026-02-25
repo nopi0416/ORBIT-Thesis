@@ -113,13 +113,15 @@ export const AppRouter = () => {
           </DashboardLayout>
         </AdminRoute>
       } />
-      <Route path="/admin/settings" element={
+      <Route path="/admin/profile" element={
         <AdminRoute>
           <DashboardLayout>
             <AdminProfile />
           </DashboardLayout>
         </AdminRoute>
       } />
+
+      <Route path="/admin/settings" element={<Navigate to="/admin/profile" replace />} />
       
       {/* Login page without layout */}
       <Route path="/login" element={<Login />} />

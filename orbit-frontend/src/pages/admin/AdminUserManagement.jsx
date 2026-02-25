@@ -106,6 +106,9 @@ export default function UserManagement() {
   ].filter((option) => (isSuperAdmin ? true : option.value !== "Super Admin"))
 
   const ouOptions = availableOrganizations.filter((org) => !org.parent_org_id)
+  const scopedOuOptions = isCompanyAdmin && adminOrgId
+    ? ouOptions.filter((org) => org.organization_id === adminOrgId)
+    : ouOptions
 
   const departmentOptions = availableOrganizations.filter(
     (org) => org.parent_org_id && org.parent_org_id === individualForm.ou
@@ -259,6 +262,20 @@ export default function UserManagement() {
   const editDepartmentOptions = availableOrganizations.filter(
     (org) => org.parent_org_id && org.parent_org_id === editForm.ou
   )
+
+  useEffect(() => {
+    if (!isCompanyAdmin) return
+    if (!adminOrgId) return
+
+    setIndividualForm((prev) => {
+      if (prev.ou === adminOrgId) return prev
+      return {
+        ...prev,
+        ou: adminOrgId,
+        departmentId: "",
+      }
+    })
+  }, [isCompanyAdmin, adminOrgId])
 
   useEffect(() => {
     const loadDropdownData = async () => {
@@ -1115,23 +1132,28 @@ export default function UserManagement() {
     // Validate all fields are filled
     const newErrors = {}
     const isAdminAccount = accountType === "admin"
+    const effectiveOuId = isCompanyAdmin ? adminOrgId : individualForm.ou
 
     if (!individualForm.name) newErrors.name = "Name is required"
     if (!individualForm.email) newErrors.email = "Email is required"
+
+    if (isCompanyAdmin && !adminOrgId) {
+      newErrors.ou = "Your admin account has no assigned OU. Please contact a Super Admin."
+    }
 
     if (isAdminAccount) {
       if (!adminRole) newErrors.adminRole = "Admin role is required"
       if (adminRole === "Super Admin" && !isSuperAdmin) {
         newErrors.adminRole = "Only Super Admins can create Super Admin accounts"
       }
-      if (adminRole === "Company Admin" && !individualForm.ou) {
+      if (adminRole === "Company Admin" && !effectiveOuId) {
         newErrors.ou = "Organization Unit is required"
       }
     } else {
       if (!individualForm.employeeId) newErrors.employeeId = "Employee ID is required"
       if (!individualForm.role) newErrors.role = "Role is required"
       if (!individualForm.geoId) newErrors.geoId = "Geo is required"
-      if (!individualForm.ou) newErrors.ou = "Organization Unit is required"
+      if (!effectiveOuId) newErrors.ou = "Organization Unit is required"
       if (requiresIndividualDepartment && !individualForm.departmentId) {
         newErrors.departmentId = "Department is required for Requestor"
       }
@@ -1159,7 +1181,7 @@ export default function UserManagement() {
             fullName: individualForm.name,
             email: individualForm.email,
             adminRole,
-            orgId: individualForm.ou || null,
+            orgId: effectiveOuId || null,
           },
           token
         )
@@ -1167,6 +1189,7 @@ export default function UserManagement() {
         await createUser(
           {
             ...individualForm,
+            ou: effectiveOuId,
             departmentId: requiresIndividualDepartment ? individualForm.departmentId : null,
           },
           token,
@@ -2335,126 +2358,223 @@ export default function UserManagement() {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-300 mb-2">Account Type</label>
-                      <select
-                        value={accountType}
-                        onChange={(e) => {
-                          const nextType = e.target.value
-                          setAccountType(nextType)
-                          if (nextType === "admin") {
-                            setIndividualForm({
-                              ...individualForm,
-                              employeeId: "",
-                              role: "",
-                              geoId: "",
-                              departmentId: "",
-                            })
-                          }
-                        }}
-                        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
-                      >
-                        <option value="user">Standard User</option>
-                        <option value="admin">Admin User</option>
-                      </select>
-                    </div>
+                  {accountType === "admin" ? (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Account Type</label>
+                          <select
+                            value={accountType}
+                            onChange={(e) => {
+                              const nextType = e.target.value
+                              setAccountType(nextType)
+                              if (nextType === "admin") {
+                                setIndividualForm({
+                                  ...individualForm,
+                                  employeeId: "",
+                                  role: "",
+                                  geoId: "",
+                                  departmentId: "",
+                                })
+                              }
+                            }}
+                            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
+                          >
+                            <option value="user">Standard User</option>
+                            <option value="admin">Admin User</option>
+                          </select>
+                        </div>
 
-                    {accountType !== "admin" && (
-                      <div>
-                        <label className="block text-sm font-medium text-slate-300 mb-2">Employee ID</label>
-                        <input
-                          type="text"
-                          value={individualForm.employeeId}
-                          onChange={(e) => {
-                            const sanitized = sanitizeAscii(e.target.value).replace(/[^a-zA-Z0-9]/g, "").slice(0, 15)
-                            setIndividualForm({ ...individualForm, employeeId: sanitized })
-                          }}
-                          placeholder="Enter employee ID"
-                          maxLength={15}
-                          className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
-                            formErrors.employeeId
-                              ? "border-red-500 focus:ring-red-500"
-                              : "border-slate-600 focus:ring-fuchsia-500"
-                          }`}
-                        />
-                        {formErrors.employeeId && <p className="text-xs text-red-400 mt-1">{formErrors.employeeId}</p>}
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Admin Role</label>
+                          <select
+                            value={adminRole}
+                            onChange={(e) => {
+                              const nextRole = e.target.value
+                              setAdminRole(nextRole)
+                              if (nextRole === "Super Admin") {
+                                setIndividualForm({
+                                  ...individualForm,
+                                  ou: "",
+                                  departmentId: "",
+                                })
+                              }
+                            }}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                              formErrors.adminRole
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          >
+                            <option value="">Select admin role</option>
+                            {adminRoleOptions.map((roleOption) => (
+                              <option key={roleOption.value} value={roleOption.value}>
+                                {roleOption.label}
+                              </option>
+                            ))}
+                          </select>
+                          {formErrors.adminRole && <p className="text-xs text-red-400 mt-1">{formErrors.adminRole}</p>}
+                        </div>
                       </div>
-                    )}
 
-                    <div>
-                      <label className="block text-sm font-medium text-slate-300 mb-2">Name</label>
-                      <input
-                        type="text"
-                        value={individualForm.name}
-                        onChange={(e) => {
-                          const sanitized = sanitizeAscii(e.target.value).slice(0, 50)
-                          setIndividualForm({ ...individualForm, name: sanitized })
-                        }}
-                        placeholder="Enter full name"
-                        maxLength={50}
-                        className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
-                          formErrors.name
-                            ? "border-red-500 focus:ring-red-500"
-                            : "border-slate-600 focus:ring-fuchsia-500"
-                        }`}
-                      />
-                      {formErrors.name && <p className="text-xs text-red-400 mt-1">{formErrors.name}</p>}
-                    </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Name</label>
+                          <input
+                            type="text"
+                            value={individualForm.name}
+                            onChange={(e) => {
+                              const sanitized = sanitizeAscii(e.target.value).slice(0, 50)
+                              setIndividualForm({ ...individualForm, name: sanitized })
+                            }}
+                            placeholder="Enter full name"
+                            maxLength={50}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                              formErrors.name
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          />
+                          {formErrors.name && <p className="text-xs text-red-400 mt-1">{formErrors.name}</p>}
+                        </div>
 
-                    <div>
-                      <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
-                      <input
-                        type="email"
-                        value={individualForm.email}
-                        onChange={(e) => {
-                          const sanitized = normalizeEmail(e.target.value).slice(0, 50)
-                          setIndividualForm({ ...individualForm, email: sanitized })
-                        }}
-                        placeholder="Enter email address"
-                        maxLength={50}
-                        className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
-                          formErrors.email
-                            ? "border-red-500 focus:ring-red-500"
-                            : "border-slate-600 focus:ring-fuchsia-500"
-                        }`}
-                      />
-                      {formErrors.email && <p className="text-xs text-red-400 mt-1">{formErrors.email}</p>}
-                    </div>
-
-                    {accountType === "admin" ? (
-                      <div>
-                        <label className="block text-sm font-medium text-slate-300 mb-2">Admin Role</label>
-                        <select
-                          value={adminRole}
-                          onChange={(e) => {
-                            const nextRole = e.target.value
-                            setAdminRole(nextRole)
-                            if (nextRole === "Super Admin") {
-                              setIndividualForm({
-                                ...individualForm,
-                                ou: "",
-                                departmentId: "",
-                              })
-                            }
-                          }}
-                          className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
-                            formErrors.adminRole
-                              ? "border-red-500 focus:ring-red-500"
-                              : "border-slate-600 focus:ring-fuchsia-500"
-                          }`}
-                        >
-                          <option value="">Select admin role</option>
-                          {adminRoleOptions.map((roleOption) => (
-                            <option key={roleOption.value} value={roleOption.value}>
-                              {roleOption.label}
-                            </option>
-                          ))}
-                        </select>
-                        {formErrors.adminRole && <p className="text-xs text-red-400 mt-1">{formErrors.adminRole}</p>}
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
+                          <input
+                            type="email"
+                            value={individualForm.email}
+                            onChange={(e) => {
+                              const sanitized = normalizeEmail(e.target.value).slice(0, 50)
+                              setIndividualForm({ ...individualForm, email: sanitized })
+                            }}
+                            placeholder="Enter email address"
+                            maxLength={50}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                              formErrors.email
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          />
+                          {formErrors.email && <p className="text-xs text-red-400 mt-1">{formErrors.email}</p>}
+                        </div>
                       </div>
-                    ) : (
-                      <>
+
+                      {adminRole === "Company Admin" && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">Organizational Unit</label>
+                            <select
+                              value={individualForm.ou}
+                              onChange={(e) => {
+                                setIndividualForm({ ...individualForm, ou: e.target.value, departmentId: "" })
+                              }}
+                              disabled={isCompanyAdmin || isLoadingDropdowns || scopedOuOptions.length === 0}
+                              className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                                formErrors.ou
+                                  ? "border-red-500 focus:ring-red-500"
+                                  : "border-slate-600 focus:ring-fuchsia-500"
+                              }`}
+                            >
+                              <option value="">{isLoadingDropdowns ? "Loading..." : "Select OU"}</option>
+                              {scopedOuOptions.map((org) => (
+                                <option key={org.organization_id} value={org.organization_id}>
+                                  {org.org_name}
+                                </option>
+                              ))}
+                            </select>
+                            {formErrors.ou && <p className="text-xs text-red-400 mt-1">{formErrors.ou}</p>}
+                          </div>
+                          <div />
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Account Type</label>
+                          <select
+                            value={accountType}
+                            onChange={(e) => {
+                              const nextType = e.target.value
+                              setAccountType(nextType)
+                              if (nextType === "admin") {
+                                setIndividualForm({
+                                  ...individualForm,
+                                  employeeId: "",
+                                  role: "",
+                                  geoId: "",
+                                  departmentId: "",
+                                })
+                              }
+                            }}
+                            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
+                          >
+                            <option value="user">Standard User</option>
+                            <option value="admin">Admin User</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Employee ID</label>
+                          <input
+                            type="text"
+                            value={individualForm.employeeId}
+                            onChange={(e) => {
+                              const sanitized = sanitizeAscii(e.target.value).replace(/[^a-zA-Z0-9]/g, "").slice(0, 15)
+                              setIndividualForm({ ...individualForm, employeeId: sanitized })
+                            }}
+                            placeholder="Enter employee ID"
+                            maxLength={15}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                              formErrors.employeeId
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          />
+                          {formErrors.employeeId && <p className="text-xs text-red-400 mt-1">{formErrors.employeeId}</p>}
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Name</label>
+                          <input
+                            type="text"
+                            value={individualForm.name}
+                            onChange={(e) => {
+                              const sanitized = sanitizeAscii(e.target.value).slice(0, 50)
+                              setIndividualForm({ ...individualForm, name: sanitized })
+                            }}
+                            placeholder="Enter full name"
+                            maxLength={50}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                              formErrors.name
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          />
+                          {formErrors.name && <p className="text-xs text-red-400 mt-1">{formErrors.name}</p>}
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
+                          <input
+                            type="email"
+                            value={individualForm.email}
+                            onChange={(e) => {
+                              const sanitized = normalizeEmail(e.target.value).slice(0, 50)
+                              setIndividualForm({ ...individualForm, email: sanitized })
+                            }}
+                            placeholder="Enter email address"
+                            maxLength={50}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 ${
+                              formErrors.email
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          />
+                          {formErrors.email && <p className="text-xs text-red-400 mt-1">{formErrors.email}</p>}
+                        </div>
+
                         <div>
                           <label className="block text-sm font-medium text-slate-300 mb-2">Role</label>
                           <select
@@ -2509,37 +2629,33 @@ export default function UserManagement() {
                           </select>
                           {formErrors.geoId && <p className="text-xs text-red-400 mt-1">{formErrors.geoId}</p>}
                         </div>
-                      </>
-                    )}
-                  </div>
-
-                  {(accountType !== "admin" || adminRole === "Company Admin") && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-slate-300 mb-2">Organizational Unit</label>
-                        <select
-                          value={individualForm.ou}
-                          onChange={(e) => {
-                            setIndividualForm({ ...individualForm, ou: e.target.value, departmentId: "" })
-                          }}
-                          disabled={isLoadingDropdowns || ouOptions.length === 0}
-                          className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
-                            formErrors.ou
-                              ? "border-red-500 focus:ring-red-500"
-                              : "border-slate-600 focus:ring-fuchsia-500"
-                          }`}
-                        >
-                          <option value="">{isLoadingDropdowns ? "Loading..." : "Select OU"}</option>
-                          {ouOptions.map((org) => (
-                            <option key={org.organization_id} value={org.organization_id}>
-                              {org.org_name}
-                            </option>
-                          ))}
-                        </select>
-                        {formErrors.ou && <p className="text-xs text-red-400 mt-1">{formErrors.ou}</p>}
                       </div>
 
-                      {accountType !== "admin" ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-slate-300 mb-2">Organizational Unit</label>
+                          <select
+                            value={individualForm.ou}
+                            onChange={(e) => {
+                              setIndividualForm({ ...individualForm, ou: e.target.value, departmentId: "" })
+                            }}
+                            disabled={isCompanyAdmin || isLoadingDropdowns || scopedOuOptions.length === 0}
+                            className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                              formErrors.ou
+                                ? "border-red-500 focus:ring-red-500"
+                                : "border-slate-600 focus:ring-fuchsia-500"
+                            }`}
+                          >
+                            <option value="">{isLoadingDropdowns ? "Loading..." : "Select OU"}</option>
+                            {scopedOuOptions.map((org) => (
+                              <option key={org.organization_id} value={org.organization_id}>
+                                {org.org_name}
+                              </option>
+                            ))}
+                          </select>
+                          {formErrors.ou && <p className="text-xs text-red-400 mt-1">{formErrors.ou}</p>}
+                        </div>
+
                         <div>
                           <label className="block text-sm font-medium text-slate-300 mb-2">Department</label>
                           <select
@@ -2569,10 +2685,8 @@ export default function UserManagement() {
                           </select>
                           {formErrors.departmentId && <p className="text-xs text-red-400 mt-1">{formErrors.departmentId}</p>}
                         </div>
-                      ) : (
-                        <div />
-                      )}
-                    </div>
+                      </div>
+                    </>
                   )}
                 </div>
               ) : (

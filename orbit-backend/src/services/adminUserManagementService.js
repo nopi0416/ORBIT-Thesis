@@ -131,19 +131,115 @@ export class AdminUserManagementService {
     }
   }
 
+  static normalizeAuditAction(action) {
+    const key = (action || '').toString().trim().toLowerCase();
+
+    const actionMap = {
+      create_user: 'Create User',
+      create_admin_user: 'Create Admin',
+      reset_user_credentials: 'Reset Credentials',
+      user_updated: 'Update User',
+      lock: 'Lock User',
+      unlock: 'Unlock User',
+      deactivate: 'Deactivate User',
+      reactivate: 'Reactivate User',
+      pending: 'Login Pending OTP',
+      success: 'Login Success',
+      failed: 'Login Failed',
+    };
+
+    if (actionMap[key]) return actionMap[key];
+
+    return key
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase()) || 'Activity';
+  }
+
+  static normalizeAuditEntity(targetTable) {
+    const key = (targetTable || '').toString().trim().toLowerCase();
+
+    const entityMap = {
+      tblusers: 'User Account',
+      tbladminusers: 'Admin Account',
+      tbluserroles: 'User Role',
+      tblorganization: 'Organization',
+      tblgeo: 'Geography',
+    };
+
+    return entityMap[key] || 'System';
+  }
+
+  static toAdminLogView(log) {
+    const actionLabel = this.normalizeAuditAction(log?.action);
+    const entityLabel = this.normalizeAuditEntity(log?.target_table);
+    const actorName = log?.tbladminusers?.full_name || 'Unknown Admin';
+    const actorEmail = log?.tbladminusers?.email || '';
+    const actor = actorEmail ? `${actorName} (${actorEmail})` : actorName;
+
+    return {
+      log_id: log?.admin_log_id,
+      created_at: log?.created_at || null,
+      actor,
+      action: actionLabel,
+      entity: entityLabel,
+      summary: `${actionLabel} on ${entityLabel}`,
+    };
+  }
+
   static async getAdminLogs(adminContext) {
     try {
-      const normalizedRole = (adminContext?.role || '').toLowerCase();
-      const isSuperAdmin = normalizedRole.includes('super admin');
+      const scope = await this.resolveAdminScope(adminContext);
 
       let query = supabase
         .from('tbladminlogs')
-        .select('admin_log_id, admin_id, action, target_table, target_id, description, created_at, tbladminusers (full_name, email)')
+        .select('admin_log_id, admin_id, action, target_table, target_id, description, created_at, tbladminusers (admin_id, full_name, email, admin_role, org_id)')
         .order('created_at', { ascending: false });
 
-      if (!isSuperAdmin && adminContext?.id) {
-        query = query.eq('admin_id', adminContext.id);
+      if (scope.isSuperAdmin) {
+        const { data, error } = await query;
+
+        if (error) {
+          return { success: false, error: error.message };
+        }
+
+        const normalized = (data || []).map((log) => this.toAdminLogView(log));
+        return { success: true, data: normalized };
       }
+
+      if (!scope.isCompanyAdmin || !scope.orgId) {
+        return { success: true, data: [] };
+      }
+
+      const { data: scopedAdmins, error: scopedAdminsError } = await supabase
+        .from('tbladminusers')
+        .select('admin_id, admin_role')
+        .eq('org_id', scope.orgId);
+
+      if (scopedAdminsError) {
+        return { success: false, error: scopedAdminsError.message };
+      }
+
+      const scopedAdminIds = new Set(
+        (scopedAdmins || [])
+          .filter((row) => !this.isSuperAdminRoleName(row.admin_role))
+          .map((row) => row.admin_id)
+          .filter(Boolean)
+      );
+
+      if (scope.id) {
+        scopedAdminIds.add(scope.id);
+      }
+
+      const { data: scopedUsers, error: scopedUsersError } = await supabase
+        .from('tblusers')
+        .select('user_id')
+        .eq('org_id', scope.orgId);
+
+      if (scopedUsersError) {
+        return { success: false, error: scopedUsersError.message };
+      }
+
+      const scopedUserIds = new Set((scopedUsers || []).map((row) => row.user_id).filter(Boolean));
 
       const { data, error } = await query;
 
@@ -151,7 +247,33 @@ export class AdminUserManagementService {
         return { success: false, error: error.message };
       }
 
-      return { success: true, data: data || [] };
+      const filtered = (data || []).filter((log) => {
+        const actorAdminId = log?.admin_id || null;
+        const targetTable = (log?.target_table || '').toString().toLowerCase();
+        const targetId = log?.target_id || null;
+        const actorRole = log?.tbladminusers?.admin_role || '';
+
+        if (this.isSuperAdminRoleName(actorRole)) {
+          return false;
+        }
+
+        if (actorAdminId && scopedAdminIds.has(actorAdminId)) {
+          return true;
+        }
+
+        if (targetTable === 'tblusers' && targetId && scopedUserIds.has(targetId)) {
+          return true;
+        }
+
+        if (targetTable === 'tbladminusers' && targetId && scopedAdminIds.has(targetId)) {
+          return true;
+        }
+
+        return false;
+      });
+
+      const normalized = filtered.map((log) => this.toAdminLogView(log));
+      return { success: true, data: normalized };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -159,17 +281,57 @@ export class AdminUserManagementService {
 
   static async getLoginLogs(adminContext) {
     try {
-      const normalizedRole = (adminContext?.role || '').toLowerCase();
-      const isSuperAdmin = normalizedRole.includes('super admin');
+      const scope = await this.resolveAdminScope(adminContext);
 
       let query = supabase
         .from('tbllogin_audit')
         .select('id, user_id, email, login_status, ip_address, user_agent, logged_at, user_type')
         .order('logged_at', { ascending: false });
 
-      if (!isSuperAdmin && adminContext?.email) {
-        query = query.eq('email', adminContext.email);
+      if (scope.isSuperAdmin) {
+        const { data, error } = await query;
+
+        if (error) {
+          return { success: false, error: error.message };
+        }
+
+        return { success: true, data: data || [] };
       }
+
+      if (!scope.isCompanyAdmin || !scope.orgId) {
+        return { success: true, data: [] };
+      }
+
+      const { data: scopedAdmins, error: scopedAdminsError } = await supabase
+        .from('tbladminusers')
+        .select('admin_id, admin_role')
+        .eq('org_id', scope.orgId);
+
+      if (scopedAdminsError) {
+        return { success: false, error: scopedAdminsError.message };
+      }
+
+      const scopedAdminIds = new Set(
+        (scopedAdmins || [])
+          .filter((row) => !this.isSuperAdminRoleName(row.admin_role))
+          .map((row) => row.admin_id)
+          .filter(Boolean)
+      );
+
+      if (scope.id) {
+        scopedAdminIds.add(scope.id);
+      }
+
+      const { data: scopedUsers, error: scopedUsersError } = await supabase
+        .from('tblusers')
+        .select('user_id')
+        .eq('org_id', scope.orgId);
+
+      if (scopedUsersError) {
+        return { success: false, error: scopedUsersError.message };
+      }
+
+      const scopedUserIds = new Set((scopedUsers || []).map((row) => row.user_id).filter(Boolean));
 
       const { data, error } = await query;
 
@@ -177,7 +339,24 @@ export class AdminUserManagementService {
         return { success: false, error: error.message };
       }
 
-      return { success: true, data: data || [] };
+      const filtered = (data || []).filter((log) => {
+        const userType = (log?.user_type || '').toString().toLowerCase();
+        const userId = log?.user_id || null;
+
+        if (!userId) return false;
+
+        if (userType === 'admin') {
+          return scopedAdminIds.has(userId);
+        }
+
+        if (userType === 'user') {
+          return scopedUserIds.has(userId);
+        }
+
+        return false;
+      });
+
+      return { success: true, data: filtered };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -302,6 +481,52 @@ export class AdminUserManagementService {
     return this.normalizeAdminRole(role).includes('company admin');
   }
 
+  static isSuperAdminRoleName(roleName) {
+    return this.normalizeAdminRole(roleName).includes('super admin');
+  }
+
+  static async resolveAdminScope(adminContext = {}) {
+    const contextRole = adminContext?.role || '';
+    const contextId = adminContext?.id || null;
+    const contextEmail = adminContext?.email || null;
+    const contextOrgId = adminContext?.orgId || adminContext?.org_id || null;
+
+    let resolvedRole = contextRole;
+    let resolvedOrgId = contextOrgId;
+    let resolvedAdminId = contextId;
+    let resolvedEmail = contextEmail;
+
+    if ((!resolvedRole || !resolvedOrgId) && (contextId || contextEmail)) {
+      let profileQuery = supabase
+        .from('tbladminusers')
+        .select('admin_id, email, admin_role, org_id');
+
+      if (contextId) {
+        profileQuery = profileQuery.eq('admin_id', contextId);
+      } else {
+        profileQuery = profileQuery.eq('email', contextEmail);
+      }
+
+      const { data: adminProfile, error: profileError } = await profileQuery.maybeSingle();
+
+      if (!profileError && adminProfile) {
+        resolvedRole = resolvedRole || adminProfile.admin_role || '';
+        resolvedOrgId = resolvedOrgId || adminProfile.org_id || null;
+        resolvedAdminId = resolvedAdminId || adminProfile.admin_id || null;
+        resolvedEmail = resolvedEmail || adminProfile.email || null;
+      }
+    }
+
+    return {
+      role: resolvedRole,
+      orgId: resolvedOrgId,
+      id: resolvedAdminId,
+      email: resolvedEmail,
+      isSuperAdmin: this.isSuperAdmin(resolvedRole),
+      isCompanyAdmin: this.isCompanyAdmin(resolvedRole),
+    };
+  }
+
   /**
    * Create a new user
    * @param {Object} userData - User data from request
@@ -309,8 +534,11 @@ export class AdminUserManagementService {
    */
   static async createAdminUser(userData, adminContext = {}) {
     try {
-      const adminUUID = adminContext?.id || adminContext;
+      const scope = await this.resolveAdminScope(adminContext);
+      const adminUUID = scope.id || adminContext?.id || adminContext;
       const adminEmail = typeof adminContext === 'object' ? adminContext?.email : null;
+      const creatorIsCompanyAdmin = scope.isCompanyAdmin;
+      const creatorOrgId = scope.orgId || null;
       const {
         firstName,
         lastName,
@@ -321,6 +549,24 @@ export class AdminUserManagementService {
         organizationId,
         geoId,
       } = userData;
+
+      if (creatorIsCompanyAdmin && !creatorOrgId) {
+        return {
+          success: false,
+          error: 'Company Admin OU is not configured. Please contact a Super Admin.',
+        };
+      }
+
+      if (creatorIsCompanyAdmin && organizationId && organizationId !== creatorOrgId) {
+        return {
+          success: false,
+          error: 'Company Admin can only add users to their own OU',
+        };
+      }
+
+      const effectiveOrganizationId = creatorIsCompanyAdmin
+        ? creatorOrgId
+        : (organizationId || null);
 
       // Validation
       if (!firstName || !lastName || !email || !employeeId || !roleId || !geoId) {
@@ -384,12 +630,12 @@ export class AdminUserManagementService {
       }
 
       // Verify organization exists (if provided)
-      if (organizationId) {
-        const orgValid = await this.organizationExists(organizationId);
+      if (effectiveOrganizationId) {
+        const orgValid = await this.organizationExists(effectiveOrganizationId);
         if (!orgValid) {
           return {
             success: false,
-            error: `Organization with ID "${organizationId}" does not exist`,
+            error: `Organization with ID "${effectiveOrganizationId}" does not exist`,
           };
         }
       }
@@ -404,7 +650,7 @@ export class AdminUserManagementService {
           };
         }
 
-        if (organizationId) {
+        if (effectiveOrganizationId) {
           const { data: departmentOrg, error: deptError } = await supabase
             .from('tblorganization')
             .select('org_id, parent_org_id')
@@ -418,7 +664,7 @@ export class AdminUserManagementService {
             };
           }
 
-          if (departmentOrg?.parent_org_id && departmentOrg.parent_org_id !== organizationId) {
+          if (departmentOrg?.parent_org_id && departmentOrg.parent_org_id !== effectiveOrganizationId) {
             return {
               success: false,
               error: 'Department does not belong to selected OU',
@@ -440,7 +686,7 @@ export class AdminUserManagementService {
             first_name: firstName,
             last_name: lastName,
             email,
-            org_id: organizationId || null,
+            org_id: effectiveOrganizationId,
             department_id: normalizedDepartmentId,
             geo_id: geoId,
             status: 'First_Time',
@@ -1078,8 +1324,10 @@ export class AdminUserManagementService {
   static async createAdminAccount(adminData, adminContext) {
     try {
       const { fullName, email, adminRole, orgId } = adminData;
-      const creatorRole = adminContext?.role || '';
-      const creatorId = adminContext?.id || null;
+      const scope = await this.resolveAdminScope(adminContext);
+      const creatorRole = scope.role || '';
+      const creatorId = scope.id || null;
+      const creatorOrgId = scope.orgId || null;
 
       if (!fullName || !email || !adminRole) {
         return {
@@ -1107,6 +1355,29 @@ export class AdminUserManagementService {
           success: false,
           error: 'Organization is required for Company Admin accounts',
         };
+      }
+
+      if (this.isCompanyAdmin(creatorRole)) {
+        if (!creatorOrgId) {
+          return {
+            success: false,
+            error: 'Company Admin OU is not configured. Please contact a Super Admin.',
+          };
+        }
+
+        if (this.isSuperAdmin(adminRole)) {
+          return {
+            success: false,
+            error: 'Company Admin cannot create Super Admin accounts',
+          };
+        }
+
+        if (orgId && orgId !== creatorOrgId) {
+          return {
+            success: false,
+            error: 'Company Admin can only create admins in their own OU',
+          };
+        }
       }
 
       const emailDuplicate = await this.adminEmailExists(email);
@@ -1170,15 +1441,6 @@ export class AdminUserManagementService {
         },
       ]);
 
-      await sendAdminCredentialsCopyEmail({
-        adminEmail: adminContext?.email,
-        targetEmail: email,
-        targetName: fullName,
-        employeeId: 'N/A',
-        temporaryPassword: password,
-        action: 'created',
-      });
-
       await sendAdminAccountCredentialsEmail({
         email,
         fullName,
@@ -1214,10 +1476,10 @@ export class AdminUserManagementService {
     try {
       console.log('[getAllAdminUsers] Starting user fetch with filters:', filters);
 
-      const adminRole = adminContext?.role || '';
-      const adminOrgId = adminContext?.orgId || null;
-      const isSuperAdmin = this.isSuperAdmin(adminRole);
-      const isCompanyAdmin = this.isCompanyAdmin(adminRole);
+      const scope = await this.resolveAdminScope(adminContext);
+      const adminOrgId = scope.orgId || null;
+      const isSuperAdmin = scope.isSuperAdmin;
+      const isCompanyAdmin = scope.isCompanyAdmin;
 
       if (!isSuperAdmin && !isCompanyAdmin) {
         return {
@@ -1300,17 +1562,30 @@ export class AdminUserManagementService {
         }
       }
 
-      const normalizedUsers = users.map((item) => ({
+      const normalizedUsersRaw = users.map((item) => ({
         ...item,
         user_type: 'user',
         department_name: item.department_id ? departmentMap[item.department_id] || null : null,
       }));
 
+      const normalizedUsers = isCompanyAdmin
+        ? normalizedUsersRaw.filter((item) => {
+          const roleName = item?.tbluserroles?.[0]?.tblroles?.role_name || '';
+          return !this.isSuperAdminRoleName(roleName);
+        })
+        : normalizedUsersRaw;
+
       let adminAccounts = [];
-      if (isSuperAdmin) {
+      if (isSuperAdmin || isCompanyAdmin) {
         let adminQuery = supabase
           .from('tbladminusers')
           .select('admin_id, full_name, email, admin_role, org_id, is_active, created_at, updated_at, tblorganization(org_id, org_name)');
+
+        if (isCompanyAdmin) {
+          adminQuery = adminQuery
+            .eq('org_id', adminOrgId)
+            .not('admin_role', 'ilike', '%super admin%');
+        }
 
         if (filters.search) {
           adminQuery = adminQuery.or(

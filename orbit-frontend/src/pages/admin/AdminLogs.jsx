@@ -83,23 +83,22 @@ export default function AdminLogs() {
   }
 
   const actionOptions = Array.from(new Set(logsData.map((log) => log.action).filter(Boolean))).sort()
-  const targetTableOptions = Array.from(new Set(logsData.map((log) => log.target_table).filter(Boolean))).sort()
+  const targetTableOptions = Array.from(new Set(logsData.map((log) => log.entity).filter(Boolean))).sort()
   const loginStatusOptions = Array.from(new Set(loginLogsData.map((log) => log.login_status).filter(Boolean))).sort()
   const userTypeOptions = Array.from(new Set(loginLogsData.map((log) => log.user_type).filter(Boolean))).sort()
 
   const filteredAdminLogs = logsData.filter((log) => {
     const query = searchQuery.trim().toLowerCase()
     const matchesQuery = !query || [
-      log.admin_id,
+      log.actor,
       log.action,
-      log.target_table,
-      log.target_id,
-      log.description,
+      log.entity,
+      log.summary,
       log.created_at,
     ].some((value) => (value || "").toString().toLowerCase().includes(query))
 
     const matchesAction = filterAction === "all" || (log.action || "") === filterAction
-    const matchesTargetTable = filterTable === "all" || (log.target_table || "") === filterTable
+    const matchesTargetTable = filterTable === "all" || (log.entity || "") === filterTable
     const matchesDate = isDateInRange(log.created_at)
 
     return matchesQuery && matchesAction && matchesTargetTable && matchesDate
@@ -227,9 +226,9 @@ export default function AdminLogs() {
     let csv = ""
 
     if (tab === "admin") {
-      csv = "Created At,Admin ID,Action,Target Table,Target ID,Description\n"
+      csv = "Created At,Admin,Action,Entity,Summary\n"
       data.forEach((row) => {
-        csv += `"${formatTimestamp(row.created_at)}","${(row.admin_id || "").toString().replaceAll('"', '""')}","${(row.action || "").toString().replaceAll('"', '""')}","${(row.target_table || "").toString().replaceAll('"', '""')}","${(row.target_id || "").toString().replaceAll('"', '""')}","${(row.description || "").toString().replaceAll('"', '""')}"\n`
+        csv += `"${formatTimestamp(row.created_at)}","${(row.actor || "").toString().replaceAll('"', '""')}","${(row.action || "").toString().replaceAll('"', '""')}","${(row.entity || "").toString().replaceAll('"', '""')}","${(row.summary || "").toString().replaceAll('"', '""')}"\n`
       })
     } else {
       csv = "Logged At,Email,User ID,Status,User Type,IP Address,User Agent\n"
@@ -451,10 +450,9 @@ export default function AdminLogs() {
               {activeTab === "admin" ? (
                 <colgroup>
                   <col style={{ width: "220px" }} />
-                  <col style={{ width: "180px" }} />
+                  <col style={{ width: "260px" }} />
                   <col style={{ width: "200px" }} />
                   <col style={{ width: "220px" }} />
-                  <col style={{ width: "180px" }} />
                   <col style={{ width: "auto" }} />
                 </colgroup>
               ) : (
@@ -477,8 +475,8 @@ export default function AdminLogs() {
                       </button>
                     </th>
                     <th className="text-left px-[20px] py-[20px] text-xs font-medium text-slate-300 bg-slate-900">
-                      <button type="button" onClick={() => handleSort("admin_id")} className="inline-flex items-center gap-1 hover:text-white">
-                        Admin ID <span>{getSortIndicator("admin_id")}</span>
+                      <button type="button" onClick={() => handleSort("actor")} className="inline-flex items-center gap-1 hover:text-white">
+                        Admin <span>{getSortIndicator("actor")}</span>
                       </button>
                     </th>
                     <th className="text-left px-[20px] py-[20px] text-xs font-medium text-slate-300 bg-slate-900">
@@ -487,18 +485,13 @@ export default function AdminLogs() {
                       </button>
                     </th>
                     <th className="text-left px-[20px] py-[20px] text-xs font-medium text-slate-300 bg-slate-900">
-                      <button type="button" onClick={() => handleSort("target_table")} className="inline-flex items-center gap-1 hover:text-white">
-                        Target Table <span>{getSortIndicator("target_table")}</span>
+                      <button type="button" onClick={() => handleSort("entity")} className="inline-flex items-center gap-1 hover:text-white">
+                        Entity <span>{getSortIndicator("entity")}</span>
                       </button>
                     </th>
                     <th className="text-left px-[20px] py-[20px] text-xs font-medium text-slate-300 bg-slate-900">
-                      <button type="button" onClick={() => handleSort("target_id")} className="inline-flex items-center gap-1 hover:text-white">
-                        Target ID <span>{getSortIndicator("target_id")}</span>
-                      </button>
-                    </th>
-                    <th className="text-left px-[20px] py-[20px] text-xs font-medium text-slate-300 bg-slate-900">
-                      <button type="button" onClick={() => handleSort("description")} className="inline-flex items-center gap-1 hover:text-white">
-                        Description <span>{getSortIndicator("description")}</span>
+                      <button type="button" onClick={() => handleSort("summary")} className="inline-flex items-center gap-1 hover:text-white">
+                        Summary <span>{getSortIndicator("summary")}</span>
                       </button>
                     </th>
                   </tr>
@@ -545,20 +538,19 @@ export default function AdminLogs() {
               <tbody>
                 {paginatedLogs.length === 0 ? (
                   <tr className="border-b border-slate-700/50">
-                    <td colSpan={activeTab === "admin" ? 6 : 7} className="px-[20px] py-[20px] text-sm text-slate-400 text-center">
+                    <td colSpan={activeTab === "admin" ? 5 : 7} className="px-[20px] py-[20px] text-sm text-slate-400 text-center">
                       No logs found
                     </td>
                   </tr>
                 ) : (
                   paginatedLogs.map((item) => (
                     activeTab === "admin" ? (
-                      <tr key={item.admin_log_id} className="border-b border-slate-700/50 hover:bg-slate-800/50">
+                      <tr key={item.log_id || `${item.created_at}-${item.actor}-${item.action}`} className="border-b border-slate-700/50 hover:bg-slate-800/50">
                         <td className="px-[20px] py-[20px] text-sm text-slate-300 truncate" title={formatTimestamp(item.created_at)}>{formatTimestamp(item.created_at)}</td>
-                        <td className="px-[20px] py-[20px] text-sm text-white truncate" title={item.admin_id}>{item.admin_id}</td>
+                        <td className="px-[20px] py-[20px] text-sm text-white truncate" title={item.actor}>{item.actor}</td>
                         <td className="px-[20px] py-[20px] text-sm text-slate-300 truncate" title={item.action}>{item.action}</td>
-                        <td className="px-[20px] py-[20px] text-sm text-slate-300 truncate" title={item.target_table}>{item.target_table}</td>
-                        <td className="px-[20px] py-[20px] text-sm text-slate-300 truncate" title={item.target_id}>{item.target_id}</td>
-                        <td className="px-[20px] py-[20px] text-sm text-slate-300 truncate" title={item.description}>{item.description}</td>
+                        <td className="px-[20px] py-[20px] text-sm text-slate-300 truncate" title={item.entity}>{item.entity}</td>
+                        <td className="px-[20px] py-[20px] text-sm text-slate-300 truncate" title={item.summary}>{item.summary}</td>
                       </tr>
                     ) : (
                       <tr key={item.id} className="border-b border-slate-700/50 hover:bg-slate-800/50">
@@ -576,7 +568,7 @@ export default function AdminLogs() {
 
                 {Array.from({ length: emptyRowsCount }).map((_, index) => (
                   <tr key={`empty-${index}`} className="border-b border-slate-700/50">
-                    <td colSpan={activeTab === "admin" ? 6 : 7} className="px-[20px] py-[20px] text-sm text-slate-500">
+                    <td colSpan={activeTab === "admin" ? 5 : 7} className="px-[20px] py-[20px] text-sm text-slate-500">
                       &nbsp;
                     </td>
                   </tr>
