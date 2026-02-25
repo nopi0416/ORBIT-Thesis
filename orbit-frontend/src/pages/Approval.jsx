@@ -243,6 +243,34 @@ const formatStatusText = (value, fallback = 'Pending') => {
     .join(' ');
 };
 
+const validatePayrollSelection = ({ payrollCycle, payrollCycleDate, availableMonths = [] }) => {
+  if (!payrollCycleDate) {
+    return { isValid: false, error: 'Please select payroll month.' };
+  }
+
+  if (!payrollCycle) {
+    return { isValid: false, error: 'Please select payroll cycle.' };
+  }
+
+  const monthOption = availableMonths.find((month) => month.value === payrollCycleDate);
+  if (!monthOption) {
+    return {
+      isValid: false,
+      error: 'Selected payroll month is not valid. Only current/next available month can be selected.',
+    };
+  }
+
+  const cycleAllowed = monthOption.cycles.some((cycle) => cycle.value === payrollCycle);
+  if (!cycleAllowed) {
+    return {
+      isValid: false,
+      error: 'Selected payroll cycle is not allowed for the selected month.',
+    };
+  }
+
+  return { isValid: true, error: '' };
+};
+
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
   createdBy: config.created_by || config.createdBy || null,
@@ -3714,34 +3742,108 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const [payrollCycleModalOpen, setPayrollCycleModalOpen] = useState(false);
   const [payrollCycle, setPayrollCycle] = useState('');
   const [payrollCycleMonth, setPayrollCycleMonth] = useState('');
-  const payrollCycleYear = String(new Date().getFullYear());
-  const payrollCycleDate = payrollCycleMonth ? `${payrollCycleMonth} ${payrollCycleYear}` : '';
-  const payrollMonthOptions = [
-    'January',
-    'February',
-    'March',
-    'April',
-    'May',
-    'June',
-    'July',
-    'August',
-    'September',
-    'October',
-    'November',
-    'December',
-  ];
+  const [payrollMonthOptions, setPayrollMonthOptions] = useState([]);
+  const [payrollScheduleLabel, setPayrollScheduleLabel] = useState('');
+  const [payrollOptionsLoading, setPayrollOptionsLoading] = useState(false);
+  const [payrollDuplicateWarning, setPayrollDuplicateWarning] = useState('');
+  const [payrollDuplicateLoading, setPayrollDuplicateLoading] = useState(false);
+  const payrollCycleDate = payrollCycleMonth || '';
+  const selectedPayrollMonthOption = useMemo(
+    () => payrollMonthOptions.find((option) => option.value === payrollCycleMonth) || null,
+    [payrollMonthOptions, payrollCycleMonth]
+  );
+  const payrollCycleOptions = selectedPayrollMonthOption?.cycles || [];
+  const payrollCycleYear = selectedPayrollMonthOption ? String(selectedPayrollMonthOption.year) : '';
   const [payrollCycleError, setPayrollCycleError] = useState(null);
   const handledFocusRequestRef = useRef(null);
+  const suppressDetailsCloseRef = useRef(false);
+
+  const closeConfirmDialog = useCallback(() => {
+    suppressDetailsCloseRef.current = true;
+    setConfirmAction(null);
+    setTimeout(() => {
+      suppressDetailsCloseRef.current = false;
+    }, 0);
+  }, []);
 
   const handlePayrollCycleContinue = () => {
-    if (!payrollCycle || !payrollCycleDate) {
-      setPayrollCycleError('Please select both payroll cycle and date.');
+    if (userRole === 'payroll' && currentApprovalLevel === 4 && !String(decisionNotes || '').trim()) {
+      const notesError = 'Decision notes are required for payroll approval.';
+      setPayrollCycleError(notesError);
+      setActionError(notesError);
+      toast.error(notesError);
+      return;
+    }
+
+    const validation = validatePayrollSelection({
+      payrollCycle,
+      payrollCycleDate,
+      availableMonths: payrollMonthOptions,
+    });
+    if (!validation.isValid) {
+      setPayrollCycleError(validation.error || 'Please select both payroll cycle and date.');
       return;
     }
     setPayrollCycleError(null);
     setPayrollCycleModalOpen(false);
     setConfirmAction('approve');
   };
+
+  useEffect(() => {
+    if (userRole !== 'payroll') {
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchPayrollOptions = async () => {
+      setPayrollOptionsLoading(true);
+      try {
+        const result = await approvalRequestService.getPayrollOptions(getToken());
+        if (cancelled) return;
+
+        const months = Array.isArray(result?.months) ? result.months : [];
+        setPayrollMonthOptions(months);
+        setPayrollScheduleLabel(
+          result?.helperLabel || 'Payroll options are controlled by backend schedule rules.'
+        );
+      } catch (error) {
+        if (cancelled) return;
+        setPayrollMonthOptions([]);
+        setPayrollScheduleLabel('Unable to load payroll options. Please try again.');
+        setPayrollCycleError(extractErrorMessage(error));
+      } finally {
+        if (!cancelled) {
+          setPayrollOptionsLoading(false);
+        }
+      }
+    };
+
+    fetchPayrollOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userRole]);
+
+  useEffect(() => {
+    if (!payrollMonthOptions.length) {
+      setPayrollCycleMonth('');
+      setPayrollCycle('');
+      setPayrollDuplicateWarning('');
+      return;
+    }
+
+    if (!payrollCycleMonth || !payrollMonthOptions.some((option) => option.value === payrollCycleMonth)) {
+      setPayrollCycleMonth(payrollMonthOptions[0].value);
+      setPayrollCycle('');
+      return;
+    }
+
+    if (!payrollCycleOptions.some((option) => option.value === payrollCycle)) {
+      setPayrollCycle('');
+    }
+  }, [payrollMonthOptions, payrollCycleMonth, payrollCycle, payrollCycleOptions]);
 
   useEffect(() => {
     if (userRole === 'requestor') {
@@ -4260,6 +4362,11 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     isPayrollUser &&
     payrollApprovalStatus === 'approved' &&
     String(detailStageStatus || '').toLowerCase() === 'pending_payment_completion';
+  const payrollNotesMissing =
+    isPayrollUser &&
+    currentApprovalLevel === 4 &&
+    payrollApprovalStatus === 'pending' &&
+    !String(decisionNotes || '').trim();
 
   const canStandardApprove =
     Boolean(pendingApprovalForUser) && userRole !== 'requestor' && !userHasApproved;
@@ -4267,6 +4374,84 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
   const canActOnRequest = isPayrollUser
     ? (canPayrollApprove || canPayrollComplete)
     : canStandardApprove;
+
+  useEffect(() => {
+    if (!(userRole === 'payroll' && currentApprovalLevel === 4 && payrollApprovalStatus === 'pending')) {
+      setPayrollDuplicateWarning('');
+      return;
+    }
+
+    if (!selectedRequest?.id || !payrollCycle || !payrollCycleDate) {
+      setPayrollDuplicateWarning('');
+      return;
+    }
+
+    const validation = validatePayrollSelection({
+      payrollCycle,
+      payrollCycleDate,
+      availableMonths: payrollMonthOptions,
+    });
+
+    if (!validation.isValid) {
+      setPayrollDuplicateWarning('');
+      return;
+    }
+
+    let cancelled = false;
+
+    const runDuplicateCheck = async () => {
+      setPayrollDuplicateLoading(true);
+      try {
+        const result = await approvalRequestService.getPayrollDuplicateCheck(
+          selectedRequest.id,
+          payrollCycle,
+          payrollCycleDate,
+          getToken()
+        );
+
+        if (cancelled) return;
+
+        const count = Number(result?.count || 0);
+        if (result?.hasDuplicate && count > 0) {
+          const sample = Array.isArray(result?.matches) ? result.matches.slice(0, 3) : [];
+          const sampleText = sample
+            .map((item) => item?.request_number)
+            .filter(Boolean)
+            .join(', ');
+
+          setPayrollDuplicateWarning(
+            `Warning: ${count} approved/completed request(s) already use this payroll cycle for this configuration.${
+              sampleText ? ` (${sampleText}${count > 3 ? ', ...' : ''})` : ''
+            }`
+          );
+        } else {
+          setPayrollDuplicateWarning('');
+        }
+      } catch {
+        if (cancelled) return;
+        setPayrollDuplicateWarning('');
+      } finally {
+        if (!cancelled) {
+          setPayrollDuplicateLoading(false);
+        }
+      }
+    };
+
+    runDuplicateCheck();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    userRole,
+    currentApprovalLevel,
+    payrollApprovalStatus,
+    selectedRequest?.id,
+    payrollCycle,
+    payrollCycleDate,
+    payrollMonthOptions,
+  ]);
+
   const filteredLineItems = detailLineItems.filter((item) => {
     if (!detailSearch.trim()) return true;
     const term = detailSearch.toLowerCase();
@@ -4327,9 +4512,22 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     setActionError(null);
     try {
       if (isPayrollUser && currentApprovalLevel === 4) {
-        if (!payrollCycle || !payrollCycleDate) {
-          toast.error('Payroll cycle and date are required before approving.');
-          setActionError('Payroll cycle and date are required before approving.');
+        if (!String(decisionNotes || '').trim()) {
+          const notesError = 'Decision notes are required for payroll approval.';
+          toast.error(notesError);
+          setActionError(notesError);
+          setActionSubmitting(false);
+          return;
+        }
+
+        const validation = validatePayrollSelection({
+          payrollCycle,
+          payrollCycleDate,
+          availableMonths: payrollMonthOptions,
+        });
+        if (!validation.isValid) {
+          toast.error(validation.error || 'Payroll cycle and date are required before approving.');
+          setActionError(validation.error || 'Payroll cycle and date are required before approving.');
           setActionSubmitting(false);
           return;
         }
@@ -4662,6 +4860,13 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
       <Dialog
         open={detailsOpen}
         onOpenChange={(open) => {
+          if (
+            !open &&
+            (Boolean(confirmAction) || payrollCycleModalOpen || actionSubmitting || suppressDetailsCloseRef.current)
+          ) {
+            return;
+          }
+
           setDetailsOpen(open);
           if (!open) {
             setSelectedRequest(null);
@@ -4955,7 +5160,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                       maxLength={500}
                       rows={3}
                       className="bg-slate-700 border-gray-300 text-white"
-                      placeholder="Add notes (required for rejection)."
+                      placeholder="Add notes (required for payroll approval and rejection)."
                     />
                   </div>
 
@@ -4964,39 +5169,69 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div className="space-y-2">
                         <Label className="text-white">Payroll Cycle *</Label>
-                        <Select value={payrollCycle} onValueChange={setPayrollCycle}>
+                        <Select
+                          value={payrollCycle}
+                          onValueChange={setPayrollCycle}
+                          disabled={payrollOptionsLoading || payrollCycleOptions.length === 0}
+                        >
                           <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
                             <SelectValue placeholder="Select cycle" />
                           </SelectTrigger>
                           <SelectContent className="bg-slate-800 border-slate-600 text-white">
-                            <SelectItem value="15th of Month">15th</SelectItem>
-                            <SelectItem value="End of Month">End of Month</SelectItem>
+                            {payrollOptionsLoading ? (
+                              <div className="px-3 py-2 text-xs text-slate-400">Loading cycles...</div>
+                            ) : payrollCycleOptions.length === 0 ? (
+                              <div className="px-3 py-2 text-xs text-slate-400">No available cycles for selected month.</div>
+                            ) : (
+                              payrollCycleOptions.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectItem>
+                              ))
+                            )}
                           </SelectContent>
                         </Select>
                       </div>
                       <div className="space-y-2">
                         <Label className="text-white">Payroll Month *</Label>
-                        <Select value={payrollCycleMonth} onValueChange={setPayrollCycleMonth}>
+                        <Select
+                          value={payrollCycleMonth}
+                          onValueChange={setPayrollCycleMonth}
+                          disabled={payrollOptionsLoading || payrollMonthOptions.length === 0}
+                        >
                           <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
                             <SelectValue placeholder="Select month" />
                           </SelectTrigger>
                           <SelectContent className="bg-slate-800 border-slate-600 text-white max-h-[200px]">
-                            {payrollMonthOptions.map((month) => (
-                              <SelectItem key={month} value={month}>{month}</SelectItem>
-                            ))}
+                            {payrollOptionsLoading ? (
+                              <div className="px-3 py-2 text-xs text-slate-400">Loading months...</div>
+                            ) : (
+                              payrollMonthOptions.map((month) => (
+                                <SelectItem key={month.value} value={month.value}>{month.value}</SelectItem>
+                              ))
+                            )}
                           </SelectContent>
                         </Select>
                       </div>
                       <div className="space-y-2">
                         <Label className="text-white">Payroll Year *</Label>
-                        <Select value={payrollCycleYear} disabled>
-                          <SelectTrigger className="bg-slate-700 border-gray-300 text-white">
-                            <SelectValue placeholder="Select year" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 border-slate-600 text-white">
-                            <SelectItem value={payrollCycleYear}>{payrollCycleYear}</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <Input
+                          value={payrollCycleYear || '—'}
+                          disabled
+                          className="bg-slate-800 border-slate-600 text-slate-300"
+                        />
+                      </div>
+                      <div className="md:col-span-3 -mt-1 text-xs text-slate-400">
+                        {payrollScheduleLabel}
+                      </div>
+                      <div className="md:col-span-3">
+                        {payrollDuplicateLoading ? (
+                          <div className="text-xs text-slate-400">Checking for existing approved payroll cycle usage...</div>
+                        ) : payrollDuplicateWarning ? (
+                          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                            {payrollDuplicateWarning}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   )}
@@ -5025,7 +5260,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                         <Button
                           className="bg-emerald-600 hover:bg-emerald-700 text-white"
                           onClick={() => setConfirmAction('approve')}
-                          disabled={actionSubmitting}
+                          disabled={actionSubmitting || payrollNotesMissing}
                         >
                           Approve
                         </Button>
@@ -5062,43 +5297,71 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
           <div className="space-y-4">
             <div className="space-y-2">
               <Label className="text-white">Payroll Cycle *</Label>
-              <Select value={payrollCycle} onValueChange={setPayrollCycle}>
+              <Select
+                value={payrollCycle}
+                onValueChange={setPayrollCycle}
+                disabled={payrollOptionsLoading || payrollCycleOptions.length === 0}
+              >
                 <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                   <SelectValue placeholder="Select cycle" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-900 border-slate-700 text-white">
-                  <SelectItem value="15th of Month" className="text-white">15th</SelectItem>
-                  <SelectItem value="End of Month" className="text-white">End of Month</SelectItem>
+                  {payrollOptionsLoading ? (
+                    <div className="px-3 py-2 text-xs text-slate-400">Loading cycles...</div>
+                  ) : payrollCycleOptions.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-slate-400">No available cycles for selected month.</div>
+                  ) : (
+                    payrollCycleOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value} className="text-white">
+                        {option.label}
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
               <Label className="text-white">Payroll Month *</Label>
-              <Select value={payrollCycleMonth} onValueChange={setPayrollCycleMonth}>
+              <Select
+                value={payrollCycleMonth}
+                onValueChange={setPayrollCycleMonth}
+                disabled={payrollOptionsLoading || payrollMonthOptions.length === 0}
+              >
                 <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                   <SelectValue placeholder="Select month" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-[200px]">
-                  {payrollMonthOptions.map((month) => (
-                    <SelectItem key={month} value={month} className="text-white">
-                      {month}
-                    </SelectItem>
-                  ))}
+                  {payrollOptionsLoading ? (
+                    <div className="px-3 py-2 text-xs text-slate-400">Loading months...</div>
+                  ) : (
+                    payrollMonthOptions.map((month) => (
+                      <SelectItem key={month.value} value={month.value} className="text-white">
+                        {month.value}
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
               <Label className="text-white">Payroll Year *</Label>
-              <Select value={payrollCycleYear} disabled>
-                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
-                  <SelectValue placeholder="Select year" />
-                </SelectTrigger>
-                <SelectContent className="bg-slate-900 border-slate-700 text-white">
-                  <SelectItem value={payrollCycleYear} className="text-white">
-                    {payrollCycleYear}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+              <Input
+                value={payrollCycleYear || '—'}
+                disabled
+                className="bg-slate-800 border-slate-600 text-slate-300"
+              />
+            </div>
+            <div className="-mt-1 text-xs text-slate-400">
+              {payrollScheduleLabel}
+            </div>
+            <div>
+              {payrollDuplicateLoading ? (
+                <div className="text-xs text-slate-400">Checking for existing approved payroll cycle usage...</div>
+              ) : payrollDuplicateWarning ? (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  {payrollDuplicateWarning}
+                </div>
+              ) : null}
             </div>
           </div>
           <DialogFooter className="flex justify-end gap-3">
@@ -5123,7 +5386,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
       {actionSubmitting && <LoadingOverlay />}
 
       {/* Confirmation Modal */}
-      <Dialog open={Boolean(confirmAction)} onOpenChange={() => setConfirmAction(null)}>
+      <Dialog open={Boolean(confirmAction)} onOpenChange={() => closeConfirmDialog()}>
         <DialogContent className="bg-slate-900 border-slate-700 text-white w-[400px]">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">
@@ -5141,7 +5404,10 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
             <Button 
               variant="outline" 
               className="border-slate-600 text-white hover:bg-slate-800" 
-              onClick={() => setConfirmAction(null)}
+              onClick={(event) => {
+                event.stopPropagation();
+                closeConfirmDialog();
+              }}
               disabled={actionSubmitting}
             >
               Cancel

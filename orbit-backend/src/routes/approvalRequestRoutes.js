@@ -46,10 +46,22 @@ router.patch('/notifications/read-all', authenticateToken, ApprovalRequestContro
 router.patch('/notifications/:notificationId/read', authenticateToken, ApprovalRequestController.markNotificationRead);
 
 /**
+ * GET /api/approval-requests/payroll-options
+ * Get available payroll month/cycle options based on current date rules
+ */
+router.get('/payroll-options', authenticateToken, ApprovalRequestController.getPayrollOptions);
+
+/**
  * GET /api/approval-requests/:id
  * Get specific approval request with all related data
  */
 router.get('/:id', authenticateToken, ApprovalRequestController.getApprovalRequest);
+
+/**
+ * GET /api/approval-requests/:id/payroll-duplicate-check
+ * Check for approved/completed requests using same payroll cycle/date under same configuration
+ */
+router.get('/:id/payroll-duplicate-check', authenticateToken, ApprovalRequestController.checkPayrollDuplicate);
 
 /**
  * PUT /api/approval-requests/:id
