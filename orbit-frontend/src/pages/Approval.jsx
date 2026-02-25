@@ -173,6 +173,23 @@ const sanitizeSingleLine = (value = '') =>
 const sanitizeIdInput = (value = '') =>
   String(value).replace(/[^\p{L}\p{N}\-]/gu, '');
 
+const normalizeEmployeeStatus = (value) => {
+  if (value === true || value === 1) return 'ACTIVE';
+  if (value === false || value === 0) return 'INACTIVE';
+
+  const normalized = String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '_');
+
+  return normalized;
+};
+
+const isActiveEmployeeStatus = (value) => {
+  const normalized = normalizeEmployeeStatus(value);
+  return normalized === 'ACTIVE' || normalized === 'ACT';
+};
+
 const blockShortcuts = (event) => {
   const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
   if (!hasModifier) return;
@@ -231,6 +248,7 @@ const normalizeConfig = (config) => ({
   createdBy: config.created_by || config.createdBy || null,
   name: config.budget_name || config.name || config.budgetName || 'Untitled Budget',
   department: config.department || config.budget_department || 'All',
+  departmentId: config.department_id || config.departmentId || null,
   description: config.budget_description || config.description || '',
   maxAmount: config.max_limit || config.maxAmount || config.budgetControlLimit || config.total_budget || 0,
   totalBudget: config.total_budget || config.totalBudget || config.total_budget_amount || config.budget_total || 0,
@@ -249,12 +267,65 @@ const normalizeConfig = (config) => ({
   clients: parseStoredList(config.client || config.clients),
   clientSponsored: config.is_client_sponsored ?? config.client_sponsored ?? config.clientSponsored ?? null,
   approvers: Array.isArray(config.approvers) ? config.approvers : [],
+  accessOUPaths: parseStoredPaths(config.access_ou || config.accessOUPaths),
   affectedOUPaths: parseStoredPaths(config.affected_ou || config.affectedOUPaths),
   status: config.status,
   geo: parseStoredList(config.geo || config.geos),
   location: parseStoredList(config.location || config.locations),
   tenureGroups: parseTenureGroups(config.tenure_group || config.tenureGroup || config.selectedTenureGroups),
 });
+
+const normalizeScopeText = (value = '') =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+
+const flattenScopeEntries = (value) => {
+  const parsed = parseStoredList(value);
+  const result = [];
+
+  const walk = (entry) => {
+    if (Array.isArray(entry)) {
+      entry.forEach(walk);
+      return;
+    }
+    if (entry === undefined || entry === null || entry === '') return;
+    result.push(String(entry).trim());
+  };
+
+  walk(parsed);
+  return result.filter(Boolean);
+};
+
+const canUserViewConfigByDepartmentScope = (config, user = null, userRole = '') => {
+  const normalizedRole = String(userRole || '').toLowerCase();
+  const shouldRestrict = ['requestor', 'l1'].includes(normalizedRole);
+  if (!shouldRestrict) return true;
+  if (!config) return false;
+  if (String(config.createdBy || '') === String(user?.id || '')) return true;
+
+  const userDepartmentId = String(user?.department_id || user?.departmentId || '').trim();
+  const userDepartmentName = normalizeScopeText(user?.department || user?.department_name || user?.departmentName || '');
+  if (!userDepartmentId && !userDepartmentName) return true;
+
+  const scopeValues = [
+    ...flattenScopeEntries(config.accessOUPaths),
+    ...flattenScopeEntries(config.departmentId),
+    ...flattenScopeEntries(config.department),
+  ];
+
+  if (!scopeValues.length) return true;
+
+  return scopeValues.some((entry) => {
+    const raw = String(entry || '').trim();
+    if (!raw) return false;
+    if (userDepartmentId && raw === userDepartmentId) return true;
+    if (userDepartmentName && normalizeScopeText(raw) === userDepartmentName) return true;
+    return false;
+  });
+};
 
 const computeStageStatus = (approvals = [], overallStatus = '') => {
   const normalizedOverall = String(overallStatus || '').toLowerCase();
@@ -682,6 +753,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const canProceed = useMemo(() => {
     if (requestMode === 'individual') {
       const amountValue = Number(individualRequest.amount || 0);
+      const isActiveEmployee = isActiveEmployeeStatus(individualRequest.employeeStatus);
       const minLimitValue = Number(selectedConfig?.minLimit || 0);
       const maxLimitValue = Number(selectedConfig?.maxLimit || 0);
       const hasLimits = maxLimitValue > 0 || minLimitValue > 0;
@@ -695,6 +767,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       return (
         requestDetails.details?.trim().length > 0 &&
         individualRequest.employeeId?.trim().length > 0 &&
+        isActiveEmployee &&
         amountValue > 0 &&
         hasRequiredNotes
       );
@@ -705,7 +778,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         const hasEmployeeData = item.employee_id && item.employeeData;
         const hasValidAmount = item.amount && item.amount > 0;
         const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
-        return hasEmployeeData && hasValidAmount && isInScope;
+        const employeeStatus = item.employee_status || item.employeeStatus || item.employeeData?.employee_status || item.employeeData?.active_status || item.employeeData?.employment_status || item.employeeData?.status;
+        const isActiveEmployee = isActiveEmployeeStatus(employeeStatus);
+        return hasEmployeeData && hasValidAmount && isInScope && isActiveEmployee;
       });
 
       return hasApprovalDescription && hasValidItems;
@@ -745,10 +820,11 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
       setConfigurations((items || []).map(normalizeConfig).filter(config => {
         const isActive = String(config.status || '').toLowerCase() === 'active';
+        const inDepartmentScope = canUserViewConfigByDepartmentScope(config, user, userRole);
         if (userRole === 'payroll') {
           return isActive && config.createdBy === user.id;
         }
-        return isActive;
+        return isActive && inDepartmentScope;
       }));
       setConfigPagination(pagination);
     } catch (error) {
@@ -791,7 +867,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         const isActive = String(normalized.status || '').toLowerCase() === 'active';
         const isVisibleToUser = userRole === 'payroll'
           ? isActive && String(normalized.createdBy || '') === String(user?.id || '')
-          : isActive;
+          : isActive && canUserViewConfigByDepartmentScope(normalized, user, userRole);
 
         setConfigurations((prev) => {
           if (!isVisibleToUser) {
@@ -1260,6 +1336,25 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           return;
         }
 
+        const resolvedEmployeeStatus =
+          data?.employee_status || data?.active_status || data?.employment_status || data?.status || '';
+        if (!isActiveEmployeeStatus(resolvedEmployeeStatus)) {
+          setEmployeeLookupError('Employee is not ACTIVE and cannot be submitted for approval.');
+          setIndividualRequest((prev) => ({
+            ...prev,
+            employeeName: '',
+            email: '',
+            position: '',
+            employeeStatus: '',
+            geo: '',
+            location: '',
+            department: '',
+            hireDate: '',
+            terminationDate: '',
+          }));
+          return;
+        }
+
         const hireDateValue = data?.hire_date || data?.date_hired || data?.start_date || '';
         const tenureValidation = validateTenureScope(hireDateValue, selectedConfig?.tenureGroups || []);
         if (!tenureValidation.tenureAllowed) {
@@ -1286,7 +1381,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           employeeName: data?.name || data?.employee_name || data?.fullname || data?.full_name || '',
           email: data?.email || data?.email_address || '',
           position: data?.position || data?.job_title || data?.job_position || '',
-          employeeStatus: data?.employee_status || data?.active_status || data?.employment_status || data?.status || '',
+          employeeStatus: resolvedEmployeeStatus,
           geo: data?.geo || data?.region || data?.country || '',
           location: data?.location || data?.site || data?.office || '',
           department: empDepartment || '', // Use the resolved department name
@@ -1946,13 +2041,15 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         const hasEmployeeData = item.employee_id && item.employeeData;
         const hasValidAmount = item.amount && item.amount > 0;
         const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
+        const employeeStatus = item.employee_status || item.employeeStatus || item.employeeData?.employee_status || item.employeeData?.active_status || item.employeeData?.employment_status || item.employeeData?.status;
+        const isActiveEmployee = isActiveEmployeeStatus(employeeStatus);
         
         // Valid: has employee data, valid amount, and is in scope
-        if (hasEmployeeData && hasValidAmount && isInScope) {
+        if (hasEmployeeData && hasValidAmount && isInScope && isActiveEmployee) {
           validCount++;
         } 
         // Invalid: missing critical data or out of scope
-        else if (!hasEmployeeData || !hasValidAmount || !isInScope) {
+        else if (!hasEmployeeData || !hasValidAmount || !isInScope || !isActiveEmployee) {
           invalidCount++;
         }
         // Warning: has some data but incomplete
@@ -1964,7 +2061,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       // Only reject if ALL rows are completely invalid
       if (validCount === 0 && warningCount === 0 && enrichedItems.length > 0) {
         console.error('[Bulk Upload Validation] All items are invalid - rejecting file');
-        throw new Error('File contains only invalid data. At least one employee must be found with a valid amount and be in the budget scope.');
+        throw new Error('File contains only invalid data. At least one ACTIVE employee must be found with a valid amount and be in the budget scope.');
       }
 
       setBulkItems(enrichedItems);
@@ -1989,6 +2086,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     // Check if employee was found
     if (item.employee_id && !item.employeeData) {
       errors.push('Employee not found');
+    }
+
+    if (item.employee_id && item.employeeData) {
+      const employeeStatus =
+        item.employee_status ||
+        item.employeeStatus ||
+        item.employeeData?.employee_status ||
+        item.employeeData?.active_status ||
+        item.employeeData?.employment_status ||
+        item.employeeData?.status;
+      if (!isActiveEmployeeStatus(employeeStatus)) {
+        errors.push('Employee status must be ACTIVE');
+      }
     }
     
     // Check if employee is in configuration scope (same validation as individual)
@@ -2040,6 +2150,13 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       setConfirmLoading(false);
       toast.error('Complete all required individual fields.');
       setSubmitError('Complete all required individual fields.');
+      return;
+    }
+
+    if (!isActiveEmployeeStatus(individualRequest.employeeStatus)) {
+      setConfirmLoading(false);
+      toast.error('Only employees with ACTIVE status can be submitted.');
+      setSubmitError('Only employees with ACTIVE status can be submitted.');
       return;
     }
 
@@ -2175,12 +2292,14 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
       const hasEmployeeData = item.employee_id && item.employeeData;
       const hasValidAmount = item.amount && item.amount > 0;
       const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
-      return hasEmployeeData && hasValidAmount && isInScope;
+      const employeeStatus = item.employee_status || item.employeeStatus || item.employeeData?.employee_status || item.employeeData?.active_status || item.employeeData?.employment_status || item.employeeData?.status;
+      const isActiveEmployee = isActiveEmployeeStatus(employeeStatus);
+      return hasEmployeeData && hasValidAmount && isInScope && isActiveEmployee;
     });
     
     if (!validItems.length) {
       setConfirmLoading(false);
-      setSubmitError('No valid items to submit. Ensure at least one employee has valid data and is in scope.');
+      setSubmitError('No valid items to submit. Ensure at least one ACTIVE employee has valid data and is in scope.');
       return;
     }
 
@@ -2207,7 +2326,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         email: item.email || item.employeeData?.email || '',
         position: item.position || item.employeeData?.position || '',
         department: item.department || item.employeeData?.department || item.employeeData?.dept || '',
-        employee_status: item.employee_status || item.employeeStatus || item.employeeData?.employee_status || item.employeeData?.active_status || '',
+        employee_status: item.employee_status || item.employeeStatus || item.employeeData?.employee_status || item.employeeData?.active_status || item.employeeData?.employment_status || item.employeeData?.status || '',
         geo: item.geo || item.employeeData?.geo || item.employeeData?.region || '',
         location: item.location || item.employeeData?.location || item.employeeData?.site || '',
         hire_date: item.hire_date || item.hireDate || item.employeeData?.hire_date || item.employeeData?.date_hired || '',

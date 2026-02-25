@@ -923,6 +923,21 @@ export class ApprovalRequestService {
     return mapping[value] || 'bonus';
   }
 
+  static normalizeEmployeeStatus(rawStatus) {
+    if (rawStatus === true || rawStatus === 1) return 'ACTIVE';
+    if (rawStatus === false || rawStatus === 0) return 'INACTIVE';
+
+    return String(rawStatus || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '_');
+  }
+
+  static isActiveEmployeeStatus(rawStatus) {
+    const normalizedStatus = this.normalizeEmployeeStatus(rawStatus);
+    return normalizedStatus === 'ACTIVE' || normalizedStatus === 'ACT';
+  }
+
   /**
    * Create a new approval request (DRAFT status)
    */
@@ -1801,6 +1816,14 @@ export class ApprovalRequestService {
         created_by,
       } = lineItemData;
 
+      if (!this.isActiveEmployeeStatus(employee_status)) {
+        return {
+          success: false,
+          statusCode: 400,
+          error: `Employee ${employee_id || ''} is not ACTIVE. Only employees with ACTIVE status can be submitted.`,
+        };
+      }
+
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_line_items')
         .insert([
@@ -1868,6 +1891,38 @@ export class ApprovalRequestService {
 
       if (lineItems.length > 500) {
         throw new Error('Maximum 500 line items per bulk request');
+      }
+
+      const inactiveItems = lineItems
+        .map((item, index) => {
+          const employeeStatus =
+            item?.employee_status ??
+            item?.employeeStatus ??
+            item?.active_status ??
+            item?.employment_status ??
+            item?.status ??
+            null;
+
+          return {
+            index,
+            employeeId: item?.employee_id || item?.employeeId || `row-${index + 1}`,
+            status: this.normalizeEmployeeStatus(employeeStatus),
+            isActive: this.isActiveEmployeeStatus(employeeStatus),
+          };
+        })
+        .filter((row) => !row.isActive);
+
+      if (inactiveItems.length > 0) {
+        const sampleRows = inactiveItems
+          .slice(0, 10)
+          .map((item) => `${item.employeeId} (${item.status || 'UNKNOWN'})`)
+          .join(', ');
+
+        return {
+          success: false,
+          statusCode: 400,
+          error: `Only employees with ACTIVE status can be submitted. Invalid employees: ${sampleRows}${inactiveItems.length > 10 ? '...' : ''}`,
+        };
       }
 
       const { data: existingLastItem, error: existingLastItemError } = await supabase
