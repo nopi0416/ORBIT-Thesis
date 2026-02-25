@@ -23,16 +23,25 @@ export default function AdminProfile() {
   const sessionDataRaw = localStorage.getItem("session_cache")
 
   let sessionExpiresAt = "—"
+  let sessionDurationLabel = "—"
   try {
     const parsed = sessionDataRaw ? JSON.parse(sessionDataRaw) : null
     if (parsed?.expiresAt) {
       const expiryDate = new Date(parsed.expiresAt)
       if (!Number.isNaN(expiryDate.getTime())) {
         sessionExpiresAt = expiryDate.toLocaleString()
+
+        const assumedSessionStartMs = expiryDate.getTime() - (24 * 60 * 60 * 1000)
+        const elapsedMs = Math.max(0, Date.now() - assumedSessionStartMs)
+        const elapsedMinutes = Math.floor(elapsedMs / (60 * 1000))
+        const elapsedHours = Math.floor(elapsedMinutes / 60)
+        const remainingMinutes = elapsedMinutes % 60
+        sessionDurationLabel = `${elapsedHours}h ${remainingMinutes}m`
       }
     }
   } catch {
     sessionExpiresAt = "—"
+    sessionDurationLabel = "—"
   }
 
   return (
@@ -85,8 +94,10 @@ export default function AdminProfile() {
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg">
-                <p className="text-xs text-slate-400 mb-1">Account Status</p>
-                <p className="text-sm text-emerald-400 font-medium">Active</p>
+                <p className="text-xs text-slate-400 mb-1">Session Duration</p>
+                <p className="text-sm text-white font-medium" title={sessionDurationLabel}>
+                  {sessionDurationLabel}
+                </p>
               </div>
 
               <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg">
