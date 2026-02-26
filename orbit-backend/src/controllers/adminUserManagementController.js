@@ -26,11 +26,11 @@ export class AdminUserManagementController {
       if (!AdminUserManagementController.ensureAdmin(req, res)) return;
 
       const userData = req.body;
-      const adminUUID = req.user?.id; // From auth middleware
+      const adminContext = req.user;
 
       console.log('=== Admin User Creation Request ===');
       console.log('Request Body:', JSON.stringify(userData, null, 2));
-      console.log('Admin UUID:', adminUUID);
+      console.log('Admin Context:', JSON.stringify(adminContext, null, 2));
       console.log('====================================');
 
       // Validate input
@@ -40,12 +40,12 @@ export class AdminUserManagementController {
       }
 
       // Verify admin UUID is provided
-      if (!adminUUID) {
+      if (!adminContext?.id) {
         return sendError(res, { error: 'Admin authentication required' }, 401);
       }
 
       // Call service to create user
-      const result = await AdminUserManagementService.createAdminUser(userData, adminUUID);
+      const result = await AdminUserManagementService.createAdminUser(userData, adminContext);
 
       if (!result.success) {
         return sendError(res, result.error, 400);
@@ -55,6 +55,28 @@ export class AdminUserManagementController {
       sendSuccess(res, result.data, result.message, 201);
     } catch (error) {
       console.error('Error in createAdminUser:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
+
+  /**
+   * POST /api/admin/users/bulk
+   * Bulk create users/admins from validated rows
+   */
+  static async createUsersBulk(req, res) {
+    try {
+      if (!AdminUserManagementController.ensureAdmin(req, res)) return;
+
+      const { users } = req.body || {};
+      const result = await AdminUserManagementService.createUsersBulk(users, req.user);
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      sendSuccess(res, result.data, 'Bulk user creation completed', 200);
+    } catch (error) {
+      console.error('Error in createUsersBulk:', error);
       sendError(res, { error: error.message }, 500);
     }
   }
@@ -237,6 +259,51 @@ export class AdminUserManagementController {
   }
 
   /**
+   * PATCH /api/admin/users/:id/reset-credentials
+   * Reset a user's password and security questions
+   */
+  static async resetUserCredentials(req, res) {
+    try {
+      if (!AdminUserManagementController.ensureAdmin(req, res)) return;
+
+      const userId = req.params.id;
+      const { basePassword } = req.body || {};
+      const result = await AdminUserManagementService.resetUserCredentials(userId, basePassword, req.user);
+
+      if (!result.success) {
+        return sendError(res, { error: result.error }, 400);
+      }
+
+      sendSuccess(res, result.data, 'User credentials reset successfully', 200);
+    } catch (error) {
+      console.error('Error in resetUserCredentials:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
+
+  /**
+   * PATCH /api/admin/users/reset-credentials
+   * Reset credentials for multiple users
+   */
+  static async resetUsersCredentials(req, res) {
+    try {
+      if (!AdminUserManagementController.ensureAdmin(req, res)) return;
+
+      const { userIds, basePassword } = req.body || {};
+      const result = await AdminUserManagementService.resetUsersCredentials(userIds, basePassword, req.user);
+
+      if (!result.success) {
+        return sendError(res, { error: result.error }, 400);
+      }
+
+      sendSuccess(res, result.data, 'Users credentials reset successfully', 200);
+    } catch (error) {
+      console.error('Error in resetUsersCredentials:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
+
+  /**
    * GET /api/admin/logs
    * Get admin logs
    */
@@ -253,6 +320,27 @@ export class AdminUserManagementController {
       sendSuccess(res, result.data, 'Admin logs fetched successfully', 200);
     } catch (error) {
       console.error('Error in getAdminLogs:', error);
+      sendError(res, { error: error.message }, 500);
+    }
+  }
+
+  /**
+   * GET /api/admin/logs/login
+   * Get login audit logs
+   */
+  static async getLoginLogs(req, res) {
+    try {
+      if (!AdminUserManagementController.ensureAdmin(req, res)) return;
+
+      const result = await AdminUserManagementService.getLoginLogs(req.user);
+
+      if (!result.success) {
+        return sendError(res, { error: result.error }, 400);
+      }
+
+      sendSuccess(res, result.data, 'Login logs fetched successfully', 200);
+    } catch (error) {
+      console.error('Error in getLoginLogs:', error);
       sendError(res, { error: error.message }, 500);
     }
   }

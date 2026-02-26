@@ -110,7 +110,6 @@ export default function ProfilePage() {
             <CardHeader>
               <CardTitle className="text-white">Profile Information</CardTitle>
               <CardDescription className="text-gray-400">
-                {loading ? "Loading latest data..." : "Fetched from database"}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">

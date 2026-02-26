@@ -17,6 +17,13 @@ const router = express.Router();
 router.post('/users', authenticateToken, AdminUserManagementController.createAdminUser);
 
 /**
+ * POST /api/admin/users/bulk
+ * Bulk create users/admins
+ * Body: { users: [{ rowNumber, accountType, name, email, employeeId, roleId, geoId, orgId, departmentId, adminRole }] }
+ */
+router.post('/users/bulk', authenticateToken, AdminUserManagementController.createUsersBulk);
+
+/**
  * POST /api/admin/admin-users
  * Create a new admin user
  * Body: { fullName, email, adminRole, orgId }
@@ -31,10 +38,10 @@ router.post('/admin-users', authenticateToken, AdminUserManagementController.cre
 router.get('/users', authenticateToken, AdminUserManagementController.getAllAdminUsers);
 
 /**
- * PATCH /api/admin/users/:id
- * Update a user
+ * PATCH /api/admin/users/reset-credentials
+ * Reset password + security questions for multiple users
  */
-router.patch('/users/:id', authenticateToken, AdminUserManagementController.updateUser);
+router.patch('/users/reset-credentials', authenticateToken, AdminUserManagementController.resetUsersCredentials);
 
 /**
  * PATCH /api/admin/users/status
@@ -42,6 +49,18 @@ router.patch('/users/:id', authenticateToken, AdminUserManagementController.upda
  * Body: { userIds: [], action: "lock" | "unlock" | "deactivate" | "reactivate" }
  */
 router.patch('/users/status', authenticateToken, AdminUserManagementController.updateUserStatus);
+
+/**
+ * PATCH /api/admin/users/:id/reset-credentials
+ * Reset password + security questions and force first-time login
+ */
+router.patch('/users/:id/reset-credentials', authenticateToken, AdminUserManagementController.resetUserCredentials);
+
+/**
+ * PATCH /api/admin/users/:id
+ * Update a user
+ */
+router.patch('/users/:id', authenticateToken, AdminUserManagementController.updateUser);
 
 /**
  * GET /api/admin/roles
@@ -66,5 +85,6 @@ router.get('/geos', authenticateToken, AdminUserManagementController.getAllGeos)
  * Get admin logs
  */
 router.get('/logs', authenticateToken, AdminUserManagementController.getAdminLogs);
+router.get('/logs/login', authenticateToken, AdminUserManagementController.getLoginLogs);
 
 export default router;

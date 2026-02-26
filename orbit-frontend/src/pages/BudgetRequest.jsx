@@ -230,15 +230,15 @@ export default function BudgetConfigurationPage() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       <PageHeader
         title="Budget Configuration"
         description="Manage budget configurations and access controls"
       />
 
       <div className="flex-1 p-6 overflow-hidden">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6 h-full flex flex-col min-h-0">
-          <TabsList className="bg-slate-800 border-slate-700 p-1">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className={`flex flex-col h-full ${activeTab === "create" ? "gap-3" : "gap-6"}`}>
+          <TabsList className="bg-slate-800 border-slate-700 p-1 w-max flex-shrink-0">
             <TabsTrigger
               value="list"
               className="data-[state=active]:bg-pink-500 data-[state=active]:text-white text-gray-300 border-0"
@@ -320,6 +320,58 @@ function ConfigurationList({ userRole }) {
   const lastConfigFetchRef = useRef(0);
 
   const token = user?.token || localStorage.getItem("authToken") || "";
+  const normalizedUserRole = String(userRole || '').toLowerCase();
+  const shouldRestrictByDepartmentScope = ['requestor', 'l1'].includes(normalizedUserRole);
+
+  const normalizeScopeText = (value = '') =>
+    String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[_\-]+/g, ' ')
+      .replace(/\s+/g, ' ');
+
+  const flattenScopeEntries = (value) => {
+    const parsed = parseStoredList(value);
+    const result = [];
+
+    const walk = (entry) => {
+      if (Array.isArray(entry)) {
+        entry.forEach(walk);
+        return;
+      }
+      if (entry === undefined || entry === null || entry === '') return;
+      result.push(String(entry).trim());
+    };
+
+    walk(parsed);
+    return result.filter(Boolean);
+  };
+
+  const canUserViewByDepartmentScope = (config) => {
+    if (!shouldRestrictByDepartmentScope) return true;
+    if (!config) return false;
+    if (String(config.createdById || '') === String(user?.id || '')) return true;
+
+    const userDepartmentId = String(user?.department_id || user?.departmentId || '').trim();
+    const userDepartmentName = normalizeScopeText(user?.department || user?.department_name || user?.departmentName || '');
+    if (!userDepartmentId && !userDepartmentName) return true;
+
+    const rawScopeValues = [
+      ...flattenScopeEntries(config.accessOUPaths),
+      ...flattenScopeEntries(config.department),
+      ...flattenScopeEntries(config.departmentId),
+    ];
+
+    if (!rawScopeValues.length) return true;
+
+    return rawScopeValues.some((value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return false;
+      if (userDepartmentId && raw === userDepartmentId) return true;
+      if (userDepartmentName && normalizeScopeText(raw) === userDepartmentName) return true;
+      return false;
+    });
+  };
 
   const getApproverName = (approverId, approversList) => {
     if (!approverId) return null;
@@ -394,6 +446,9 @@ function ConfigurationList({ userRole }) {
       geo: parseStoredList(config.geo || config.countries),
       location: parseStoredList(config.location || config.siteLocation),
       clients: parseStoredList(config.client || config.clients),
+      accessOUPaths: parseStoredList(config.access_ou || config.accessOUPaths),
+      department: config.department || config.budget_department || null,
+      departmentId: config.department_id || config.departmentId || null,
       selectedTenureGroups: parseStoredList(config.tenure_group || config.selectedTenureGroups || config.tenureGroup),
       history: config.history || config.history_entries || config.historyEntries || [],
       logs: config.logs || config.logEntries || config.configuration_logs || config.log_entries || [],
@@ -458,7 +513,8 @@ function ConfigurationList({ userRole }) {
         hasNext: false,
       };
 
-      setConfigurations((items || []).map(transformConfig));
+      const transformedItems = (items || []).map(transformConfig);
+      setConfigurations(transformedItems.filter(canUserViewByDepartmentScope));
       setServerPagination(pagination);
       lastConfigFetchRef.current = Date.now();
     } catch (err) {
@@ -3076,10 +3132,10 @@ function CreateConfiguration() {
   const accessiblePreviewLines = buildAccessiblePreviewLines();
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-2">
       <Card className="bg-slate-800 border-slate-700">
-        <CardHeader>
-          <div className="flex items-start justify-between gap-4">
+        <CardHeader className="py-3">
+          <div className="flex items-start justify-between gap-1">
             <div>
               <CardTitle className="text-white">Create Configuration</CardTitle>
               <CardDescription className="text-gray-400">
@@ -3091,14 +3147,14 @@ function CreateConfiguration() {
             </span>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-4">
+        <CardContent className="grid gap-1 pt-1">
           {viewStep === "form" ? (
-            <div className="space-y-4">
-              <div className="grid gap-4 lg:grid-cols-12">
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-6">
+            <div className="space-y-1">
+              <div className="grid gap-1 lg:grid-cols-12">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-1 lg:col-span-6">
                 <h4 className="font-medium text-white">Setup Configuration</h4>
-                <div className="grid gap-4 md:grid-cols-12 items-end">
-                  <div className="space-y-2 md:col-span-6">
+                <div className="grid gap-1 md:grid-cols-12 items-end">
+                  <div className="space-y-1 md:col-span-6">
                     <Label htmlFor="budgetName" className="text-white">Budget Name *</Label>
                     <Input
                       id="budgetName"
@@ -3146,19 +3202,19 @@ function CreateConfiguration() {
                     onChange={(e) => updateField("description", e.target.value)}
                     onKeyDown={blockShortcuts}
                     maxLength={500}
-                    rows={4}
-                    className="w-full px-3 py-2 min-h-[110px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400 resize-none"
+                    rows={3}
+                    className="w-full px-3 py-2 min-h-[90px] bg-slate-700 border border-gray-300 rounded-md text-white placeholder:text-gray-400 resize-none"
                   />
                 </div>
               </div>
 
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-1 lg:col-span-3">
                 <div className="flex items-center justify-between">
                   <h4 className="font-medium text-white">Data Control</h4>
                   <Badge className="bg-green-500 text-white">Enabled</Badge>
                 </div>
-                <div className="space-y-3">
-                  <div className="space-y-2">
+                <div className="space-y-1">
+                  <div className="space-y-1">
                     <Label className="text-white">Currency *</Label>
                     <SearchableSelect
                       value={formData.currency}
@@ -3169,7 +3225,7 @@ function CreateConfiguration() {
                       disabled
                     />
                   </div>
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <Label htmlFor="limitMin" className="text-white">Min Limit *</Label>
                     <Input
                       id="limitMin"
@@ -3181,7 +3237,7 @@ function CreateConfiguration() {
                       className="bg-slate-700 border-gray-300 text-white"
                     />
                   </div>
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <Label htmlFor="limitMax" className="text-white">Max Limit *</Label>
                     <Input
                       id="limitMax"
@@ -3196,11 +3252,11 @@ function CreateConfiguration() {
                 </div>
               </div>
 
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-3">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-1 lg:col-span-3">
                 <div className="flex items-center justify-between">
                   <h4 className="font-medium text-white">Payroll Cycle & Budget Control</h4>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <Label className="text-white">Cycle *</Label>
                   <SearchableSelect
                     value={formData.payCycle}
@@ -3214,7 +3270,7 @@ function CreateConfiguration() {
                   />
                 </div>
 
-                <div className="pt-2 space-y-3 border-t border-slate-600/60">
+                <div className="pt-2 space-y-1 border-t border-slate-600/60">
                   <div className="flex items-center justify-between">
                     <h5 className="font-medium text-white">Budget Control</h5>
                     <div className="flex items-center space-x-2">
@@ -3231,7 +3287,7 @@ function CreateConfiguration() {
                   </div>
 
                   {formData.budgetControlEnabled ? (
-                    <div className="space-y-2">
+                    <div className="space-y-1">
                       <Label htmlFor="budgetControlLimit" className="text-white">Budget Limit *</Label>
                       <Input
                         id="budgetControlLimit"
@@ -3249,11 +3305,11 @@ function CreateConfiguration() {
                 </div>
               </div>
               </div>
-              <div className="grid gap-4 lg:grid-cols-12">
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-5 min-h-[420px]">
+              <div className="grid gap-1 lg:grid-cols-12">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-1 lg:col-span-5 min-h-[420px]">
                 <h4 className="font-medium text-white">Organization</h4>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
+                <div className="grid gap-1 md:grid-cols-2">
+                  <div className="space-y-1">
                     <Label className="text-white text-sm">Affected OUs *</Label>
                     <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
                       {organizationsLoading ? (
@@ -3378,7 +3434,7 @@ function CreateConfiguration() {
                     )}
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <Label className="text-white text-sm">Accessible OUs *</Label>
                     <div className="bg-slate-600/30 rounded text-sm border border-slate-500 p-2 max-h-96 overflow-y-auto">
                       {organizationsLoading ? (
@@ -3505,10 +3561,10 @@ function CreateConfiguration() {
                 </div>
               </div>
 
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-4 lg:col-span-2 min-h-[420px]">
-                <div className="space-y-3">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-1 lg:col-span-2 min-h-[420px]">
+                <div className="space-y-1">
                   <h4 className="font-medium text-white">Location & Client Scope</h4>
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <Label className="text-white text-xs">Geo (Country/Region) *</Label>
                     <SearchableSelect
                       value={formData.countries.length > 0 ? formData.countries[0] : ""}
@@ -3577,7 +3633,7 @@ function CreateConfiguration() {
                   </div>
                 </div>
 
-                <div className="pt-3 border-t border-slate-600/60 space-y-3">
+                <div className="pt-3 border-t border-slate-600/60 space-y-2">
                   <h4 className="font-medium text-white">Tenure Group *</h4>
                   <div className="grid grid-cols-2 gap-2">
                     {["0-6months", "6-12months", "1-2years", "2-5years", "5plus-years"].map((value) => (
@@ -3607,7 +3663,7 @@ function CreateConfiguration() {
                 </div>
               </div>
 
-              <div className="bg-slate-700/50 rounded-lg p-4 space-y-5 lg:col-span-5 min-h-[420px]">
+              <div className="bg-slate-700/50 rounded-lg p-4 space-y-1 lg:col-span-5 min-h-[420px]">
                 <h4 className="font-medium text-white">Approval Hierarchy</h4>
 
                 {[1, 2, 3].map((level) => {
@@ -3829,7 +3885,7 @@ function CreateConfiguration() {
       </Card>
 
       <Card className="bg-slate-800 border-slate-700">
-        <CardContent className="!py-4">
+        <CardContent className="!py-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-gray-400">
               {viewStep === "review"

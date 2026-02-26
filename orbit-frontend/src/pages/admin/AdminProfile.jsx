@@ -1,186 +1,119 @@
 "use client"
 
-import { useState } from "react"
+import { useAuth } from "../../context/AuthContext"
 
-export default function Profile() {
-  const [profileImage, setProfileImage] = useState(null)
-  const [notifications, setNotifications] = useState({
-    email: true,
-    system: true,
-    security: false,
-  })
-  const [darkMode, setDarkMode] = useState(true)
+const formatRole = (value) => {
+  const normalized = (value || "").toString().trim()
+  if (!normalized) return "—"
 
-  const handleImageUpload = (e) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        setProfileImage(reader.result)
+  return normalized
+    .replace(/_/g, " ")
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ")
+}
+
+export default function AdminProfile() {
+  const { user } = useAuth()
+
+  const fullName = user?.name || `${user?.firstName || ""} ${user?.lastName || ""}`.trim() || "—"
+  const email = user?.email || "—"
+  const role = formatRole(user?.role)
+  const organization = user?.org_name || user?.orgName || user?.org_id || user?.orgId || "—"
+  const sessionDataRaw = localStorage.getItem("session_cache")
+
+  let sessionExpiresAt = "—"
+  let sessionDurationLabel = "—"
+  try {
+    const parsed = sessionDataRaw ? JSON.parse(sessionDataRaw) : null
+    if (parsed?.expiresAt) {
+      const expiryDate = new Date(parsed.expiresAt)
+      if (!Number.isNaN(expiryDate.getTime())) {
+        sessionExpiresAt = expiryDate.toLocaleString()
+
+        const assumedSessionStartMs = expiryDate.getTime() - (24 * 60 * 60 * 1000)
+        const elapsedMs = Math.max(0, Date.now() - assumedSessionStartMs)
+        const elapsedMinutes = Math.floor(elapsedMs / (60 * 1000))
+        const elapsedHours = Math.floor(elapsedMinutes / 60)
+        const remainingMinutes = elapsedMinutes % 60
+        sessionDurationLabel = `${elapsedHours}h ${remainingMinutes}m`
       }
-      reader.readAsDataURL(file)
     }
-  }
-
-  const handleSaveChanges = () => {
-    alert("Settings saved successfully!")
+  } catch {
+    sessionExpiresAt = "—"
+    sessionDurationLabel = "—"
   }
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
-      {/* Header */}
       <div className="bg-gradient-to-r from-fuchsia-600 via-pink-600 to-purple-600 px-6 py-4 shadow-lg">
         <div>
-          <h1 className="text-2xl font-bold text-white">Profile Settings</h1>
-          <p className="text-sm text-white/80">Manage your account information and preferences</p>
+          <h1 className="text-2xl font-bold text-white">Admin Profile</h1>
+          <p className="text-sm text-white/80">Your account information</p>
         </div>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-3xl mx-auto space-y-6">
-          {/* Profile Card */}
-          <div className="bg-slate-800/80 rounded-lg border border-slate-700 p-6">
+      <div className="flex-1 overflow-y-auto p-8">
+        <div className="max-w-5xl mx-auto min-h-full flex flex-col justify-center gap-8">
+          <div className="bg-slate-800/80 rounded-lg border border-slate-700 p-8">
             <h3 className="text-lg font-semibold text-white mb-6">Profile Information</h3>
-            <div className="flex items-start gap-6">
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-32 h-32 bg-gradient-to-br from-fuchsia-500 to-purple-500 rounded-full flex items-center justify-center text-white text-4xl font-bold overflow-hidden">
-                  {profileImage ? (
-                    <img
-                      src={profileImage || "/placeholder.svg"}
-                      alt="Profile"
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    "AU"
-                  )}
-                </div>
-                <label className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm hover:bg-slate-600 transition-colors cursor-pointer">
-                  Change Picture
-                  <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                </label>
-              </div>
-              <div className="flex-1 grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-2">Full Name</label>
-                  <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
-                    Admin User
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-2">Employee ID</label>
-                  <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
-                    ADMIN001
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-2">Email Address</label>
-                  <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
-                    admin@orbit.com
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-2">Role</label>
-                  <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
-                    System Administrator
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-2">Department</label>
-                  <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
-                    IT Department
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-2">Status</label>
-                  <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg">
-                    <span className="text-xs px-2 py-1 rounded bg-emerald-500/20 text-emerald-400">Active</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
 
-          {/* Notification Preferences */}
-          <div className="bg-slate-800/80 rounded-lg border border-slate-700 p-6">
-            <h3 className="text-lg font-semibold text-white mb-6">Notification Preferences</h3>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-white">Email Notifications</p>
-                  <p className="text-xs text-slate-400">Receive email alerts for important events</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={notifications.email}
-                    onChange={(e) => setNotifications({ ...notifications, email: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-fuchsia-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fuchsia-600"></div>
-                </label>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-white">System Notifications</p>
-                  <p className="text-xs text-slate-400">Get notified about system updates and maintenance</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={notifications.system}
-                    onChange={(e) => setNotifications({ ...notifications, system: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-fuchsia-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fuchsia-600"></div>
-                </label>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-white">Security Alerts</p>
-                  <p className="text-xs text-slate-400">Receive alerts for security-related events</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={notifications.security}
-                    onChange={(e) => setNotifications({ ...notifications, security: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-fuchsia-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fuchsia-600"></div>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          {/* Theme Settings */}
-          <div className="bg-slate-800/80 rounded-lg border border-slate-700 p-6">
-            <h3 className="text-lg font-semibold text-white mb-6">Theme Settings</h3>
-            <div className="flex items-center justify-between">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <p className="text-sm font-medium text-white">Dark Mode</p>
-                <p className="text-xs text-slate-400">Toggle between light and dark theme</p>
+                <label className="block text-sm font-medium text-slate-400 mb-2">Full Name</label>
+                <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
+                  {fullName}
+                </div>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={darkMode}
-                  onChange={(e) => setDarkMode(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-fuchsia-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fuchsia-600"></div>
-              </label>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-2">Email Address</label>
+                <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white break-all">
+                  {email}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-2">Role</label>
+                <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
+                  {role}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-2">Organization Unit</label>
+                <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white">
+                  {organization}
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* Save Button */}
-          <div className="flex justify-end">
-            <button
-              onClick={handleSaveChanges}
-              className="px-6 py-3 bg-fuchsia-600 text-white rounded-lg font-medium hover:bg-fuchsia-700 transition-colors"
-            >
-              Save Changes
-            </button>
+          <div className="bg-slate-800/80 rounded-lg border border-slate-700 p-8">
+            <h3 className="text-lg font-semibold text-white mb-6">Account Summary</h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg">
+                <p className="text-xs text-slate-400 mb-1">Session Duration</p>
+                <p className="text-sm text-white font-medium" title={sessionDurationLabel}>
+                  {sessionDurationLabel}
+                </p>
+              </div>
+
+              <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg">
+                <p className="text-xs text-slate-400 mb-1">Session Expiry</p>
+                <p className="text-sm text-white font-medium truncate" title={sessionExpiresAt}>
+                  {sessionExpiresAt}
+                </p>
+              </div>
+
+              <div className="px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg">
+                <p className="text-xs text-slate-400 mb-1">User ID</p>
+                <p className="text-sm text-white font-medium truncate" title={user?.id || "—"}>
+                  {user?.id || "—"}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>

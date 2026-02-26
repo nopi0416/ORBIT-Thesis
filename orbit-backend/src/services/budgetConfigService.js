@@ -29,6 +29,53 @@ const containsOrgId = (value, orgId) => {
   });
 };
 
+const flattenScopeEntries = (value) => {
+  const parsed = parseStoredList(value);
+  const flat = [];
+
+  const walk = (entry) => {
+    if (Array.isArray(entry)) {
+      entry.forEach(walk);
+      return;
+    }
+    if (entry === undefined || entry === null || entry === '') return;
+    flat.push(String(entry).trim());
+  };
+
+  walk(parsed);
+  return flat.filter(Boolean);
+};
+
+const normalizeScopeText = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+
+const matchesDepartmentScope = (config = {}, departmentId = null, departmentName = null) => {
+  const normalizedDepartmentId = String(departmentId || '').trim();
+  const normalizedDepartmentName = normalizeScopeText(departmentName);
+  if (!normalizedDepartmentId && !normalizedDepartmentName) return false;
+
+  const accessScope = flattenScopeEntries(config.access_ou);
+  const departmentScope = flattenScopeEntries(config.department || config.budget_department || config.department_id);
+  const allScopeValues = [...accessScope, ...departmentScope];
+
+  if (!allScopeValues.length) return false;
+
+  return allScopeValues.some((rawValue) => {
+    const scopeValue = String(rawValue || '').trim();
+    if (!scopeValue) return false;
+    if (normalizedDepartmentId && scopeValue === normalizedDepartmentId) return true;
+
+    const normalizedScopeValue = normalizeScopeText(scopeValue);
+    if (normalizedDepartmentName && normalizedScopeValue === normalizedDepartmentName) return true;
+
+    return false;
+  });
+};
+
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
 
 const normalizeIdentityText = (value) =>
@@ -132,6 +179,8 @@ export class BudgetConfigService {
       userId,
       userRole,
       orgAncestryIds = [],
+      departmentId = null,
+      departmentName = null,
       approverBudgetIds = new Set(),
       isAdmin = false,
     } = context;
@@ -147,8 +196,11 @@ export class BudgetConfigService {
     if (isPayrollRole(userRole)) return true;
 
     if (isRequestorRole(userRole)) {
-      if (!orgAncestryIds.length) return false;
-      return orgAncestryIds.some((orgId) => containsOrgId(config.access_ou, orgId));
+      const orgMatch = orgAncestryIds.length
+        ? orgAncestryIds.some((orgId) => containsOrgId(config.access_ou, orgId))
+        : false;
+      const departmentMatch = matchesDepartmentScope(config, departmentId, departmentName);
+      return orgMatch || departmentMatch;
     }
 
     return false;
@@ -157,6 +209,17 @@ export class BudgetConfigService {
   static async canUserAccessBudgetConfig({ budgetConfig, userId, userRole, orgId, isAdmin = false }) {
     try {
       const budgetId = budgetConfig?.budget_id || budgetConfig?.id;
+      let departmentId = null;
+      let departmentName = null;
+
+      if (userId) {
+        const userResult = await this.getUserById(userId);
+        if (userResult?.success && userResult?.data) {
+          departmentId = userResult.data.department_id || null;
+          departmentName = userResult.data.department || null;
+        }
+      }
+
       const [orgAncestryIds, approverBudgetIds] = await Promise.all([
         this.getOrganizationAncestryIds(orgId),
         this.getApproverBudgetIdsByUser(userId, budgetId ? [budgetId] : []),
@@ -166,6 +229,8 @@ export class BudgetConfigService {
         userId,
         userRole,
         orgAncestryIds,
+        departmentId,
+        departmentName,
         approverBudgetIds,
         isAdmin,
       });
@@ -568,9 +633,17 @@ export class BudgetConfigService {
       let visibilityFiltered = filteredByOrg;
       if (filters.user_id) {
         let orgAncestryIds = [];
+        let departmentId = null;
+        let departmentName = null;
         let approverBudgetIds = new Set();
 
         try {
+          const userResult = await this.getUserById(filters.user_id);
+          if (userResult?.success && userResult?.data) {
+            departmentId = userResult.data.department_id || null;
+            departmentName = userResult.data.department || null;
+          }
+
           [orgAncestryIds, approverBudgetIds] = await Promise.all([
             this.getOrganizationAncestryIds(filters.org_id),
             this.getApproverBudgetIdsByUser(filters.user_id, (filteredByOrg || []).map((row) => row.budget_id)),
@@ -584,6 +657,8 @@ export class BudgetConfigService {
             userId: filters.user_id,
             userRole: filters.user_role,
             orgAncestryIds,
+            departmentId,
+            departmentName,
             approverBudgetIds,
             isAdmin: Boolean(filters.is_admin),
           })
@@ -1657,6 +1732,190 @@ export class BudgetConfigService {
         success: false,
         error: error.message,
         data: [],
+      };
+    }
+  }
+
+  /**
+   * Create organization
+   */
+  static async createOrganization(payload) {
+    try {
+      const {
+        org_name,
+        company_code,
+        parent_org_id,
+        org_description,
+        created_by,
+      } = payload || {};
+
+      if (!org_name?.trim()) {
+        return {
+          success: false,
+          error: 'org_name is required',
+        };
+      }
+
+      let resolvedCompanyCode = company_code || null;
+      if (parent_org_id && !resolvedCompanyCode) {
+        const { data: parentOrg, error: parentError } = await supabase
+          .from('tblorganization')
+          .select('company_code')
+          .eq('org_id', parent_org_id)
+          .single();
+
+        if (parentError) throw parentError;
+        resolvedCompanyCode = parentOrg?.company_code || null;
+      }
+
+      const resolvedCreatedBy = getUserUUID(created_by) || getUserUUID('john-smith');
+      const now = new Date().toISOString();
+
+      const { data, error } = await supabase
+        .from('tblorganization')
+        .insert([
+          {
+            org_name: org_name.trim(),
+            company_code: resolvedCompanyCode,
+            parent_org_id: parent_org_id || null,
+            org_description: org_description?.trim() || null,
+            created_by: resolvedCreatedBy,
+            updated_by: resolvedCreatedBy,
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error creating organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Update organization
+   */
+  static async updateOrganization(orgId, payload) {
+    try {
+      if (!orgId) {
+        return {
+          success: false,
+          error: 'orgId is required',
+        };
+      }
+
+      const {
+        org_name,
+        org_description,
+        company_code,
+        parent_org_id,
+        updated_by,
+      } = payload || {};
+
+      const updateData = {
+        ...(org_name !== undefined && { org_name: org_name?.trim() || '' }),
+        ...(org_description !== undefined && { org_description: org_description?.trim() || null }),
+        ...(company_code !== undefined && { company_code: company_code?.trim() || null }),
+        ...(parent_org_id !== undefined && { parent_org_id: parent_org_id || null }),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (updated_by !== undefined) {
+        updateData.updated_by = getUserUUID(updated_by) || getUserUUID('john-smith');
+      }
+
+      if (Object.keys(updateData).length === 1 && updateData.updated_at) {
+        return {
+          success: false,
+          error: 'No fields provided to update',
+        };
+      }
+
+      const { data, error } = await supabase
+        .from('tblorganization')
+        .update(updateData)
+        .eq('org_id', orgId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      console.error('Error updating organization:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Delete organization (and descendants)
+   */
+  static async deleteOrganization(orgId) {
+    try {
+      if (!orgId) {
+        return {
+          success: false,
+          error: 'orgId is required',
+        };
+      }
+
+      const { data: orgRows, error: orgRowsError } = await supabase
+        .from('tblorganization')
+        .select('org_id, parent_org_id');
+
+      if (orgRowsError) throw orgRowsError;
+
+      const childrenMap = new Map();
+      (orgRows || []).forEach((org) => {
+        if (!childrenMap.has(org.parent_org_id)) {
+          childrenMap.set(org.parent_org_id, []);
+        }
+        childrenMap.get(org.parent_org_id).push(org.org_id);
+      });
+
+      const orderedIds = [];
+      const walk = (id) => {
+        const children = childrenMap.get(id) || [];
+        children.forEach((childId) => walk(childId));
+        orderedIds.push(id);
+      };
+      walk(orgId);
+
+      for (const id of orderedIds) {
+        const { error } = await supabase
+          .from('tblorganization')
+          .delete()
+          .eq('org_id', id);
+
+        if (error) throw error;
+      }
+
+      return {
+        success: true,
+        data: { org_id: orgId, deleted_count: orderedIds.length },
+      };
+    } catch (error) {
+      console.error('Error deleting organization:', error);
+      return {
+        success: false,
+        error: error.message,
       };
     }
   }

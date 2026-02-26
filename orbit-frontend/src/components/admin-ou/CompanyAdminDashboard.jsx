@@ -329,7 +329,7 @@ export function CompanyAdminDashboard() {
 
 
   return (
-    <div>
+    <div className="flex flex-col h-full gap-3 min-h-0 w-full">
       {showNotification && (
         <div className="fixed top-4 right-4 z-50 w-full max-w-md">
           {notificationVariant === 'error' ? (
@@ -363,362 +363,259 @@ export function CompanyAdminDashboard() {
           )}
         </div>
       )}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <div className="lg:col-span-2">
-          <Card
-            className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white"
-            style={{
-              height:
-                activeTab === 'departments'
-                  ? filteredDepts.length > 7
-                    ? Math.min(filteredDepts.length, 7) * 64 + 145
-                    : 'fit-content'
-                  : companies.length > 7
-                    ? Math.min(companies.length, 7) * 64 + 145
-                    : 'fit-content',
-              minHeight: 'fit-content',
+      <Card className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white flex-1 overflow-y-auto min-h-0">
+        <div className="flex items-center justify-between mb-2">
+          <div className="min-w-0">
+            <h3 className="font-semibold text-base">Organizations</h3>
+          </div>
+          <Dialog
+            open={showAddDeptDialog}
+            onOpenChange={(open) => {
+              if (isCreatingDept) return;
+              setShowAddDeptDialog(open);
             }}
           >
-            <div className="flex items-center justify-between mb-2">
-              <div className="min-w-0">
-                <h3 className="font-semibold text-base">
-                  {activeTab === 'departments' ? 'Departments' : 'Companies'}
-                </h3>
-                <p className="text-xs text-muted-foreground">
-                  {activeTab === 'departments' ? 'Organization Units' : 'Organizational Entities'}
-                </p>
-              </div>
-              {activeTab === 'departments' && (
-                <Dialog
-                  open={showAddDeptDialog}
-                  onOpenChange={(open) => {
-                    if (isCreatingDept) return;
-                    setShowAddDeptDialog(open);
-                  }}
-                >
-                  <DialogTrigger asChild>
-                    <Button size="sm" className="gap-1 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
-                      <Plus className="h-3 w-3" />
-                      New
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
-                    <DialogHeader>
-                      <DialogTitle>Add Department</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-3">
-                      <div>
-                        <Label className="text-sm">Name</Label>
-                        <Input
-                          placeholder="Department name"
-                          value={newDeptName}
-                          onChange={handleOuInputChange(setNewDeptName)}
-                          onPaste={handleOuPaste()}
-                          onKeyDown={handleOuKeyDown()}
-                          maxLength={50}
-                          className="text-sm"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-sm">Description</Label>
-                        <Textarea
-                          placeholder="Optional"
-                          value={newDeptDesc}
-                          onChange={handleOuInputChange(setNewDeptDesc, true)}
-                          onPaste={handleOuPaste(true)}
-                          onKeyDown={handleOuKeyDown(true)}
-                          maxLength={255}
-                          className="text-sm min-h-[128px]"
-                        />
-                      </div>
-                      <div className="flex gap-2 justify-end pt-2 border-t">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
-                          onClick={() => setShowAddDeptDialog(false)}
-                          disabled={isCreatingDept}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
-                          onClick={() => handleAddDepartment(newDeptName, newDeptDesc)}
-                          disabled={isCreatingDept}
-                        >
-                          Add
-                        </Button>
-                      </div>
-                    </div>
-                  </DialogContent>
-                </Dialog>
-              )}
-            </div>
-
-            <div className="flex gap-2 mb-2 border-b border-slate-700">
-              <button
-                onClick={() => setActiveTab('departments')}
-                className={`px-3 py-2 text-sm font-medium transition-colors ${
-                  activeTab === 'departments'
-                    ? 'text-white border-b-2 border-fuchsia-500 -mb-0.5'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Departments
-              </button>
-              <button
-                onClick={() => setActiveTab('companies')}
-                className={`px-3 py-2 text-sm font-medium transition-colors ${
-                  activeTab === 'companies'
-                    ? 'text-white border-b-2 border-fuchsia-500 -mb-0.5'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Companies
-              </button>
-            </div>
-
-            <Input
-              placeholder="Search..."
-              value={searchTerm}
-              onChange={handleOuInputChange(setSearchTerm)}
-              onPaste={handleOuPaste()}
-              onKeyDown={handleOuKeyDown()}
-              maxLength={50}
-              className="h-8 mb-2 text-sm"
-            />
-
-            {activeTab === 'departments' ? (
-              <div
-                className={`space-y-1 ${filteredDepts.length > 7 ? 'overflow-y-auto pr-2' : 'overflow-hidden'}`}
-                style={{
-                  height: filteredDepts.length > 7 ? Math.min(filteredDepts.length, 7) * 64 : 'auto',
-                  maxHeight: Math.min(filteredDepts.length, 7) * 64,
-                }}
-              >
-                {filteredDepts.map((dept) => (
-                  <Card
-                    key={dept.id}
-                    className={`p-2 cursor-pointer transition-colors ${
-                      selectedDept?.id === dept.id ? 'bg-accent border-primary' : 'hover:bg-accent'
-                    }`}
-                    onClick={() => {
-                      setSelectedDeptIds((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(dept.id)) {
-                          next.delete(dept.id);
-                          if (selectedDept?.id === dept.id) {
-                            setSelectedDept(null);
-                          }
-                        } else {
-                          next.add(dept.id);
-                          setSelectedDept(dept);
-                        }
-                        return next;
-                      });
-                    }}
+            <DialogTrigger asChild>
+              <Button size="sm" className="gap-1 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
+                <Plus className="h-3 w-3" />
+                New
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
+              <DialogHeader>
+                <DialogTitle>Add Department</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-sm">Name</Label>
+                  <Input
+                    placeholder="Department name"
+                    value={newDeptName}
+                    onChange={handleOuInputChange(setNewDeptName)}
+                    onPaste={handleOuPaste()}
+                    onKeyDown={handleOuKeyDown()}
+                    maxLength={50}
+                    className="text-sm"
+                  />
+                </div>
+                <div>
+                  <Label className="text-sm">Description</Label>
+                  <Textarea
+                    placeholder="Optional"
+                    value={newDeptDesc}
+                    onChange={handleOuInputChange(setNewDeptDesc, true)}
+                    onPaste={handleOuPaste(true)}
+                    onKeyDown={handleOuKeyDown(true)}
+                    maxLength={255}
+                    className="text-sm min-h-[128px]"
+                  />
+                </div>
+                <div className="flex gap-2 justify-end pt-2 border-t">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                    onClick={() => setShowAddDeptDialog(false)}
+                    disabled={isCreatingDept}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <Checkbox
-                          checked={selectedDeptIds.has(dept.id)}
-                          onCheckedChange={() => toggleDeptSelection(dept.id)}
-                          onClick={(event) => event.stopPropagation()}
-                        />
-                        <p className="font-semibold text-sm truncate">{dept.name}</p>
-                      </div>
-                    </div>
-                  </Card>
-                ))}
-                {filteredDepts.length === 0 && (
-                  <p className="text-center text-muted-foreground text-xs py-4">No departments</p>
-                )}
-              </div>
-            ) : (
-              <div
-                className={`space-y-1 ${companies.length > 7 ? 'overflow-y-auto pr-2' : 'overflow-hidden'}`}
-                style={{
-                  height: companies.length > 7 ? Math.min(companies.length, 7) * 64 : 'auto',
-                  maxHeight: Math.min(companies.length, 7) * 64,
-                }}
-              >
-                {companies.map((company) => (
-                  <Card
-                    key={company.id}
-                    className="p-2 cursor-pointer transition-colors bg-slate-900/40 border-slate-700 hover:bg-slate-700/40"
-                    onClick={() => {
-                      setSelectedDept(null);
-                      setSelectedCompany(company);
-                    }}
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                    onClick={() => handleAddDepartment(newDeptName, newDeptDesc)}
+                    disabled={isCreatingDept}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-sm text-white truncate">{company.name}</p>
-                        <p className="text-xs text-slate-300 truncate">{company.departments_count} departments</p>
-                      </div>
-                      <Badge variant="outline" className="text-xs text-slate-200 border-slate-600">
-                        Company
-                      </Badge>
-                    </div>
-                  </Card>
-                ))}
-                {companies.length === 0 && (
-                  <p className="text-center text-slate-400 text-xs py-4">No companies</p>
-                )}
+                    Add
+                  </Button>
+                </div>
               </div>
-            )}
-
-            {activeTab === 'departments' && selectedDeptIds.size > 1 && (
-              <div className="flex items-center justify-between mt-2">
-                <p className="text-xs text-slate-400">
-                  {selectedDeptIds.size} selected
-                </p>
-                <Button
-                  size="sm"
-                  className="!bg-red-500/80 hover:!bg-red-500 !text-white"
-                  onClick={() => setShowBulkDeleteDialog(true)}
-                  disabled={isBulkDeleting}
-                >
-                  Delete Selected
-                </Button>
-              </div>
-            )}
-          </Card>
+            </DialogContent>
+          </Dialog>
         </div>
 
-        <div>
-          {selectedDept ? (
-            <Card className="p-3" style={{ height: 'fit-content' }}>
-              <h3 className="text-base font-semibold text-foreground mb-2">Details</h3>
-              <div className="space-y-2">
-                <div>
-                  <p className="text-xs text-muted-foreground mb-0.5">Name</p>
-                  <p className="text-sm font-medium text-foreground">{selectedDept.name}</p>
-                </div>
-                {selectedDept.description && (
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-0.5">Description</p>
-                    <p className="text-sm text-foreground">{selectedDept.description}</p>
-                  </div>
-                )}
-              </div>
+        <Input
+          placeholder="Search..."
+          value={searchTerm}
+          onChange={handleOuInputChange(setSearchTerm)}
+          onPaste={handleOuPaste()}
+          onKeyDown={handleOuKeyDown()}
+          maxLength={50}
+          className="h-8 mb-2 text-sm"
+        />
 
-              <div className="space-y-1 pt-2 border-t border-border">
-                <Dialog
-                  open={showEditDialog}
-                  onOpenChange={(open) => {
-                    if (isUpdatingDept) return;
-                    setShowEditDialog(open);
-                  }}
-                >
-                  <DialogTrigger asChild>
-                    <Button
-                      onClick={() => setEditingDept(selectedDept)}
-                      className="w-full bg-blue-500/80 hover:bg-blue-500 text-white gap-2 text-sm"
-                      disabled={isUpdatingDept}
-                    >
-                      <Edit3 className="w-4 h-4" />
-                      Edit Department
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
-                    <DialogHeader>
-                      <DialogTitle className="text-white">Edit Department</DialogTitle>
-                    </DialogHeader>
-                    {editingDept && (
-                      <EditDepartmentDialog
-                        ou={editingDept}
-                        onEditOU={handleEditDept}
-                        onCancel={() => setShowEditDialog(false)}
-                        isSaving={isUpdatingDept}
-                      />
-                    )}
-                  </DialogContent>
-                </Dialog>
-
-                <Dialog
-                  open={showDeleteDialog}
-                  onOpenChange={(open) => {
-                    if (isDeletingDept) return;
-                    setShowDeleteDialog(open);
-                  }}
-                >
-                  <DialogTrigger asChild>
-                    <Button
-                      className="w-full !bg-red-500/80 hover:!bg-red-500 !text-white gap-2 text-sm"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Delete Department
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
-                    <DialogHeader>
-                      <DialogTitle className="text-destructive">Delete Department</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      <p className="text-white text-sm">
-                        Are you sure you want to delete <span className="font-bold">{selectedDept.name}</span>? This action
-                        cannot be undone.
-                      </p>
-                      <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-                        <p className="text-sm text-red-300">Warning: This will permanently delete this department.</p>
-                      </div>
-                      <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                        <Button
-                          variant="outline"
-                          onClick={() => setShowDeleteDialog(false)}
-                          className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
-                          disabled={isDeletingDept}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          onClick={handleDeleteDept}
-                          className="!bg-red-500/80 hover:!bg-red-500 !text-white text-sm"
-                          disabled={isDeletingDept}
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  </DialogContent>
-                </Dialog>
+        <div
+          className={`space-y-1 ${filteredDepts.length > 7 ? 'overflow-y-auto pr-2' : 'overflow-hidden'}`}
+          style={{
+            height: filteredDepts.length > 7 ? Math.min(filteredDepts.length, 7) * 64 : 'auto',
+            maxHeight: Math.min(filteredDepts.length, 7) * 64,
+          }}
+        >
+          {filteredDepts.map((dept) => (
+            <Card
+              key={dept.id}
+              className={`p-2 cursor-pointer transition-colors ${
+                selectedDept?.id === dept.id ? 'bg-accent border-primary' : 'hover:bg-accent'
+              }`}
+              onClick={() => {
+                setSelectedDeptIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(dept.id)) {
+                    next.delete(dept.id);
+                    if (selectedDept?.id === dept.id) {
+                      setSelectedDept(null);
+                    }
+                  } else {
+                    next.add(dept.id);
+                    setSelectedDept(dept);
+                  }
+                  return next;
+                });
+              }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <Checkbox
+                    checked={selectedDeptIds.has(dept.id)}
+                    onCheckedChange={() => toggleDeptSelection(dept.id)}
+                    onClick={(event) => event.stopPropagation()}
+                  />
+                  <p className="font-semibold text-sm truncate">{dept.name}</p>
+                </div>
               </div>
             </Card>
-          ) : selectedCompany ? (
-            <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ height: 'fit-content' }}>
-              <h3 className="text-base font-semibold text-white mb-2">Company Details</h3>
-              <div className="space-y-2">
-                <div>
-                  <p className="text-xs text-slate-400 mb-0.5">Name</p>
-                  <p className="text-sm font-medium text-white">{selectedCompany.name}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-slate-400 mb-0.5">Departments</p>
-                  <p className="text-sm text-white">{selectedCompany.departments_count}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-slate-400 mb-0.5">Created</p>
-                  <p className="text-sm text-white">{selectedCompany.created_at}</p>
-                </div>
-                {selectedCompany.description && (
-                  <div>
-                    <p className="text-xs text-slate-400 mb-0.5">Description</p>
-                    <p className="text-sm text-white">{selectedCompany.description}</p>
-                  </div>
-                )}
-              </div>
-            </Card>
-          ) : (
-            <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ height: 'fit-content' }}>
-              <p className="text-center text-slate-400 text-xs py-8">
-                {activeTab === 'companies' ? 'Select a company' : 'Select a department'}
-              </p>
-            </Card>
+          ))}
+          {filteredDepts.length === 0 && (
+            <p className="text-center text-muted-foreground text-xs py-4">No departments</p>
           )}
         </div>
-      </div>
+
+        {selectedDeptIds.size > 1 && (
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-xs text-slate-400">
+              {selectedDeptIds.size} selected
+            </p>
+            <Button
+              size="sm"
+              className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+              onClick={() => setShowBulkDeleteDialog(true)}
+              disabled={isBulkDeleting}
+            >
+              Delete Selected
+            </Button>
+          </div>
+        )}
+      </Card>
+
+      {selectedDept ? (
+        <Card className="p-0 bg-slate-800/80 border-slate-700 text-white" style={{ maxHeight: '300px', display: 'flex', flexDirection: 'column' }}>
+          <div className="p-3 flex-1 overflow-y-auto space-y-3">
+            <h3 className="text-base font-semibold text-white mb-2">Details</h3>
+            <div className="space-y-2 text-sm mb-3">
+              <div>
+                <p className="text-xs text-slate-400 mb-1">Department Name</p>
+                <p className="text-white font-medium">{selectedDept.name}</p>
+              </div>
+              {selectedCompany?.name && (
+                <div>
+                  <p className="text-xs text-slate-400 mb-1">Company</p>
+                  <p className="text-white text-xs">{selectedCompany.name}</p>
+                </div>
+              )}
+              {selectedDept.description && (
+                <div>
+                  <p className="text-xs text-slate-400 mb-1">Description</p>
+                  <p className="text-white text-xs">{selectedDept.description}</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="p-3 flex items-center justify-end gap-2 bg-slate-800/80 border-t border-slate-700/50">
+            <Dialog
+              open={showEditDialog}
+              onOpenChange={(open) => {
+                if (isUpdatingDept) return;
+                setShowEditDialog(open);
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button
+                  onClick={() => setEditingDept(selectedDept)}
+                  className="gap-1 bg-blue-500/80 hover:bg-blue-500 text-white"
+                  size="sm"
+                  disabled={isUpdatingDept}
+                >
+                  <Edit3 className="w-3 h-3" />
+                  Edit
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
+                <DialogHeader>
+                  <DialogTitle className="text-white">Edit Department</DialogTitle>
+                </DialogHeader>
+                {editingDept && (
+                  <EditDepartmentDialog
+                    ou={editingDept}
+                    onEditOU={handleEditDept}
+                    onCancel={() => setShowEditDialog(false)}
+                    isSaving={isUpdatingDept}
+                  />
+                )}
+              </DialogContent>
+            </Dialog>
+
+            <Dialog
+              open={showDeleteDialog}
+              onOpenChange={(open) => {
+                if (isDeletingDept) return;
+                setShowDeleteDialog(open);
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button className="gap-1 !bg-red-500/80 hover:!bg-red-500 !text-white" size="sm">
+                  <Trash2 className="w-3 h-3" />
+                  Delete
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="bg-slate-800 border-slate-700 max-w-md">
+                <DialogHeader>
+                  <DialogTitle className="text-destructive">Delete Department</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <p className="text-white text-sm">
+                    Are you sure you want to delete <span className="font-bold">{selectedDept.name}</span>? This action cannot be undone.
+                  </p>
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                    <p className="text-sm text-red-300">Warning: This will permanently delete this department.</p>
+                  </div>
+                  <div className="flex gap-2 justify-end pt-4 border-t border-border">
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowDeleteDialog(false)}
+                      className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+                      disabled={isDeletingDept}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleDeleteDept}
+                      className="!bg-red-500/80 hover:!bg-red-500 !text-white text-sm"
+                      disabled={isDeletingDept}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </Card>
+      ) : (
+        <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <p className="text-slate-400 text-xs">Select a department to view details</p>
+        </Card>
+      )}
 
       <Dialog
         open={showBulkDeleteDialog}

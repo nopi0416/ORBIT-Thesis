@@ -337,25 +337,27 @@ const BulkUploadValidation = ({
               </tbody>
             </table>
           </div>
-          <PaginationControls
-            page={safeCurrentPage}
-            totalPages={totalPages}
-            rowsPerPage={rowsPerPage}
-            onPageChange={(page) => setCurrentPage(page)}
-            onRowsPerPageChange={(value) => setRowsPerPage(value)}
-            rowOptions={[25, 50, 100]}
-          />
-          <div className="mt-2 text-xs text-slate-400">
-            Total items: {filteredItems.length}
+          <div className="mt-0.5 flex flex-wrap items-start justify-between gap-2">
+            <div className="text-xs text-slate-400 space-y-0 leading-tight">
+              <div>Total items: {filteredItems.length}</div>
+              <p className="leading-tight">
+                <strong className="text-red-400">Invalid:</strong> Employee not in scope.
+                <strong className="text-yellow-400 ml-1">Warning:</strong> Deduction/amount needs notes.
+                <strong className="text-green-400 ml-1">Valid:</strong> Ready to submit.
+              </p>
+            </div>
+            <PaginationControls
+              page={safeCurrentPage}
+              totalPages={totalPages}
+              rowsPerPage={rowsPerPage}
+              onPageChange={(page) => setCurrentPage(page)}
+              onRowsPerPageChange={(value) => setRowsPerPage(value)}
+              rowOptions={[25, 50, 100]}
+              className="mt-0"
+            />
           </div>
         </TabsContent>
       </Tabs>
-      
-      <p className="text-xs text-gray-400">
-        <strong className="text-red-400">Invalid:</strong> Employee not in scope. 
-        <strong className="text-yellow-400 ml-3">Warning:</strong> Deduction/amount needs notes. 
-        <strong className="text-green-400 ml-3">Valid:</strong> Ready to submit.
-      </p>
     </div>
   );
 };

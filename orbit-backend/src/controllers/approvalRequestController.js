@@ -401,7 +401,7 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.addLineItem(id, lineItemData);
 
       if (!result.success) {
-        return sendError(res, result.error, 500);
+        return sendError(res, result.error, result.statusCode || 500);
       }
 
       sendSuccess(res, result.data, result.message, 201);
@@ -432,7 +432,7 @@ export class ApprovalRequestController {
       const result = await ApprovalRequestService.addLineItemsBulk(id, line_items, userId);
 
       if (!result.success) {
-        return sendError(res, result.error, 500);
+        return sendError(res, result.error, result.statusCode || 500);
       }
 
       sendSuccess(res, result.data, result.message, 201);

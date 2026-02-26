@@ -60,10 +60,9 @@ const findOrgById = (nodes, orgId) => {
   return null;
 };
 
-export function SystemAdminDashboard() {
+export function SystemAdminDashboard({ hideDetails = false, onSelectionChange } = {}) {
   const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState('organizations');
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [selectedOrgIds, setSelectedOrgIds] = useState(new Set());
   const [expandedIds, setExpandedIds] = useState(new Set());
@@ -201,6 +200,12 @@ export function SystemAdminDashboard() {
       }
     }
   }, [organizationData, selectedOrgIds]);
+
+  useEffect(() => {
+    if (onSelectionChange) {
+      onSelectionChange(selectedOrg);
+    }
+  }, [selectedOrg, onSelectionChange]);
 
   const toggleExpand = (id) => {
     const newExpanded = new Set(expandedIds);
@@ -579,18 +584,20 @@ export function SystemAdminDashboard() {
             {!hasChildren && <div className="w-4" />}
 
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-medium text-foreground truncate">{node.org_name}</span>
-                <Badge
-                  variant="outline"
-                  className={
-                    node.type === 'company'
-                      ? 'bg-primary/20 text-primary border-primary/30'
-                      : 'bg-secondary/20 text-secondary border-secondary/30'
-                  }
-                >
-                  {node.type === 'company' ? 'Company' : 'Department'}
-                </Badge>
+                <div className="flex items-center gap-1">
+                  {node.type === 'company' ? (
+                    <Badge variant="outline" className="text-xs">{node.children.length}</Badge>
+                  ) : (
+                    <Badge
+                      variant="outline"
+                      className="bg-secondary/20 text-secondary border-secondary/30"
+                    >
+                      Department
+                    </Badge>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -598,7 +605,7 @@ export function SystemAdminDashboard() {
           {hasChildren && isExpanded && (
             <div
               className={`ml-4 pl-3 border-l border-border space-y-0 ${
-                node.type === 'company' ? 'max-h-[480px] overflow-y-auto pr-1' : ''
+                node.type === 'company' ? 'max-h-[280px] overflow-y-auto pr-1' : ''
               }`}
             >
               {renderOrgTree(node.children)}
@@ -609,73 +616,58 @@ export function SystemAdminDashboard() {
     });
   };
 
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-      {showNotification && (
-        <div className="fixed top-4 right-4 z-50 w-full max-w-md">
-          {notificationVariant === 'error' ? (
-            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
-              <div className="flex items-center gap-3">
-                <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+  if (hideDetails) {
+    return (
+      <div className="w-full">
+        {showNotification && (
+          <div className="fixed top-4 right-4 z-50 w-full max-w-md">
+            {notificationVariant === 'error' ? (
+              <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+                <div className="flex items-center gap-3">
+                  <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="bg-emerald-500/45 border border-emerald-400/80 rounded-lg p-4 backdrop-blur-sm shadow-2xl ring-1 ring-emerald-300/60">
-              <div className="flex items-center gap-3">
-                <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+            ) : (
+              <div className="bg-emerald-500/45 border border-emerald-400/80 rounded-lg p-4 backdrop-blur-sm shadow-2xl ring-1 ring-emerald-300/60">
+                <div className="flex items-center gap-3">
+                  <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
-      )}
-      <div className="lg:col-span-2">
+            )}
+          </div>
+        )}
         <Card
           className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white"
           style={{
-            height:
-              activeTab === 'organizations'
-                ? getCompanies(getFilteredOUs(organizationData)).length > 7
-                  ? Math.min(getCompanies(getFilteredOUs(organizationData)).length, 7) * 56 + 145
-                  : 'fit-content'
-                : getAllDepartments(getFilteredOUs(organizationData)).length > 7
-                  ? Math.min(getAllDepartments(getFilteredOUs(organizationData)).length, 7) * 56 + 145
-                  : 'fit-content',
             minHeight: 'fit-content',
           }}
         >
           <div className="flex items-center justify-between mb-2">
             <div className="min-w-0">
-              <h3 className="font-semibold text-base">
-                {activeTab === 'organizations' ? 'Organizations' : 'Departments'}
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                {activeTab === 'organizations' ? 'Companies' : 'Organizational Units'}
-              </p>
+              <h3 className="font-semibold text-base">Organizations</h3>
+              <p className="text-xs text-muted-foreground">Companies & Departments</p>
             </div>
             <Dialog
               open={showAddOrgDialog}
               onOpenChange={(open) => {
-                if (activeTab === 'organizations' ? isCreatingOrg : isCreatingDept) return;
+                if (isCreatingOrg) return;
                 setShowAddOrgDialog(open);
-                if (open && activeTab === 'departments') {
-                  setNewDeptParentId('');
-                }
               }}
             >
               <DialogTrigger asChild>
@@ -684,12 +676,11 @@ export function SystemAdminDashboard() {
                   New
                 </Button>
               </DialogTrigger>
-                <DialogContent className="bg-slate-800 border-slate-700">
+              <DialogContent className="bg-slate-800 border-slate-700">
                 <DialogHeader>
-                  <DialogTitle>{activeTab === 'organizations' ? 'Add Company' : 'Add Department'}</DialogTitle>
+                  <DialogTitle>Add Company</DialogTitle>
                 </DialogHeader>
-                {activeTab === 'organizations' ? (
-                  <div className="space-y-4">
+                <div className="space-y-4">
                     <div className="space-y-2">
                       <Label className="text-foreground">Company Code</Label>
                       <Input
@@ -743,90 +734,8 @@ export function SystemAdminDashboard() {
                       </Button>
                     </div>
                   </div>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <Label className="text-foreground">Parent Company</Label>
-                      <select
-                        value={newDeptParentId}
-                        onChange={(event) => setNewDeptParentId(event.target.value)}
-                        className="w-full rounded-md border border-slate-600 bg-slate-700/60 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-fuchsia-500/50"
-                      >
-                        <option value="">Select a company</option>
-                        {getCompanies(organizationData).map((company) => (
-                          <option key={company.org_id} value={company.org_id}>
-                            {company.org_name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-foreground">Department Name</Label>
-                      <Input
-                        placeholder="Enter department name"
-                        value={newDeptName}
-                        onChange={handleOuInputChange(setNewDeptName)}
-                        onPaste={handleOuPaste()}
-                        onKeyDown={handleOuKeyDown()}
-                        maxLength={50}
-                        className="bg-input border-border text-foreground"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-foreground">Description</Label>
-                      <Textarea
-                        placeholder="Enter description"
-                        value={newDeptDesc}
-                        onChange={handleOuInputChange(setNewDeptDesc, true)}
-                        onPaste={handleOuPaste(true)}
-                        onKeyDown={handleOuKeyDown(true)}
-                        maxLength={255}
-                        className="bg-input border-border text-foreground min-h-[128px]"
-                      />
-                    </div>
-                    <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                      <Button
-                        variant="outline"
-                        className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
-                        disabled={isCreatingDept}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
-                        onClick={handleCreateDeptFromTab}
-                        disabled={isCreatingDept || !newDeptParentId || !newDeptName.trim() || !newDeptDesc.trim()}
-                      >
-                        Add Department
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </DialogContent>
+                </DialogContent>
             </Dialog>
-          </div>
-
-          <div className="flex gap-2 mb-2 border-b border-border">
-            <button
-              onClick={() => setActiveTab('organizations')}
-              className={`px-3 py-2 text-sm font-medium transition-colors ${
-                activeTab === 'organizations'
-                  ? 'text-primary border-b-2 border-primary -mb-0.5'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Organizations
-            </button>
-            <button
-              onClick={() => setActiveTab('departments')}
-              className={`px-3 py-2 text-sm font-medium transition-colors ${
-                activeTab === 'departments'
-                  ? 'text-primary border-b-2 border-primary -mb-0.5'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Departments
-            </button>
           </div>
 
           <Input
@@ -839,31 +748,19 @@ export function SystemAdminDashboard() {
             className="h-8 mb-2 text-sm"
           />
 
-          {activeTab === 'organizations' ? (
-            <div
-              className={`space-y-0 ${
-                getCompanies(getFilteredOUs(organizationData)).length > 7 ? 'overflow-y-auto pr-2' : 'overflow-visible'
-              }`}
-              style={{
-                height:
-                  getCompanies(getFilteredOUs(organizationData)).length > 7
-                    ? Math.min(getCompanies(getFilteredOUs(organizationData)).length, 7) * 56
-                    : 'auto',
-              }}
-            >
-              {renderOrgTree(getCompanies(getFilteredOUs(organizationData)))}
-            </div>
-          ) : (
-            <div
-              className={`space-y-0 ${
-                getAllDepartments(getFilteredOUs(organizationData)).length > 12
-                  ? 'overflow-y-auto pr-2 max-h-[480px]'
-                  : 'overflow-visible'
-              }`}
-            >
-              {renderOrgTree(getAllDepartments(getFilteredOUs(organizationData)))}
-            </div>
-          )}
+          <div
+            className={`space-y-0 ${
+              getCompanies(getFilteredOUs(organizationData)).length > 7 ? 'overflow-y-auto pr-2' : 'overflow-visible'
+            }`}
+            style={{
+              height:
+                getCompanies(getFilteredOUs(organizationData)).length > 7
+                  ? Math.min(getCompanies(getFilteredOUs(organizationData)).length, 7) * 56
+                  : 'auto',
+            }}
+          >
+            {renderOrgTree(getCompanies(getFilteredOUs(organizationData)))}
+          </div>
 
           {selectedOrgIds.size > 1 && (
             <div className="flex items-center justify-between mt-2">
@@ -882,10 +779,171 @@ export function SystemAdminDashboard() {
           )}
         </Card>
       </div>
+    );
+  }
 
-      <div>
-        {selectedOrg ? (
-          <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ height: 'fit-content' }}>
+  // Full vertical layout when hideDetails={false}
+  return (
+    <div className="flex flex-col h-full gap-3 min-h-0">
+      {showNotification && (
+        <div className="fixed top-4 right-4 z-50 w-full max-w-md">
+          {notificationVariant === 'error' ? (
+            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm shadow-lg">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-red-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-emerald-500/45 border border-emerald-400/80 rounded-lg p-4 backdrop-blur-sm shadow-2xl ring-1 ring-emerald-300/60">
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-sm text-emerald-400 flex-1">{notificationMessage}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      <Card
+        className="p-3 flex flex-col bg-slate-800/80 border-slate-700 text-white flex-1 overflow-y-auto min-h-0"
+      >
+        <div className="flex items-center justify-between mb-2">
+          <div className="min-w-0">
+            <h3 className="font-semibold text-base">Organizations</h3>
+          </div>
+            <Dialog
+              open={showAddOrgDialog}
+              onOpenChange={(open) => {
+                if (isCreatingOrg) return;
+                setShowAddOrgDialog(open);
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button size="sm" className="gap-1 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
+                  <Plus className="h-3 w-3" />
+                  New
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="bg-slate-800 border-slate-700">
+                <DialogHeader>
+                  <DialogTitle>Add Company</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label className="text-foreground">Company Code</Label>
+                      <Input
+                        placeholder="Enter company code"
+                        value={newOrgCode}
+                        onChange={handleOuInputChange(setNewOrgCode)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={10}
+                        className="bg-input border-border text-foreground"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-foreground">Company Name</Label>
+                      <Input
+                        placeholder="Enter company name"
+                        value={newOrgName}
+                        onChange={handleOuInputChange(setNewOrgName)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={50}
+                        className="bg-input border-border text-foreground"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-foreground">Description</Label>
+                      <Textarea
+                        placeholder="Enter description"
+                        value={newOrgDesc}
+                        onChange={handleOuInputChange(setNewOrgDesc, true)}
+                        onPaste={handleOuPaste(true)}
+                        onKeyDown={handleOuKeyDown(true)}
+                        maxLength={255}
+                        className="bg-input border-border text-foreground min-h-[128px]"
+                      />
+                    </div>
+                    <div className="flex gap-2 justify-end pt-4 border-t border-border">
+                      <Button
+                        variant="outline"
+                        className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                        disabled={isCreatingOrg}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                        onClick={handleCreateOrg}
+                        disabled={isCreatingOrg}
+                      >
+                        Add Company
+                      </Button>
+                    </div>
+                  </div>
+                </DialogContent>
+            </Dialog>
+          </div>
+
+          <Input
+            placeholder="Search..."
+            value={searchTerm}
+            onChange={handleOuInputChange(setSearchTerm)}
+            onPaste={handleOuPaste()}
+            onKeyDown={handleOuKeyDown()}
+            maxLength={50}
+            className="h-8 mb-2 text-sm"
+          />
+
+          <div
+            className={`space-y-0 ${
+              getCompanies(getFilteredOUs(organizationData)).length > 7 ? 'overflow-y-auto pr-2' : 'overflow-visible'
+            }`}
+            style={{
+              height:
+                getCompanies(getFilteredOUs(organizationData)).length > 7
+                  ? Math.min(getCompanies(getFilteredOUs(organizationData)).length, 7) * 56
+                  : 'auto',
+            }}
+          >
+            {renderOrgTree(getCompanies(getFilteredOUs(organizationData)))}
+          </div>
+
+          {selectedOrgIds.size > 1 && (
+            <div className="flex items-center justify-between mt-2">
+              <p className="text-xs text-slate-400">
+                {selectedOrgIds.size} selected
+              </p>
+              <Button
+                size="sm"
+                className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+                onClick={() => setShowBulkDeleteDialog(true)}
+                disabled={isBulkDeleting}
+              >
+                Delete Selected
+              </Button>
+            </div>
+          )}
+      </Card>
+
+      {selectedOrg ? (
+        <Card className="p-0 bg-slate-800/80 border-slate-700 text-white" style={{ maxHeight: '300px', display: 'flex', flexDirection: 'column' }}>
+          <div className="p-3 flex-1 overflow-y-auto space-y-3">
             <h3 className="text-base font-semibold text-white mb-2">Details</h3>
 
             <div className="space-y-2 text-sm mb-3">
@@ -913,353 +971,355 @@ export function SystemAdminDashboard() {
                 <p className="text-white text-xs">{selectedOrg.created_at}</p>
               </div>
             </div>
+          </div>
 
-            <div className="space-y-2 pt-2 border-t border-border">
-              <Dialog
-                open={showEditDialog}
-                onOpenChange={(open) => {
-                  if (isUpdatingOrg) return;
-                  setShowEditDialog(open);
-                }}
-              >
-                <DialogTrigger asChild>
-                  <Button
-                    onClick={() => {
-                      setEditingOrg(selectedOrg);
-                      setEditOrgName(selectedOrg?.org_name || '');
-                      setEditOrgDesc(selectedOrg?.org_description || '');
-                    }}
-                    className="w-full bg-blue-500/80 hover:bg-blue-500 text-white gap-2"
-                  >
-                    <Edit3 className="w-4 h-4" />
-                    Edit
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="bg-slate-800 border-slate-700">
-                  <DialogHeader>
-                    <DialogTitle className="text-white">
-                      {selectedOrg?.type === 'department' ? 'Edit Department' : 'Edit Organization'}
-                    </DialogTitle>
-                  </DialogHeader>
-                  {editingOrg && (
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <Label className="text-white">
-                          {selectedOrg?.type === 'department' ? 'Department Name' : 'Organization Name'}
-                        </Label>
-                        <Input
-                          placeholder="Enter name"
-                          value={editOrgName}
-                          onChange={handleOuInputChange(setEditOrgName)}
-                          onPaste={handleOuPaste()}
-                          onKeyDown={handleOuKeyDown()}
-                          maxLength={50}
-                          className="bg-slate-700 border-slate-600 text-white"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label className="text-white">Description</Label>
-                        <Textarea
-                          placeholder="Enter description"
-                          value={editOrgDesc}
-                          onChange={handleOuInputChange(setEditOrgDesc, true)}
-                          onPaste={handleOuPaste(true)}
-                          onKeyDown={handleOuKeyDown(true)}
-                          maxLength={255}
-                          className="bg-slate-700 border-slate-600 text-white min-h-[128px]"
-                        />
-                      </div>
-
-                      <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                        <Button
-                          variant="outline"
-                          className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
-                          disabled={isUpdatingOrg}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
-                          onClick={handleEditOrg}
-                          disabled={isUpdatingOrg}
-                        >
-                          Save Changes
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </DialogContent>
-              </Dialog>
-
-              {selectedOrg.type === 'company' && (
-                <Dialog
-                  open={showAddDeptDialog}
-                  onOpenChange={(open) => {
-                    if (isCreatingDept || isBulkAddingDept) return;
-                    setShowAddDeptDialog(open);
+          <div className="p-3 flex items-center justify-end gap-2 bg-slate-800/80 border-t border-slate-700/50">
+            <Dialog
+              open={showEditDialog}
+              onOpenChange={(open) => {
+                if (isUpdatingOrg) return;
+                setShowEditDialog(open);
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setEditingOrg(selectedOrg);
+                    setEditOrgName(selectedOrg?.org_name || '');
+                    setEditOrgDesc(selectedOrg?.org_description || '');
                   }}
+                  className="gap-1 bg-blue-500/80 hover:bg-blue-500 text-white"
                 >
-                  <DialogTrigger asChild>
-                    <Button className="w-full !bg-fuchsia-700 hover:!bg-fuchsia-600 !text-white gap-2">
-                      <Plus className="w-4 h-4" />
-                      Add Department
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="bg-slate-800 border-slate-700 max-w-2xl">
-                    <DialogHeader>
-                      <DialogTitle className="text-white">Add Department</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      <div className="bg-slate-700/50 p-3 rounded-lg">
-                        <p className="text-xs text-slate-400 mb-1">Parent Company</p>
-                        <p className="text-sm font-medium text-white">{selectedOrg.org_name}</p>
-                      </div>
-
-                      <Tabs defaultValue="individual" className="w-full">
-                        <TabsList className="grid w-full grid-cols-2 bg-slate-700/60">
-                          <TabsTrigger
-                            value="individual"
-                            className="text-xs border border-transparent data-[state=active]:border-fuchsia-500 data-[state=active]:text-white data-[state=active]:bg-fuchsia-600/30"
-                          >
-                            Individual Add
-                          </TabsTrigger>
-                          <TabsTrigger
-                            value="bulk"
-                            className="text-xs border border-transparent data-[state=active]:border-fuchsia-500 data-[state=active]:text-white data-[state=active]:bg-fuchsia-600/30"
-                          >
-                            Bulk Import
-                          </TabsTrigger>
-                        </TabsList>
-
-                        <TabsContent value="individual" className="space-y-4">
-                          <div className="space-y-2">
-                            <Label className="text-white text-sm">Department Name</Label>
-                            <Input
-                              placeholder="Enter department name"
-                              className="bg-slate-700 border-slate-600 text-white text-sm"
-                              value={newDeptName}
-                              onChange={handleOuInputChange(setNewDeptName)}
-                              onPaste={handleOuPaste()}
-                              onKeyDown={handleOuKeyDown()}
-                              maxLength={50}
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label className="text-white text-sm">Description</Label>
-                            <Textarea
-                              placeholder="Enter description"
-                              className="bg-slate-700 border-slate-600 text-white text-sm"
-                              value={newDeptDesc}
-                              onChange={handleOuInputChange(setNewDeptDesc, true)}
-                              onPaste={handleOuPaste(true)}
-                              onKeyDown={handleOuKeyDown(true)}
-                              maxLength={255}
-                              rows={6}
-                            />
-                          </div>
-
-                          <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                            <Button
-                              variant="outline"
-                              className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
-                              onClick={() => setShowAddDeptDialog(false)}
-                              disabled={isCreatingDept}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              className="!bg-fuchsia-700 hover:!bg-fuchsia-600 !text-white text-sm"
-                              onClick={() => openConfirmAddDept('Add department', handleCreateDept)}
-                              disabled={isCreatingDept}
-                            >
-                              Add Department
-                            </Button>
-                          </div>
-                        </TabsContent>
-
-                        <TabsContent value="bulk" className="space-y-4">
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between mb-2">
-                              <Label className="text-white text-sm">Upload File</Label>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="border-slate-600 text-white bg-slate-700/60 text-xs hover:bg-slate-600"
-                                onClick={handleDownloadTemplate}
-                              >
-                                Generate Template
-                              </Button>
-                            </div>
-                            <div className="border-2 border-dashed border-slate-600 rounded-lg p-6 text-center hover:border-fuchsia-500/50 transition-colors cursor-pointer bg-slate-700/30">
-                              <Upload className="w-6 h-6 mx-auto mb-2 text-slate-400" />
-                              <p className="text-xs text-slate-400 mb-2">Drag and drop your file here</p>
-                              <input
-                                type="file"
-                                accept=".csv"
-                                className="hidden"
-                                id="bulk-file-input"
-                                onChange={handleBulkFileChange}
-                              />
-                              <label htmlFor="bulk-file-input" className="text-xs text-fuchsia-300 hover:underline cursor-pointer">
-                                Browse files
-                              </label>
-                            </div>
-                            {bulkFileName && (
-                              <div className="flex items-center justify-between gap-2 border border-slate-600 rounded-lg px-3 py-2 bg-slate-800/60">
-                                <p className="text-xs text-slate-300">Selected file: {bulkFileName}</p>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-slate-300 hover:text-red-300 hover:bg-red-500/20"
-                                  onClick={() => {
-                                    setBulkDepartments([]);
-                                    setBulkFileName('');
-                                    setBulkFileError('');
-                                  }}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            )}
-                            {bulkFileError && (
-                              <p className="text-xs text-red-300">{bulkFileError}</p>
-                            )}
-                          </div>
-
-                          <div className="space-y-2">
-                            <p className="text-sm font-medium text-white">Preview ({bulkDepartments.length} departments)</p>
-                            <div className="border border-slate-600 rounded-lg overflow-hidden bg-slate-800 max-h-64 overflow-y-auto">
-                              <table className="w-full text-sm">
-                                <thead className="bg-slate-700/60 sticky top-0 border-b border-slate-600">
-                                  <tr>
-                                    <th className="text-left px-4 py-2 text-xs font-medium text-slate-300">#</th>
-                                    <th className="text-left px-4 py-2 text-xs font-medium text-slate-300">Department Name</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {bulkDepartments.map((dept, index) => (
-                                    <tr key={`${dept.name}-${index}`} className="border-b border-slate-700/60">
-                                      <td className="px-4 py-2 text-xs text-slate-300">{index + 1}</td>
-                                      <td className="px-4 py-2 text-xs text-white">{dept.name}</td>
-                                    </tr>
-                                  ))}
-                                  {bulkDepartments.length === 0 && (
-                                    <tr>
-                                      <td colSpan={2} className="px-4 py-3 text-xs text-slate-400">
-                                        No departments loaded
-                                      </td>
-                                    </tr>
-                                  )}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-
-                          <div className="flex gap-2 justify-end pt-4 border-t border-border">
-                            <Button
-                              variant="outline"
-                              className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
-                              onClick={() => setShowAddDeptDialog(false)}
-                              disabled={isBulkAddingDept}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              disabled={bulkDepartments.length === 0 || isBulkAddingDept}
-                              className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-sm disabled:opacity-50"
-                              onClick={() => openConfirmAddDept('Add all departments', handleBulkAddDepartments)}
-                            >
-                              Add All ({bulkDepartments.length}) Departments
-                            </Button>
-                          </div>
-                        </TabsContent>
-                      </Tabs>
-                    </div>
-                  </DialogContent>
-                </Dialog>
-              )}
-
-              <Dialog
-                open={showDeleteDialog}
-                onOpenChange={(open) => {
-                  if (isDeletingOrg) return;
-                  setShowDeleteDialog(open);
-                  if (!open) {
-                    setDeleteConfirmText('');
-                  }
-                }}
-              >
-                <DialogTrigger asChild>
-                  <Button className="w-full !bg-red-500/80 hover:!bg-red-500 !text-white gap-2">
-                    <Trash2 className="w-4 h-4" />
-                    Delete
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="bg-slate-800 border-slate-700">
-                  <DialogHeader>
-                    <DialogTitle className="text-destructive">
-                      {selectedOrg?.type === 'department' ? 'Delete Department' : 'Delete Organization'}
-                    </DialogTitle>
-                  </DialogHeader>
+                  <Edit3 className="w-3 h-3" />
+                  Edit
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="bg-slate-800 border-slate-700">
+                <DialogHeader>
+                  <DialogTitle className="text-white">
+                    {selectedOrg?.type === 'department' ? 'Edit Department' : 'Edit Organization'}
+                  </DialogTitle>
+                </DialogHeader>
+                {editingOrg && (
                   <div className="space-y-4">
-                    <p className="text-white">
-                      Are you sure you want to delete <span className="font-bold">{selectedOrg.org_name}</span>? This action
-                      cannot be undone.
-                    </p>
-                    <div>
-                      <Label className="text-xs text-slate-400">Type CONFIRM to continue</Label>
+                    <div className="space-y-2">
+                      <Label className="text-white">
+                        {selectedOrg?.type === 'department' ? 'Department Name' : 'Organization Name'}
+                      </Label>
                       <Input
-                        value={deleteConfirmText}
-                        onChange={handleOuInputChange(setDeleteConfirmText, false, (value) => value.toUpperCase())}
-                        onPaste={handleOuPaste(false, (value) => value.toUpperCase())}
-                        onKeyDown={(event) => {
-                          handleRestrictedKeyDown(event);
-                          if (event.key === 'Enter' && deleteConfirmText === 'CONFIRM' && !isDeletingOrg) {
-                            event.preventDefault();
-                            handleDeleteOrg();
-                          }
-                        }}
-                        maxLength={7}
-                        placeholder="CONFIRM"
-                        className="mt-1"
+                        placeholder="Enter name"
+                        value={editOrgName}
+                        onChange={handleOuInputChange(setEditOrgName)}
+                        onPaste={handleOuPaste()}
+                        onKeyDown={handleOuKeyDown()}
+                        maxLength={50}
+                        className="bg-slate-700 border-slate-600 text-white"
                       />
                     </div>
-                    <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-                      <p className="text-sm text-red-300">
-                        {selectedOrg?.type === 'department'
-                          ? 'Warning: This will permanently delete this department.'
-                          : 'Warning: This will permanently delete this organization and all its departments.'}
-                      </p>
+
+                    <div className="space-y-2">
+                      <Label className="text-white">Description</Label>
+                      <Textarea
+                        placeholder="Enter description"
+                        value={editOrgDesc}
+                        onChange={handleOuInputChange(setEditOrgDesc, true)}
+                        onPaste={handleOuPaste(true)}
+                        onKeyDown={handleOuKeyDown(true)}
+                        maxLength={255}
+                        className="bg-slate-700 border-slate-600 text-white min-h-[128px]"
+                      />
                     </div>
+
                     <div className="flex gap-2 justify-end pt-4 border-t border-border">
                       <Button
                         variant="outline"
                         className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
-                        disabled={isDeletingOrg}
+                        disabled={isUpdatingOrg}
+                        onClick={() => setShowEditDialog(false)}
                       >
                         Cancel
                       </Button>
                       <Button
-                        onClick={handleDeleteOrg}
-                        className="!bg-red-500/80 hover:!bg-red-500 !text-white"
-                        disabled={deleteConfirmText !== 'CONFIRM' || isDeletingOrg}
+                        className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                        onClick={handleEditOrg}
+                        disabled={isUpdatingOrg}
                       >
-                        Delete
+                        Save Changes
                       </Button>
                     </div>
                   </div>
+                )}
+              </DialogContent>
+            </Dialog>
+
+            {selectedOrg.type === 'company' && (
+              <Dialog
+                open={showAddDeptDialog}
+                onOpenChange={(open) => {
+                  if (isCreatingDept || isBulkAddingDept) return;
+                  setShowAddDeptDialog(open);
+                }}
+              >
+                <DialogTrigger asChild>
+                  <Button size="sm" className="gap-1 !bg-fuchsia-700 hover:!bg-fuchsia-600 !text-white">
+                    <Plus className="w-3 h-3" />
+                    Add Dept
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-slate-800 border-slate-700 max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle className="text-white">Add Department</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div className="bg-slate-700/50 p-3 rounded-lg">
+                      <p className="text-xs text-slate-400 mb-1">Parent Company</p>
+                      <p className="text-sm font-medium text-white">{selectedOrg.org_name}</p>
+                    </div>
+
+                    <Tabs defaultValue="individual" className="w-full">
+                      <TabsList className="grid w-full grid-cols-2 bg-slate-700/60">
+                        <TabsTrigger
+                          value="individual"
+                          className="text-xs border border-transparent data-[state=active]:border-fuchsia-500 data-[state=active]:text-white data-[state=active]:bg-fuchsia-600/30"
+                        >
+                          Individual Add
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="bulk"
+                          className="text-xs border border-transparent data-[state=active]:border-fuchsia-500 data-[state=active]:text-white data-[state=active]:bg-fuchsia-600/30"
+                        >
+                          Bulk Import
+                        </TabsTrigger>
+                      </TabsList>
+
+                      <TabsContent value="individual" className="space-y-4">
+                        <div className="space-y-2">
+                          <Label className="text-white text-sm">Department Name</Label>
+                          <Input
+                            placeholder="Enter department name"
+                            className="bg-slate-700 border-slate-600 text-white text-sm"
+                            value={newDeptName}
+                            onChange={handleOuInputChange(setNewDeptName)}
+                            onPaste={handleOuPaste()}
+                            onKeyDown={handleOuKeyDown()}
+                            maxLength={50}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-white text-sm">Description</Label>
+                          <Textarea
+                            placeholder="Enter description"
+                            className="bg-slate-700 border-slate-600 text-white text-sm"
+                            value={newDeptDesc}
+                            onChange={handleOuInputChange(setNewDeptDesc, true)}
+                            onPaste={handleOuPaste(true)}
+                            onKeyDown={handleOuKeyDown(true)}
+                            maxLength={255}
+                            rows={6}
+                          />
+                        </div>
+
+                        <div className="flex gap-2 justify-end pt-4 border-t border-border">
+                          <Button
+                            variant="outline"
+                            className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+                            onClick={() => setShowAddDeptDialog(false)}
+                            disabled={isCreatingDept}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            className="!bg-fuchsia-700 hover:!bg-fuchsia-600 !text-white text-sm"
+                            onClick={() => openConfirmAddDept('Add department', handleCreateDept)}
+                            disabled={isCreatingDept}
+                          >
+                            Add Department
+                          </Button>
+                        </div>
+                      </TabsContent>
+
+                      <TabsContent value="bulk" className="space-y-4">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between mb-2">
+                            <Label className="text-white text-sm">Upload File</Label>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="border-slate-600 text-white bg-slate-700/60 text-xs hover:bg-slate-600"
+                              onClick={handleDownloadTemplate}
+                            >
+                              Generate Template
+                            </Button>
+                          </div>
+                          <div className="border-2 border-dashed border-slate-600 rounded-lg p-6 text-center hover:border-fuchsia-500/50 transition-colors cursor-pointer bg-slate-700/30">
+                            <Upload className="w-6 h-6 mx-auto mb-2 text-slate-400" />
+                            <p className="text-xs text-slate-400 mb-2">Drag and drop your file here</p>
+                            <input
+                              type="file"
+                              accept=".csv"
+                              className="hidden"
+                              id="bulk-file-input"
+                              onChange={handleBulkFileChange}
+                            />
+                            <label htmlFor="bulk-file-input" className="text-xs text-fuchsia-300 hover:underline cursor-pointer">
+                              Browse files
+                            </label>
+                          </div>
+                          {bulkFileName && (
+                            <div className="flex items-center justify-between gap-2 border border-slate-600 rounded-lg px-3 py-2 bg-slate-800/60">
+                              <p className="text-xs text-slate-300">Selected file: {bulkFileName}</p>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-slate-300 hover:text-red-300 hover:bg-red-500/20"
+                                onClick={() => {
+                                  setBulkDepartments([]);
+                                  setBulkFileName('');
+                                  setBulkFileError('');
+                                }}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          )}
+                          {bulkFileError && (
+                            <p className="text-xs text-red-300">{bulkFileError}</p>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-white">Preview ({bulkDepartments.length} departments)</p>
+                          <div className="border border-slate-600 rounded-lg overflow-hidden bg-slate-800 max-h-64 overflow-y-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-slate-700/60 sticky top-0 border-b border-slate-600">
+                                <tr>
+                                  <th className="text-left px-4 py-2 text-xs font-medium text-slate-300">#</th>
+                                  <th className="text-left px-4 py-2 text-xs font-medium text-slate-300">Department Name</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {bulkDepartments.map((dept, index) => (
+                                  <tr key={`${dept.name}-${index}`} className="border-b border-slate-700/60">
+                                    <td className="px-4 py-2 text-xs text-slate-300">{index + 1}</td>
+                                    <td className="px-4 py-2 text-xs text-white">{dept.name}</td>
+                                  </tr>
+                                ))}
+                                {bulkDepartments.length === 0 && (
+                                  <tr>
+                                    <td colSpan={2} className="px-4 py-3 text-xs text-slate-400">
+                                      No departments loaded
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 justify-end pt-4 border-t border-border">
+                          <Button
+                            variant="outline"
+                            className="border-slate-600 text-white bg-slate-700/60 text-sm hover:bg-slate-600"
+                            onClick={() => setShowAddDeptDialog(false)}
+                            disabled={isBulkAddingDept}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            disabled={bulkDepartments.length === 0 || isBulkAddingDept}
+                            className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-sm disabled:opacity-50"
+                            onClick={() => openConfirmAddDept('Add all departments', handleBulkAddDepartments)}
+                          >
+                            Add All ({bulkDepartments.length}) Departments
+                          </Button>
+                        </div>
+                      </TabsContent>
+                    </Tabs>
+                  </div>
                 </DialogContent>
               </Dialog>
-            </div>
-          </Card>
-        ) : (
-          <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ height: 'fit-content' }}>
-            <p className="text-center text-slate-400 text-xs py-8">Select an organization</p>
-          </Card>
-        )}
-      </div>
+            )}
+
+            <Dialog
+              open={showDeleteDialog}
+              onOpenChange={(open) => {
+                if (isDeletingOrg) return;
+                setShowDeleteDialog(open);
+                if (!open) {
+                  setDeleteConfirmText('');
+                }
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button size="sm" className="gap-1 !bg-red-500/80 hover:!bg-red-500 !text-white">
+                  <Trash2 className="w-3 h-3" />
+                  Delete
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="bg-slate-800 border-slate-700">
+                <DialogHeader>
+                  <DialogTitle className="text-destructive">
+                    {selectedOrg?.type === 'department' ? 'Delete Department' : 'Delete Organization'}
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <p className="text-white">
+                    Are you sure you want to delete <span className="font-bold">{selectedOrg.org_name}</span>? This action cannot be undone.
+                  </p>
+                  <div>
+                    <Label className="text-xs text-slate-400">Type CONFIRM to continue</Label>
+                    <Input
+                      value={deleteConfirmText}
+                      onChange={handleOuInputChange(setDeleteConfirmText, false, (value) => value.toUpperCase())}
+                      onPaste={handleOuPaste(false, (value) => value.toUpperCase())}
+                      onKeyDown={(event) => {
+                        handleRestrictedKeyDown(event);
+                        if (event.key === 'Enter' && deleteConfirmText === 'CONFIRM' && !isDeletingOrg) {
+                          event.preventDefault();
+                          handleDeleteOrg();
+                        }
+                      }}
+                      maxLength={7}
+                      placeholder="CONFIRM"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                    <p className="text-sm text-red-300">
+                      {selectedOrg?.type === 'department'
+                        ? 'Warning: This will permanently delete this department.'
+                        : 'Warning: This will permanently delete this organization and all its departments.'}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 justify-end pt-4 border-t border-border">
+                    <Button
+                      variant="outline"
+                      className="border-slate-600 text-white bg-slate-700/60 hover:bg-slate-600"
+                      onClick={() => setShowDeleteDialog(false)}
+                      disabled={isDeletingOrg}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleDeleteOrg}
+                      className="!bg-red-500/80 hover:!bg-red-500 !text-white"
+                      disabled={deleteConfirmText !== 'CONFIRM' || isDeletingOrg}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </Card>
+      ) : (
+        <Card className="p-3 bg-slate-800/80 border-slate-700 text-white" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <p className="text-slate-400 text-xs">Select an organization to view details</p>
+        </Card>
+      )}
 
       <Dialog
         open={showConfirmAddDept}

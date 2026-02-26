@@ -15,7 +15,7 @@ import ResetPassword from '../pages/ResetPassword';
 import SecurityQuestions from '../pages/SecurityQuestions';
 import FirstTimePassword from '../pages/FirstTimePassword';
 import UserAgreement from '../pages/UserAgreement';
-import AdminDashboard from '../pages/AdminDashboard';
+import AdminDashboard from '../pages/admin/AdminDashboard';
 import AdminLogs from '../pages/admin/AdminLogs';
 import AdminUserManagement from '../pages/admin/AdminUserManagement';
 import AdminOUManagement from '../pages/admin/AdminOUManagement';
@@ -113,13 +113,15 @@ export const AppRouter = () => {
           </DashboardLayout>
         </AdminRoute>
       } />
-      <Route path="/admin/settings" element={
+      <Route path="/admin/profile" element={
         <AdminRoute>
           <DashboardLayout>
             <AdminProfile />
           </DashboardLayout>
         </AdminRoute>
       } />
+
+      <Route path="/admin/settings" element={<Navigate to="/admin/profile" replace />} />
       
       {/* Login page without layout */}
       <Route path="/login" element={<Login />} />

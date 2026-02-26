@@ -387,7 +387,7 @@ export class AuthService {
       if (adminUser) {
         console.log(`[COMPLETE LOGIN] Found admin user: ${email}`);
         // Generate JWT token for admin
-        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role);
+        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role, adminUser.org_id || null);
 
         // Update last login
         try {
@@ -408,6 +408,7 @@ export class AuthService {
             firstName: adminUser.full_name || '',
             lastName: '',
             role: adminUser.admin_role,
+            org_id: adminUser.org_id || null,
             userType: 'admin',
           },
           message: 'Login successful',
@@ -487,7 +488,7 @@ export class AuthService {
       }
 
       // Generate JWT token
-      const token = this.generateToken(userId, user.email, userRole);
+      const token = this.generateToken(userId, user.email, userRole, user.org_id || null);
 
       // Update last login
       try {
@@ -509,6 +510,7 @@ export class AuthService {
           firstName: user.first_name,
           lastName: user.last_name,
           role: userRole,
+          org_id: user.org_id || null,
           userType: 'user',
         },
         message: 'Login successful',
@@ -1170,11 +1172,12 @@ export class AuthService {
   /**
    * Generate JWT token (stub - replace with actual JWT library)
    */
-  static generateToken(userId, email, role) {
+  static generateToken(userId, email, role, orgId = null) {
     const payload = {
       userId,
       email,
       role,
+      org_id: orgId,
     };
 
     // Sign JWT token with 12 hour expiry

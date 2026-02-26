@@ -80,8 +80,8 @@ export function Sidebar({ userRole: userRoleProp }) {
       icon: FileText,
     },
     {
-      name: "Admin Settings",
-      href: "/admin/settings",
+      name: "Admin Profile",
+      href: "/admin/profile",
       icon: User,
     },
   ];
