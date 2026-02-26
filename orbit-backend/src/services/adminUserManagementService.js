@@ -1214,7 +1214,8 @@ export class AdminUserManagementService {
           full_name: entry.name,
           admin_role: entry.adminRole,
           password_hash: passwordHash,
-          is_active: true,
+          status: 'Active',
+          is_first_login: true,
           org_id: entry.orgId || null,
           geo_id: this.isCompanyAdmin(entry.adminRole) ? (entry.geoId || null) : null,
           created_by: creatorId,
@@ -1466,7 +1467,8 @@ export class AdminUserManagementService {
             full_name: fullName,
             admin_role: adminRole,
             password_hash: passwordHash,
-            is_active: true,
+            status: 'Active',
+            is_first_login: true,
             org_id: orgId || null,
             geo_id: this.isCompanyAdmin(adminRole) ? geoId : null,
             created_by: creatorId,
@@ -1630,7 +1632,7 @@ export class AdminUserManagementService {
       if (isSuperAdmin || isCompanyAdmin) {
         let adminQuery = supabase
           .from('tbladminusers')
-          .select('admin_id, full_name, email, admin_role, org_id, geo_id, status, is_first_login, is_active, account_locked_until, created_at, updated_at, tblorganization(org_id, org_name)');
+          .select('admin_id, full_name, email, admin_role, org_id, geo_id, status, is_first_login, account_locked_until, created_at, updated_at, tblorganization(org_id, org_name)');
 
         if (isCompanyAdmin) {
           adminQuery = adminQuery
@@ -1668,16 +1670,18 @@ export class AdminUserManagementService {
 
           adminAccounts = (admins || [])
             .filter((admin) => {
-              const isFirstTime = admin.is_first_login === true
-                || (admin.status || '').toString().toLowerCase() === 'first_time';
+              const normalizedStatus = (admin.status || '').toString().trim().toLowerCase();
+              const isFirstTime = admin.is_first_login === true || normalizedStatus === 'first_time';
+              const isDeactivated = normalizedStatus === 'deactivated';
+              const isLockedByStatus = normalizedStatus === 'locked';
               const isLocked = admin.account_locked_until
                 ? new Date(admin.account_locked_until).getTime() > now
                 : false;
               const computedStatus = isFirstTime
                 ? 'first_time'
-                : (admin.is_active === false
+                : (isDeactivated
                 ? 'deactivated'
-                : (isLocked ? 'locked' : 'active'));
+                : ((isLockedByStatus || isLocked) ? 'locked' : 'active'));
 
               if (!statusFilter) return true;
               if (statusFilter === 'inactive') return computedStatus === 'deactivated';
@@ -1685,16 +1689,18 @@ export class AdminUserManagementService {
               return computedStatus === statusFilter;
             })
             .map((admin) => {
-              const isFirstTime = admin.is_first_login === true
-                || (admin.status || '').toString().toLowerCase() === 'first_time';
+              const normalizedStatus = (admin.status || '').toString().trim().toLowerCase();
+              const isFirstTime = admin.is_first_login === true || normalizedStatus === 'first_time';
+              const isDeactivated = normalizedStatus === 'deactivated';
+              const isLockedByStatus = normalizedStatus === 'locked';
               const isLocked = admin.account_locked_until
                 ? new Date(admin.account_locked_until).getTime() > now
                 : false;
               const statusLabel = isFirstTime
                 ? 'First_Time'
-                : (admin.is_active === false
+                : (isDeactivated
                 ? 'Deactivated'
-                : (isLocked ? 'Locked' : 'Active'));
+                : ((isLockedByStatus || isLocked) ? 'Locked' : 'Active'));
 
               return {
               user_id: admin.admin_id,
@@ -2201,6 +2207,7 @@ export class AdminUserManagementService {
         if (normalizedAction === 'lock') {
           adminUpdatePayload = {
             ...adminUpdatePayload,
+            status: 'Locked',
             account_locked_until: '2099-12-31T23:59:59.000Z',
           };
         }
@@ -2208,6 +2215,7 @@ export class AdminUserManagementService {
         if (normalizedAction === 'unlock') {
           adminUpdatePayload = {
             ...adminUpdatePayload,
+            status: 'Active',
             account_locked_until: null,
             failed_login_attempts: 0,
           };
@@ -2216,7 +2224,7 @@ export class AdminUserManagementService {
         if (normalizedAction === 'deactivate') {
           adminUpdatePayload = {
             ...adminUpdatePayload,
-            is_active: false,
+            status: 'Deactivated',
             account_locked_until: null,
           };
         }
@@ -2224,7 +2232,7 @@ export class AdminUserManagementService {
         if (normalizedAction === 'reactivate') {
           adminUpdatePayload = {
             ...adminUpdatePayload,
-            is_active: true,
+            status: 'Active',
             account_locked_until: null,
             failed_login_attempts: 0,
           };
@@ -2338,7 +2346,6 @@ export class AdminUserManagementService {
             password_hash: passwordHash,
             status: 'First_Time',
             is_first_login: true,
-            is_active: true,
             failed_login_attempts: 0,
             account_locked_until: null,
             updated_by: adminId,

@@ -102,14 +102,24 @@ export class AuthService {
       
       if (!adminError && adminUser) {
         console.log(`[LOGIN] Found admin user: ${credential}`);
-        console.log(`[LOGIN] Admin user data:`, { email: adminUser.email, is_active: adminUser.is_active });
+        console.log(`[LOGIN] Admin user data:`, { email: adminUser.email, status: adminUser.status });
+
+        const adminStatus = (adminUser.status || '').toString().trim().toLowerCase();
         
         // Check if admin account is active
-        if (adminUser.is_active === false) {
-          console.log(`[LOGIN] Admin account is disabled (is_active: false)`);
+        if (adminStatus === 'deactivated') {
+          console.log(`[LOGIN] Admin account is disabled (status: Deactivated)`);
           return {
             success: false,
             error: 'Your account is deactivated. Please contact administrator.',
+          };
+        }
+
+        if (adminStatus === 'locked') {
+          console.log(`[LOGIN] Admin account status is Locked for: ${credential}`);
+          return {
+            success: false,
+            error: 'Account is temporarily locked. Please try again later.',
           };
         }
         
@@ -154,6 +164,7 @@ export class AuthService {
             .from('tbladminusers')
             .update({
               failed_login_attempts: newFailedAttempts,
+              status: shouldLock ? 'Locked' : (adminStatus || 'Active'),
               account_locked_until: shouldLock ? new Date(Date.now() + lockoutDuration * 60 * 1000).toISOString() : null
             })
             .eq('admin_id', adminUser.admin_id);
@@ -179,6 +190,7 @@ export class AuthService {
           .from('tbladminusers')
           .update({
             failed_login_attempts: 0,
+            status: 'Active',
             account_locked_until: null
           })
           .eq('admin_id', adminUser.admin_id);
