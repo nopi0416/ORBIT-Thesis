@@ -234,6 +234,83 @@ const formatDateTimeCompact = (value) => {
 
 const formatCurrencyValue = (value) => `₱${Number(value || 0).toLocaleString('en-US')}`;
 
+const toNumberValue = (value) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const normalized = value.replace(/[^0-9.-]/g, '');
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (value === null || value === undefined) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const resolveBudgetLimit = (config = {}) => {
+  const source =
+    config && typeof config === 'object' && config.data && typeof config.data === 'object'
+      ? config.data
+      : config;
+
+  const candidates = [
+    source?.total_budget,
+    source?.totalBudget,
+    source?.total_budget_amount,
+    source?.budget_total,
+    source?.budget_limit,
+    source?.budgetLimit,
+    source?.max_limit,
+    source?.maxLimit,
+    source?.budgetControlLimit,
+    source?.maxAmount,
+    source?.limit,
+    source?.limit_amount,
+    source?.budget_limit_amount,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate === '') continue;
+    const parsed = toNumberValue(candidate);
+    if (parsed > 0) return parsed;
+  }
+
+  if (source && typeof source === 'object') {
+    const dynamicEntries = Object.entries(source);
+    for (const [key, value] of dynamicEntries) {
+      const normalizedKey = String(key || '').toLowerCase();
+      const isLikelyLimitField =
+        (normalizedKey.includes('budget') && normalizedKey.includes('limit')) ||
+        (normalizedKey.includes('budget') && normalizedKey.includes('total')) ||
+        normalizedKey.includes('max_limit') ||
+        (normalizedKey.startsWith('max') && normalizedKey.includes('limit'));
+
+      const isMinField = normalizedKey.includes('min_limit') || normalizedKey.startsWith('min');
+      if (!isLikelyLimitField || isMinField) continue;
+
+      const parsed = toNumberValue(value);
+      if (parsed > 0) return parsed;
+    }
+  }
+
+  return 0;
+};
+
+const getBudgetProgressMeta = ({ approved = 0, ongoing = 0, limit = 0 } = {}) => {
+  const safeApproved = toNumberValue(approved);
+  const safeOngoing = toNumberValue(ongoing);
+  const safeLimit = toNumberValue(limit);
+  const utilized = safeApproved + safeOngoing;
+  const hasLimit = safeLimit > 0;
+
+  return {
+    approved: safeApproved,
+    ongoing: safeOngoing,
+    utilized,
+    limit: safeLimit,
+    hasLimit,
+  };
+};
+
 const formatStatusText = (value, fallback = 'Pending') => {
   const normalized = String(value || '').replace(/_/g, ' ').trim();
   if (!normalized) return fallback;
@@ -274,6 +351,7 @@ const validatePayrollSelection = ({ payrollCycle, payrollCycleDate, availableMon
 const normalizeConfig = (config) => ({
   id: config.budget_id || config.id,
   createdBy: config.created_by || config.createdBy || null,
+  createdByDeleted: Boolean(config.created_by_deleted ?? config.createdByDeleted ?? false),
   name: config.budget_name || config.name || config.budgetName || 'Untitled Budget',
   department: config.department || config.budget_department || 'All',
   departmentId: config.department_id || config.departmentId || null,
@@ -284,6 +362,14 @@ const normalizeConfig = (config) => ({
   usedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
   approvedAmount: config.approved_amount ?? config.approvedAmount ?? 0,
   ongoingAmount: config.ongoing_amount ?? config.ongoingAmount ?? 0,
+  ongoingDeductionAmount:
+    config.ongoing_deduction_amount ??
+    config.ongoingDeductionAmount ??
+    config.ongoing_deductions_amount ??
+    config.ongoingDeductionsAmount ??
+    config.ongoing_deduction_total ??
+    config.ongoingDeductionTotal ??
+    0,
   minLimit: config.min_limit || config.limitMin || 0,
   maxLimit: config.max_limit || config.limitMax || config.maxAmount || 0,
   clientSponsoredAmount:
@@ -777,6 +863,161 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     client_sponsored: Boolean(requestDetails.clientSponsored),
   });
 
+  const getBudgetSnapshot = (config = selectedConfig) => {
+    const approved = toNumberValue(
+      config?.approved_amount ??
+        config?.approvedAmount ??
+        config?.usedAmount ??
+        config?.budget_used ??
+        0
+    );
+    const rawOngoing = toNumberValue(config?.ongoing_amount ?? config?.ongoingAmount ?? 0);
+    const hasSeparateOngoingDeduction =
+      config?.ongoing_deduction_amount !== undefined ||
+      config?.ongoingDeductionAmount !== undefined ||
+      config?.ongoing_deductions_amount !== undefined ||
+      config?.ongoingDeductionsAmount !== undefined ||
+      config?.ongoing_deduction_total !== undefined ||
+      config?.ongoingDeductionTotal !== undefined;
+    const ongoingDeductionRaw = toNumberValue(
+      config?.ongoing_deduction_amount ??
+        config?.ongoingDeductionAmount ??
+        config?.ongoing_deductions_amount ??
+        config?.ongoingDeductionsAmount ??
+        config?.ongoing_deduction_total ??
+        config?.ongoingDeductionTotal ??
+        0
+    );
+    const ongoing = hasSeparateOngoingDeduction
+      ? rawOngoing - Math.abs(ongoingDeductionRaw)
+      : rawOngoing;
+    const limit = resolveBudgetLimit(config);
+
+    return {
+      approved,
+      ongoing,
+      utilized: approved + ongoing,
+      limit,
+    };
+  };
+
+  const buildOverBudgetWarning = (mode) => {
+    const { approved, ongoing, utilized, limit } = getBudgetSnapshot(selectedConfig);
+    if (!selectedConfig || limit <= 0) return null;
+
+    let requestTotal = 0;
+    if (mode === 'submit-individual') {
+      const amountValue = Number(individualRequest.amount || 0);
+      requestTotal = individualRequest.isDeduction ? -amountValue : amountValue;
+    } else {
+      const validItems = bulkItems.filter((item) => {
+        const hasEmployeeData = item.employee_id && item.employeeData;
+        const hasValidAmount = item.amount && item.amount > 0;
+        const isInScope = item.scopeValidation ? item.scopeValidation.isValid : true;
+        const employeeStatus =
+          item.employee_status ||
+          item.employeeStatus ||
+          item.employeeData?.employee_status ||
+          item.employeeData?.active_status ||
+          item.employeeData?.employment_status ||
+          item.employeeData?.status;
+        const isActiveEmployee = isActiveEmployeeStatus(employeeStatus);
+        return hasEmployeeData && hasValidAmount && isInScope && isActiveEmployee;
+      });
+
+      requestTotal = validItems.reduce((sum, item) => {
+        const amount = Number(item.amount || 0);
+        return sum + (item.is_deduction ? -amount : amount);
+      }, 0);
+    }
+
+    const projected = utilized + requestTotal;
+    if (requestTotal <= 0 || projected <= limit) return null;
+
+    return {
+      action: mode,
+      currentUtilized: approved,
+      approved,
+      ongoing,
+      utilized,
+      limit,
+      requestTotal,
+      projected,
+    };
+  };
+
+  const getRequestNetAmount = (requestDetails) => {
+    const lineItems = Array.isArray(requestDetails?.line_items) ? requestDetails.line_items : [];
+    if (!lineItems.length) {
+      return Number(requestDetails?.total_request_amount || requestDetails?.amount || 0);
+    }
+
+    return lineItems.reduce((sum, item) => {
+      const amount = Math.abs(Number(item?.amount || 0));
+      const isDeduction = Boolean(item?.is_deduction) || String(item?.item_type || '').toLowerCase().includes('deduction');
+      return sum + (isDeduction ? -amount : amount);
+    }, 0);
+  };
+
+  const computeLiveOngoingAmount = async (budgetId) => {
+    if (!budgetId) return Number(selectedConfig?.ongoingAmount || selectedConfig?.ongoing_amount || 0);
+
+    const requests = await approvalRequestService.getApprovalRequests({ budget_id: budgetId }, token);
+    const ongoingRequests = (Array.isArray(requests) ? requests : []).filter((request) => {
+      const status = String(request?.overall_status || request?.status || '').toLowerCase();
+      const isClientSponsored = Boolean(request?.is_client_sponsored ?? request?.client_sponsored ?? false);
+      if (isClientSponsored) return false;
+      return !['rejected', 'draft', 'approved', 'completed'].includes(status);
+    });
+
+    if (!ongoingRequests.length) return 0;
+
+    const detailedResults = await Promise.allSettled(
+      ongoingRequests.map((request) => {
+        const requestId = request?.request_id || request?.approval_request_id || request?.id;
+        if (!requestId) return Promise.resolve(request);
+        return approvalRequestService.getApprovalRequest(requestId, token);
+      })
+    );
+
+    return detailedResults.reduce((sum, result, index) => {
+      if (result.status === 'fulfilled' && result.value) {
+        return sum + getRequestNetAmount(result.value);
+      }
+      return sum + getRequestNetAmount(ongoingRequests[index]);
+    }, 0);
+  };
+
+  const handleProceedAction = async (mode) => {
+    setSubmitError(null);
+    const warning = buildOverBudgetWarning(mode);
+    if (warning && selectedConfig?.id) {
+      try {
+        const liveOngoing = await computeLiveOngoingAmount(selectedConfig.id);
+        const liveUtilized = Number(warning.currentUtilized || 0) + Number(liveOngoing || 0);
+        const liveProjected = liveUtilized + Number(warning.requestTotal || 0);
+
+        if (liveProjected > Number(warning.limit || 0)) {
+          setAmountWarning({
+            ...warning,
+            ongoing: liveOngoing,
+            utilized: liveUtilized,
+            projected: liveProjected,
+          });
+          return;
+        }
+      } catch (error) {
+        console.error('Failed to compute live ongoing amount:', error);
+      }
+    }
+
+    if (warning) {
+      setAmountWarning(warning);
+      return;
+    }
+    setConfirmAction(mode);
+  };
+
   // Check if user can proceed with submission
   const canProceed = useMemo(() => {
     if (requestMode === 'individual') {
@@ -848,11 +1089,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
       setConfigurations((items || []).map(normalizeConfig).filter(config => {
         const isActive = String(config.status || '').toLowerCase() === 'active';
+        const hasDeletedCreator = Boolean(config.createdByDeleted);
         const inDepartmentScope = canUserViewConfigByDepartmentScope(config, user, userRole);
         if (userRole === 'payroll') {
-          return isActive && config.createdBy === user.id;
+          return isActive && !hasDeletedCreator && config.createdBy === user.id;
         }
-        return isActive && inDepartmentScope;
+        return isActive && !hasDeletedCreator && inDepartmentScope;
       }));
       setConfigPagination(pagination);
     } catch (error) {
@@ -865,7 +1107,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   }, [token, user?.org_id, user?.id, userRole, configCurrentPage, configRowsPerPage, searchTerm]);
 
   useEffect(() => {
-    refreshBudgetConfigs(false);
+    refreshBudgetConfigs(true);
   }, [refreshKey, refreshBudgetConfigs]);
 
   useEffect(() => {
@@ -893,9 +1135,10 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
 
         const normalized = normalizeConfig(updated);
         const isActive = String(normalized.status || '').toLowerCase() === 'active';
+        const hasDeletedCreator = Boolean(normalized.createdByDeleted);
         const isVisibleToUser = userRole === 'payroll'
-          ? isActive && String(normalized.createdBy || '') === String(user?.id || '')
-          : isActive && canUserViewConfigByDepartmentScope(normalized, user, userRole);
+          ? isActive && !hasDeletedCreator && String(normalized.createdBy || '') === String(user?.id || '')
+          : isActive && !hasDeletedCreator && canUserViewConfigByDepartmentScope(normalized, user, userRole);
 
         setConfigurations((prev) => {
           if (!isVisibleToUser) {
@@ -1559,6 +1802,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     setBulkParseError(null);
     setSubmitError(null);
     setSubmitSuccess(null);
+    setAmountWarning(null);
     setShowModal(true);
   };
 
@@ -1575,12 +1819,15 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         'approvalRequestDetails',
         request.id,
         () => approvalRequestService.getApprovalRequest(request.id, token),
-        60 * 1000
+        60 * 1000,
+        true
       );
-      setRequestDetailsData(data ? normalizeRequest(data) : null);
+      const normalizedData = data ? normalizeRequest(data) : null;
+      setRequestDetailsData(normalizedData);
 
-      if (request.budgetId) {
-        const config = await getBudgetConfigurationById(request.budgetId, token);
+      const configId = normalizedData?.budgetId || request.budgetId;
+      if (configId) {
+        const config = await getBudgetConfigurationById(configId, token);
         setRequestConfigDetails(config || null);
       }
     } catch (error) {
@@ -1597,12 +1844,15 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
         'approvalRequestDetails',
         selectedRequest.id,
         () => approvalRequestService.getApprovalRequest(selectedRequest.id, token),
-        60 * 1000
+        60 * 1000,
+        true
       );
-      setRequestDetailsData(data ? normalizeRequest(data) : null);
+      const normalizedData = data ? normalizeRequest(data) : null;
+      setRequestDetailsData(normalizedData);
 
-      if (selectedRequest.budgetId) {
-        const config = await getBudgetConfigurationById(selectedRequest.budgetId, token);
+      const configId = normalizedData?.budgetId || selectedRequest.budgetId;
+      if (configId) {
+        const config = await getBudgetConfigurationById(configId, token);
         setRequestConfigDetails(config || null);
       }
     } catch (error) {
@@ -2488,23 +2738,23 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     safeDetailLineItemsPage * detailLineItemsRowsPerPageNumber
   );
   const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
-  const budgetUsed = Number(
+  const budgetApproved = Number(
     requestConfigDetails?.approved_amount ??
       requestConfigDetails?.approvedAmount ??
       requestConfigDetails?.usedAmount ??
       requestConfigDetails?.budget_used ??
       0
   );
-  const budgetMax = Number(
-    requestConfigDetails?.total_budget ||
-      requestConfigDetails?.totalBudget ||
-      requestConfigDetails?.total_budget_amount ||
-      requestConfigDetails?.budget_total ||
-      0
-  );
-  const hasTotalBudget = budgetMax > 0;
-  const projectedUsed = budgetUsed + Number(detailAmount || 0);
-  const budgetPercent = hasTotalBudget ? Math.min(100, (projectedUsed / budgetMax) * 100) : 0;
+  const budgetOngoing = Number(requestConfigDetails?.ongoing_amount ?? requestConfigDetails?.ongoingAmount ?? 0);
+  const budgetMax = resolveBudgetLimit(requestConfigDetails);
+  const budgetProgress = getBudgetProgressMeta({
+    approved: budgetApproved,
+    ongoing: budgetOngoing,
+    limit: budgetMax,
+  });
+  const hasTotalBudget = budgetProgress.hasLimit;
+  const budgetUtilized = budgetProgress.utilized;
+  const isOverBudget = hasTotalBudget && budgetUtilized > budgetMax;
 
   const handleApprove = async () => {
     if (!selectedRequest?.id || !currentApprovalLevel) return;
@@ -3222,14 +3472,19 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
           <DialogFooter className={`flex justify-end gap-2 flex-shrink-0 ${requestMode === 'bulk' && bulkItems.length > 0 ? 'px-5 py-3 border-t border-slate-700' : ''}`}>
             <Button
               variant="outline"
-              onClick={() => setShowModal(false)}
+              onClick={() => {
+                setAmountWarning(null);
+                setShowModal(false);
+              }}
               className="border-slate-600 text-white hover:bg-slate-700"
             >
               Cancel
             </Button>
             {requestMode === 'individual' ? (
               <Button
-                onClick={() => setConfirmAction('submit-individual')}
+                onClick={() => {
+                  void handleProceedAction('submit-individual');
+                }}
                 disabled={!canProceed || submitting || bulkUploadLoading}
                 className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -3237,7 +3492,9 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               </Button>
             ) : (
               <Button
-                onClick={() => setConfirmAction('submit-bulk')}
+                onClick={() => {
+                  void handleProceedAction('submit-bulk');
+                }}
                 disabled={!canProceed || submitting || bulkUploadLoading}
                 className="bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -3336,22 +3593,26 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                       <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString('en-US')}</div>
                     </div>
                   </div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
+                    {isOverBudget && (
+                      <Badge variant="outline" className="bg-amber-500/20 text-amber-300 border-amber-500/40 text-[10px]">
+                        Warning: Over Limit
+                      </Badge>
+                    )}
+                  </div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
-                      ? `₱${Number(budgetUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
+                      ? `₱${Number(budgetUtilized || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'No limit'}
                   </div>
-                  <div className="h-2 rounded-full bg-slate-700">
-                    <div
-                      className="h-2 rounded-full bg-blue-500"
-                      style={{ width: `${budgetPercent}%` }}
-                    />
+                  <div className="text-[11px] text-slate-400">
+                    Approved: ₱{Number(budgetApproved || 0).toLocaleString('en-US')} • Ongoing: ₱{Number(budgetOngoing || 0).toLocaleString('en-US')}
                   </div>
                   <div className="text-xs text-slate-400">
                     {hasTotalBudget
-                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
-                      : 'After approval: No limit'}
+                      ? `Limit: ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
+                      : 'Limit: No Limit'}
                   </div>
                 </div>
               </div>
@@ -3555,6 +3816,49 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               className="border-slate-600 text-white hover:bg-slate-800"
             >
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(amountWarning)} onOpenChange={(open) => !open && setAmountWarning(null)} modal={true}>
+        <DialogContent className="bg-slate-900/95 backdrop-blur-md border-slate-700 text-white w-[420px] [&>button]:hidden">
+          <DialogHeader>
+            <DialogTitle className="text-amber-300">Budget Limit Warning</DialogTitle>
+            <DialogDescription className="text-slate-300">
+              This request exceeds the configured budget limit. You can still continue, but please confirm.
+            </DialogDescription>
+          </DialogHeader>
+          {amountWarning && (
+            <div className="space-y-1 text-sm text-slate-200">
+              <div>Current utilized: ₱{Number(amountWarning.currentUtilized || 0).toLocaleString('en-US')}</div>
+              <div>Ongoing amount: ₱{Number(amountWarning.ongoing || 0).toLocaleString('en-US')}</div>
+              <div>Request amount: ₱{Number(amountWarning.requestTotal || 0).toLocaleString('en-US')}</div>
+              <div>Projected utilized: ₱{Number(amountWarning.projected || 0).toLocaleString('en-US')}</div>
+              <div>Budget limit: ₱{Number(amountWarning.limit || 0).toLocaleString('en-US')}</div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setAmountWarning(null)}
+              className="border-slate-600 text-white hover:bg-slate-700"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                const action = amountWarning?.action;
+                setAmountWarning(null);
+                if (action) {
+                  setConfirmAction(action);
+                }
+              }}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              Continue
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4209,12 +4513,15 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         'approvalRequestDetails',
         approval.id,
         () => approvalRequestService.getApprovalRequest(approval.id, getToken()),
-        60 * 1000
+        60 * 1000,
+        true
       );
-      setRequestDetailsData(data ? normalizeRequest(data) : null);
+      const normalizedData = data ? normalizeRequest(data) : null;
+      setRequestDetailsData(normalizedData);
 
-      if (approval.budgetId) {
-        const config = await getBudgetConfigurationById(approval.budgetId, getToken());
+      const configId = normalizedData?.budgetId || approval.budgetId;
+      if (configId) {
+        const config = await getBudgetConfigurationById(configId, getToken());
         setRequestConfigDetails(config || null);
       }
     } catch (error) {
@@ -4231,12 +4538,15 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
         'approvalRequestDetails',
         selectedRequest.id,
         () => approvalRequestService.getApprovalRequest(selectedRequest.id, getToken()),
-        60 * 1000
+        60 * 1000,
+        true
       );
-      setRequestDetailsData(data ? normalizeRequest(data) : null);
+      const normalizedData = data ? normalizeRequest(data) : null;
+      setRequestDetailsData(normalizedData);
 
-      if (selectedRequest.budgetId) {
-        const config = await getBudgetConfigurationById(selectedRequest.budgetId, getToken());
+      const configId = normalizedData?.budgetId || selectedRequest.budgetId;
+      if (configId) {
+        const config = await getBudgetConfigurationById(configId, getToken());
         setRequestConfigDetails(config || null);
       }
     } catch (error) {
@@ -4479,23 +4789,23 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     safeDetailLineItemsPage * detailLineItemsRowsPerPageNumber
   );
   const warningCount = detailLineItems.filter((item) => item.has_warning || Number(item.amount || 0) < 0).length;
-  const budgetUsed = Number(
+  const budgetApproved = Number(
     requestConfigDetails?.approved_amount ??
       requestConfigDetails?.approvedAmount ??
       requestConfigDetails?.usedAmount ??
       requestConfigDetails?.budget_used ??
       0
   );
-  const budgetMax = Number(
-    requestConfigDetails?.total_budget ||
-      requestConfigDetails?.totalBudget ||
-      requestConfigDetails?.total_budget_amount ||
-      requestConfigDetails?.budget_total ||
-      0
-  );
-  const hasTotalBudget = budgetMax > 0;
-  const projectedUsed = budgetUsed + Number(detailAmount || 0);
-  const budgetPercent = hasTotalBudget ? Math.min(100, (projectedUsed / budgetMax) * 100) : 0;
+  const budgetOngoing = Number(requestConfigDetails?.ongoing_amount ?? requestConfigDetails?.ongoingAmount ?? 0);
+  const budgetMax = resolveBudgetLimit(requestConfigDetails);
+  const budgetProgress = getBudgetProgressMeta({
+    approved: budgetApproved,
+    ongoing: budgetOngoing,
+    limit: budgetMax,
+  });
+  const hasTotalBudget = budgetProgress.hasLimit;
+  const budgetUtilized = budgetProgress.utilized;
+  const isOverBudget = hasTotalBudget && budgetUtilized > budgetMax;
 
   const handleApprove = async () => {
     if (!selectedRequest?.id || !currentApprovalLevel) return;
@@ -4946,19 +5256,26 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                       <div className="text-lg font-bold text-emerald-400">₱{Number(detailRecord.netPay || 0).toLocaleString('en-US')}</div>
                     </div>
                   </div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
+                    {isOverBudget && (
+                      <Badge variant="outline" className="bg-amber-500/20 text-amber-300 border-amber-500/40 text-[10px]">
+                        Warning: Over Limit
+                      </Badge>
+                    )}
+                  </div>
                   <div className="text-sm text-slate-200">
                     {hasTotalBudget
-                      ? `₱${Number(budgetUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
+                      ? `₱${Number(budgetUtilized || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
                       : 'No limit'}
                   </div>
-                  <div className="h-2 rounded-full bg-slate-700">
-                    <div className="h-2 rounded-full bg-blue-500" style={{ width: `${budgetPercent}%` }} />
+                  <div className="text-[11px] text-slate-400">
+                    Approved: ₱{Number(budgetApproved || 0).toLocaleString('en-US')} • Ongoing: ₱{Number(budgetOngoing || 0).toLocaleString('en-US')}
                   </div>
                   <div className="text-xs text-slate-400">
                     {hasTotalBudget
-                      ? `After approval: ₱${Number(projectedUsed || 0).toLocaleString('en-US')} / ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
-                      : 'After approval: No limit'}
+                      ? `Limit: ₱${Number(budgetMax || 0).toLocaleString('en-US')}`
+                      : 'Limit: No Limit'}
                   </div>
                 </div>
               </div>
@@ -5576,7 +5893,8 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
           'approvalRequestDetails',
           String(requestId),
           () => approvalRequestService.getApprovalRequest(requestId, getToken()),
-          60 * 1000
+          60 * 1000,
+          true
         );
         if (!data) return;
 
@@ -5607,7 +5925,8 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
               'budgetConfigById',
               String(normalized.budgetId),
               () => getBudgetConfigurationById(normalized.budgetId, getToken()),
-              5 * 60 * 1000
+              5 * 60 * 1000,
+              true
             );
             setHistoryConfigDetails(config || null);
           }
@@ -5683,7 +6002,8 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
         'approvalRequestDetails',
         String(record.id),
         () => approvalRequestService.getApprovalRequest(record.id, getToken()),
-        60 * 1000
+        60 * 1000,
+        true
       );
       setDetailData(data ? normalizeRequest(data) : null);
 
@@ -5692,7 +6012,8 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
           'budgetConfigById',
           String(data.budget_id),
           () => getBudgetConfigurationById(data.budget_id, getToken()),
-          5 * 60 * 1000
+          5 * 60 * 1000,
+          true
         );
         setHistoryConfigDetails(config || null);
       }
@@ -5807,6 +6128,25 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
   const canViewHistoryLineItems =
     userRole === 'payroll' ||
     String(detailData?.submitted_by || detailData?.submittedBy || '') === String(user?.id || '');
+
+  const historyBudgetApproved = Number(
+    historyConfigDetails?.approved_amount ??
+      historyConfigDetails?.approvedAmount ??
+      historyConfigDetails?.usedAmount ??
+      historyConfigDetails?.budget_used ??
+      0
+  );
+  const historyBudgetOngoing = Number(
+    historyConfigDetails?.ongoing_amount ?? historyConfigDetails?.ongoingAmount ?? 0
+  );
+  const historyBudgetLimit = resolveBudgetLimit(historyConfigDetails);
+  const historyBudgetProgress = getBudgetProgressMeta({
+    approved: historyBudgetApproved,
+    ongoing: historyBudgetOngoing,
+    limit: historyBudgetLimit,
+  });
+  const historyIsOverBudget =
+    historyBudgetProgress.hasLimit && historyBudgetProgress.utilized > historyBudgetProgress.limit;
 
   useEffect(() => {
     setHistoryLineItemsPage(1);
@@ -6190,6 +6530,29 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
                       <div className="text-sm text-slate-200">
                         {detailData?.payroll_cycle || '—'} {detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date ? `(${detailData?.payroll_cycle_Date || detailData?.payroll_cycle_date})` : ''}
                       </div>
+                    </div>
+                  </div>
+                  <div className="space-y-2 pt-3 border-t border-slate-700">
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Budget Status</div>
+                      {historyIsOverBudget && (
+                        <Badge variant="outline" className="bg-amber-500/20 text-amber-300 border-amber-500/40 text-[10px]">
+                          Warning: Over Limit
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="text-sm text-slate-200">
+                      {historyBudgetProgress.hasLimit
+                        ? `₱${Number(historyBudgetProgress.utilized || 0).toLocaleString('en-US')} / ₱${Number(historyBudgetProgress.limit || 0).toLocaleString('en-US')}`
+                        : 'No limit'}
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      Current: ₱{Number(historyBudgetProgress.approved || 0).toLocaleString('en-US')} • Ongoing: ₱{Number(historyBudgetProgress.ongoing || 0).toLocaleString('en-US')}
+                    </div>
+                    <div className="text-xs text-slate-400">
+                      {historyBudgetProgress.hasLimit
+                        ? `Limit: ₱${Number(historyBudgetProgress.limit || 0).toLocaleString('en-US')}`
+                        : 'Limit: No Limit'}
                     </div>
                   </div>
                 </div>

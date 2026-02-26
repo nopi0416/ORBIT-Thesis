@@ -5,6 +5,7 @@
 
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+import { randomUUID } from 'crypto';
 import supabase from '../config/database.js';
 import { sendOTPEmail, sendPasswordResetEmail } from '../config/email.js';
 import { validatePassword } from '../utils/authValidators.js';
@@ -13,6 +14,81 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 const BCRYPT_SALT_ROUNDS = 12; // Security: Higher rounds = slower but more secure
 
 export class AuthService {
+  static async invalidateActiveSessions(userId) {
+    if (!userId) return;
+
+    const { error } = await supabase
+      .from('tblusersession')
+      .update({
+        is_verified: false,
+      })
+      .eq('user_id', userId)
+      .eq('is_verified', true);
+
+    if (error) {
+      throw error;
+    }
+  }
+
+  static async createSession({ userId }) {
+    const sessionId = randomUUID();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    const { error } = await supabase
+      .from('tblusersession')
+      .insert([
+        {
+          session_id: sessionId,
+          user_id: userId,
+          is_verified: true,
+          expires_at: expiresAt,
+          created_by: userId,
+        },
+      ]);
+
+    if (error) {
+      throw error;
+    }
+
+    return sessionId;
+  }
+
+  static async touchSession(sessionId) {
+    if (!sessionId) return;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    await supabase
+      .from('tblusersession')
+      .update({
+        expires_at: expiresAt,
+      })
+      .eq('session_id', sessionId)
+      .eq('is_verified', true);
+  }
+
+  static async getActiveSession(sessionId, userId) {
+    if (!sessionId || !userId) return null;
+
+    const { data, error } = await supabase
+      .from('tblusersession')
+      .select('session_id, user_id, is_verified, expires_at')
+      .eq('session_id', sessionId)
+      .eq('user_id', userId)
+      .eq('is_verified', true)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    if (!data) return null;
+
+    if (data.expires_at && new Date(data.expires_at) < new Date()) {
+      return null;
+    }
+
+    return data;
+  }
+
   /**
    * Register a new user
    */
@@ -365,7 +441,7 @@ export class AuthService {
    * Complete login - verify OTP and return authentication token
    * Supports both admin and regular users
    */
-  static async completeLogin(email, otp) {
+  static async completeLogin(email, otp, context = {}) {
     try {
       // Verify OTP
       const otpVerification = await this.verifyOTP(email, otp, 'login');
@@ -386,8 +462,22 @@ export class AuthService {
 
       if (adminUser) {
         console.log(`[COMPLETE LOGIN] Found admin user: ${email}`);
+        await this.invalidateActiveSessions(adminUser.admin_id);
+        const sessionId = await this.createSession({
+          userId: adminUser.admin_id,
+        });
+
         // Generate JWT token for admin
-        const token = this.generateToken(adminUser.admin_id, adminUser.email, adminUser.admin_role, adminUser.org_id || null);
+        const token = this.generateToken(
+          adminUser.admin_id,
+          adminUser.email,
+          adminUser.admin_role,
+          adminUser.org_id || null,
+          {
+            userType: 'admin',
+            sessionId,
+          }
+        );
 
         // Update last login
         try {
@@ -410,6 +500,7 @@ export class AuthService {
             role: adminUser.admin_role,
             org_id: adminUser.org_id || null,
             userType: 'admin',
+            sessionId,
           },
           message: 'Login successful',
         };
@@ -487,8 +578,16 @@ export class AuthService {
         };
       }
 
+      await this.invalidateActiveSessions(userId);
+      const sessionId = await this.createSession({
+        userId,
+      });
+
       // Generate JWT token
-      const token = this.generateToken(userId, user.email, userRole, user.org_id || null);
+      const token = this.generateToken(userId, user.email, userRole, user.org_id || null, {
+        userType: 'user',
+        sessionId,
+      });
 
       // Update last login
       try {
@@ -512,6 +611,7 @@ export class AuthService {
           role: userRole,
           org_id: user.org_id || null,
           userType: 'user',
+          sessionId,
         },
         message: 'Login successful',
       };
@@ -1172,12 +1272,17 @@ export class AuthService {
   /**
    * Generate JWT token (stub - replace with actual JWT library)
    */
-  static generateToken(userId, email, role, orgId = null) {
+  static generateToken(userId, email, role, orgId = null, options = {}) {
+    const userType = options.userType || (String(role || '').toLowerCase().includes('admin') ? 'admin' : 'user');
+    const sessionId = options.sessionId || randomUUID();
     const payload = {
       userId,
       email,
       role,
       org_id: orgId,
+      userType,
+      sessionId,
+      jti: sessionId,
     };
 
     // Sign JWT token with 24 hour expiry
@@ -1188,9 +1293,30 @@ export class AuthService {
     });
   }
 
-  static verifyToken(token) {
+  static async verifyToken(token) {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
+
+      const userId = decoded.userId || decoded.id || null;
+      const sessionId = decoded.sessionId || decoded.jti || null;
+
+      if (!userId || !sessionId) {
+        return {
+          success: false,
+          error: 'Session is invalid or missing',
+        };
+      }
+
+      const activeSession = await this.getActiveSession(sessionId, userId);
+      if (!activeSession) {
+        return {
+          success: false,
+          error: 'Session has been invalidated by another login',
+        };
+      }
+
+      this.touchSession(sessionId).catch(() => {});
+
       return {
         success: true,
         data: decoded,

@@ -133,7 +133,10 @@ export class AuthController {
       const ipAddress = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'] || 'unknown';
       const userAgent = req.headers['user-agent'] || 'unknown';
 
-      const result = await AuthService.completeLogin(email, otp);
+      const result = await AuthService.completeLogin(email, otp, {
+        ipAddress,
+        userAgent,
+      });
 
       if (!result.success) {
         return sendError(res, result.error, 401);

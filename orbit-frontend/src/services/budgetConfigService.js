@@ -95,6 +95,7 @@ export const getBudgetConfigurations = async (filters = {}, token) => {
 
       return {
         items: Array.isArray(payload.items) ? payload.items : [],
+        status_counts: payload.status_counts || payload.statusCounts || null,
         pagination: payload.pagination || {
           page: Number(filters.page || 1),
           limit: Number(filters.limit || 10),

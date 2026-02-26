@@ -83,6 +83,12 @@ export function AuthProvider({ children }) {
    */
   const [loading, setLoading] = useState(true);
 
+  const clearAuthStorage = () => {
+    ['authUser', 'authToken', 'authSessionId', 'session_cache'].forEach((key) => {
+      localStorage.removeItem(key);
+    });
+  };
+
   /**
    * Custom wrapper for setUser that automatically saves user to localStorage
    * 
@@ -129,14 +135,10 @@ export function AuthProvider({ children }) {
     if (userData) {
       // Store user details in localStorage
       localStorage.setItem('authUser', JSON.stringify(userData));
-      
-      // Create and store session identifier as UUID v4
-      const sessionId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-      });
-      localStorage.setItem('auth_session', sessionId);
+
+      if (userData.sessionId) {
+        localStorage.setItem('authSessionId', String(userData.sessionId));
+      }
       
       // Create and store session expiration cache
       // Token expires in 24 hours from now
@@ -146,15 +148,8 @@ export function AuthProvider({ children }) {
       setUser(userData);
     } else {
       // Clear all auth-related keys from localStorage on logout
-      const keysToRemove = ['authUser', 'authToken', 'auth_session', 'session_cache'];
-      keysToRemove.forEach(key => {
-        if (localStorage.getItem(key)) {
-          console.log(`[AUTH] Clearing localStorage key on logout: ${key}`);
-          localStorage.removeItem(key);
-        }
-      });
+      clearAuthStorage();
       clearAllCache();
-      setUser(null);
       setUser(null);
     }
   };
@@ -179,7 +174,7 @@ export function AuthProvider({ children }) {
     const checkAuth = async () => {
       try {
         // Clean up all old/unused localStorage keys
-        const keysToRemove = ['auth_token', 'auth_user', 'auth_session', 'session_cache'];
+        const keysToRemove = ['auth_token', 'auth_user'];
         keysToRemove.forEach(key => {
           if (localStorage.getItem(key)) {
             console.log(`[AUTH] Removing old localStorage key: ${key}`);
@@ -199,6 +194,16 @@ export function AuthProvider({ children }) {
             if (response.data.success) {
               // Token is valid, restore user from localStorage
               const userStr = localStorage.getItem('authUser');
+              const storedSessionId = String(localStorage.getItem('authSessionId') || '');
+              const tokenSessionId = String(response?.data?.data?.sessionId || response?.data?.data?.jti || '');
+
+              if (storedSessionId && tokenSessionId && storedSessionId !== tokenSessionId) {
+                console.log('[AUTH] Session mismatch detected, clearing session');
+                clearAuthStorage();
+                clearAllCache();
+                return;
+              }
+
               if (userStr) {
                 console.log('[AUTH] Token valid, restoring user session');
                 setUser(JSON.parse(userStr));
@@ -206,15 +211,13 @@ export function AuthProvider({ children }) {
             } else {
               // Token is invalid, clear everything
               console.log('[AUTH] Token invalid or expired, clearing session');
-              localStorage.removeItem('authToken');
-              localStorage.removeItem('authUser');
+              clearAuthStorage();
               clearAllCache();
             }
           } catch (error) {
             // Token verification failed, clear everything
             console.log('[AUTH] Token verification failed, clearing session:', error.message);
-            localStorage.removeItem('authToken');
-            localStorage.removeItem('authUser');
+            clearAuthStorage();
             clearAllCache();
           }
         } else {
@@ -223,8 +226,7 @@ export function AuthProvider({ children }) {
         }
       } catch (error) {
         console.error('Auth check failed:', error);
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('authUser');
+        clearAuthStorage();
         clearAllCache();
       } finally {
         setLoading(false);
@@ -233,6 +235,33 @@ export function AuthProvider({ children }) {
 
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (!user) return undefined;
+
+    const intervalId = setInterval(async () => {
+      const token = localStorage.getItem('authToken');
+      if (!token) return;
+
+      try {
+        const response = await axios.post(
+          `${API_URL}/auth/verify-token`,
+          { token },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+
+        const storedSessionId = String(localStorage.getItem('authSessionId') || '');
+        const tokenSessionId = String(response?.data?.data?.sessionId || response?.data?.data?.jti || '');
+        if (!response?.data?.success || (storedSessionId && tokenSessionId && storedSessionId !== tokenSessionId)) {
+          setUserWithStorage(null);
+        }
+      } catch {
+        setUserWithStorage(null);
+      }
+    }, 30000);
+
+    return () => clearInterval(intervalId);
+  }, [user]);
 
   /**
   * LOGIN - Initiates login with employee ID and password
@@ -287,7 +316,7 @@ export function AuthProvider({ children }) {
         }
         
         // Direct login (fallback, in case backend doesn't require OTP)
-        const { token, userId, email, firstName, lastName, role, geo_id, geoId, org_id, orgId } = response.data.data;
+        const { token, userId, email, firstName, lastName, role, geo_id, geoId, org_id, orgId, sessionId } = response.data.data;
         
         localStorage.setItem('authToken', token);
         const userData = { 
@@ -300,6 +329,7 @@ export function AuthProvider({ children }) {
           role,
           geo_id: geo_id ?? geoId ?? null,
           org_id: org_id ?? orgId ?? null,
+          sessionId: sessionId || null,
         };
         
         // Use setUserWithStorage to save user and create auth_session + session_cache
@@ -394,7 +424,7 @@ export function AuthProvider({ children }) {
           };
         }
 
-        const { token, userId, firstName, lastName, role, email: respEmail, geo_id, geoId, org_id, orgId } = response.data.data;
+        const { token, userId, firstName, lastName, role, email: respEmail, geo_id, geoId, org_id, orgId, sessionId } = response.data.data;
         
         console.log('Token:', token);
         console.log('UserId:', userId);
@@ -416,6 +446,7 @@ export function AuthProvider({ children }) {
           role: role || 'user',
           geo_id: geo_id ?? geoId ?? null,
           org_id: org_id ?? orgId ?? null,
+          sessionId: sessionId || null,
         };
         console.log('Storing user data:', userData);
         

@@ -91,9 +91,33 @@ const toDateOnlyKey = (value) => {
   return date.toISOString().split('T')[0];
 };
 
-const isRequestorRole = (role) => normalizeRole(role).includes('requestor');
+const isRequestorRole = (role) => {
+  const normalized = normalizeRole(role);
+  return normalized.includes('requestor') || normalized.includes('l1');
+};
 const isPayrollRole = (role) => normalizeRole(role).includes('payroll');
 const isAdminRole = (role) => normalizeRole(role).includes('admin');
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientGatewayError = (error) => {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('bad gateway') ||
+    message.includes('error code 502') ||
+    message.includes('fetch failed') ||
+    message.includes('econnreset') ||
+    message.includes('<!doctype html>')
+  );
+};
+
+const toSafeServiceError = (error, fallback = 'Service temporarily unavailable. Please try again.') => {
+  const message = String(error?.message || error || '').trim();
+  if (!message) return fallback;
+  const lower = message.toLowerCase();
+  if (lower.includes('<!doctype html>') || lower.includes('cloudflare')) return fallback;
+  return message;
+};
 
 const logBudgetConfigAction = async ({
   budgetId,
@@ -398,20 +422,24 @@ export class BudgetConfigService {
     const uniqueIds = Array.from(new Set((budgetIds || []).filter(Boolean)));
     if (!uniqueIds.length) return new Map();
 
-    const { data, error } = await supabase
-      .from('tblbudgetapprovalrequests')
-      .select('budget_id, overall_status')
-      .in('budget_id', uniqueIds);
-
-    if (error) throw error;
-
+    const pageSize = 200;
     const map = new Map();
-    (data || []).forEach((row) => {
-      const status = String(row?.overall_status || '').toLowerCase();
-      if (status === 'approved' || status === 'rejected') {
-        map.set(row.budget_id, true);
-      }
-    });
+    for (let i = 0; i < uniqueIds.length; i += pageSize) {
+      const budgetIdChunk = uniqueIds.slice(i, i + pageSize);
+      const { data, error } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('budget_id, overall_status')
+        .in('budget_id', budgetIdChunk);
+
+      if (error) throw error;
+
+      (data || []).forEach((row) => {
+        const status = String(row?.overall_status || '').toLowerCase();
+        if (status === 'approved' || status === 'rejected') {
+          map.set(row.budget_id, true);
+        }
+      });
+    }
 
     return map;
   }
@@ -696,6 +724,7 @@ export class BudgetConfigService {
       // Fetch related data for each config
       let userNameMap = new Map();
       let userRoleMap = new Map();
+      let creatorLookupSucceeded = true;
       const creatorIds = (visibilityFiltered || []).map((row) => row.created_by);
       try {
         [userNameMap, userRoleMap] = await Promise.all([
@@ -703,6 +732,7 @@ export class BudgetConfigService {
           this.getUserRoleMap(creatorIds)
         ]);
       } catch (lookupError) {
+        creatorLookupSucceeded = false;
         console.warn('[getAllBudgetConfigs] User lookup failed:', lookupError?.message || lookupError);
       }
 
@@ -713,18 +743,21 @@ export class BudgetConfigService {
           ]);
           const creatorName = userNameMap.get(config.created_by);
           const creatorRole = userRoleMap.get(config.created_by);
+          const createdByDeleted = Boolean(creatorLookupSucceeded && config.created_by && !creatorName);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
           const totals = approvalAmounts.get(config.budget_id) || { approvedAmount: 0, ongoingAmount: 0, clientSponsoredAmount: 0 };
           const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
 
           const computedStatus = BudgetConfigService.computeConfigStatus(config);
+          const effectiveStatus = createdByDeleted ? 'deactivated' : computedStatus;
           
           return {
             ...config,
             approvers: approvers.data || [],
             budget_tracking: [],
-            status: computedStatus,
-            created_by_name: creatorDetails?.name || config.created_by,
+            status: effectiveStatus,
+            created_by_name: createdByDeleted ? 'Deleted User' : (creatorDetails?.name || config.created_by),
+            created_by_deleted: createdByDeleted,
             created_by_role: creatorRole || null,
             approved_amount: totals.approvedAmount,
             ongoing_amount: totals.ongoingAmount,
@@ -733,6 +766,20 @@ export class BudgetConfigService {
           };
         })
       );
+
+      const statusCounts = {
+        active: 0,
+        expired: 0,
+        deactivated: 0,
+        all: configsWithRelations.length,
+      };
+
+      configsWithRelations.forEach((config) => {
+        const normalizedStatus = String(config?.status || '').toLowerCase();
+        if (normalizedStatus === 'active' || normalizedStatus === 'expired' || normalizedStatus === 'deactivated') {
+          statusCounts[normalizedStatus] += 1;
+        }
+      });
 
       const statusFilter = String(filters.status || '').toLowerCase();
       const filteredByStatus = statusFilter && statusFilter !== 'all'
@@ -761,6 +808,7 @@ export class BudgetConfigService {
         success: true,
         data: {
           items: pagedItems,
+          status_counts: statusCounts,
           pagination: {
             page: safePage,
             limit,
@@ -807,12 +855,15 @@ export class BudgetConfigService {
       }
 
       let creatorName = null;
+      let creatorLookupSucceeded = true;
       try {
         const userNameMap = await this.getUserNameMap([data.created_by]);
         creatorName = userNameMap.get(data.created_by) || null;
       } catch (lookupError) {
+        creatorLookupSucceeded = false;
         console.warn('[getBudgetConfigById] User lookup failed:', lookupError?.message || lookupError);
       }
+      const createdByDeleted = Boolean(creatorLookupSucceeded && data.created_by && !creatorName);
       const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(data.created_by);
       let hasApprovalActivity = false;
       try {
@@ -823,14 +874,16 @@ export class BudgetConfigService {
       }
 
       const computedStatus = BudgetConfigService.computeConfigStatus(data);
+      const effectiveStatus = createdByDeleted ? 'deactivated' : computedStatus;
 
       return {
         success: true,
         data: {
           ...data,
           approvers: approvers.data || [],
-          status: computedStatus,
-          created_by_name: creatorDetails?.name || data.created_by,
+          status: effectiveStatus,
+          created_by_name: createdByDeleted ? 'Deleted User' : (creatorDetails?.name || data.created_by),
+          created_by_deleted: createdByDeleted,
           approved_amount: approvalTotals.approvedAmount,
           ongoing_amount: approvalTotals.ongoingAmount,
           client_sponsored_amount: approvalTotals.clientSponsoredAmount,
@@ -1028,9 +1081,11 @@ export class BudgetConfigService {
 
       // Fetch related data for each config
       let userNameMap = new Map();
+      let creatorLookupSucceeded = true;
       try {
         userNameMap = await this.getUserNameMap((data || []).map((row) => row.created_by));
       } catch (lookupError) {
+        creatorLookupSucceeded = false;
         console.warn('[getConfigsByUser] User lookup failed:', lookupError?.message || lookupError);
       }
 
@@ -1047,14 +1102,18 @@ export class BudgetConfigService {
             this.getApproversByBudgetId(config.budget_id),
           ]);
           const creatorName = userNameMap.get(config.created_by);
+          const createdByDeleted = Boolean(creatorLookupSucceeded && config.created_by && !creatorName);
           const creatorDetails = creatorName ? { name: creatorName } : getUserDetailsFromUUID(config.created_by);
           const hasApprovalActivity = decisionMap.get(config.budget_id) || false;
+          const computedStatus = BudgetConfigService.computeConfigStatus(config);
+          const effectiveStatus = createdByDeleted ? 'deactivated' : computedStatus;
 
           return {
             ...config,
             approvers: approvers.data || [],
-            status: config.status,
-            created_by_name: creatorDetails?.name || config.created_by,
+            status: effectiveStatus,
+            created_by_name: createdByDeleted ? 'Deleted User' : (creatorDetails?.name || config.created_by),
+            created_by_deleted: createdByDeleted,
             has_approval_activity: hasApprovalActivity,
           };
         })
@@ -2677,14 +2736,27 @@ export class BudgetConfigService {
       let data;
       let error;
       let orgField = 'org_id';
+      const maxAttempts = 3;
 
-      ({ data, error, orgField } = await runApproverQuery(orgField));
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        ({ data, error, orgField } = await runApproverQuery('org_id'));
 
-      if (error && error.code === '42703' && String(error.message || '').includes('org_id')) {
-        ({ data, error, orgField } = await runApproverQuery('geo_id'));
+        if (error && error.code === '42703' && String(error.message || '').includes('org_id')) {
+          ({ data, error, orgField } = await runApproverQuery('geo_id'));
+        }
+
+        if (!error) break;
+
+        if (!isTransientGatewayError(error) || attempt === maxAttempts) {
+          break;
+        }
+
+        await wait(300 * attempt);
       }
 
-      if (error) throw error;
+      if (error) {
+        throw new Error(toSafeServiceError(error, `Failed to fetch ${level} approvers. Please try again.`));
+      }
 
       // Format response for easier consumption
       const formattedData = data.map(entry => {
@@ -2718,7 +2790,7 @@ export class BudgetConfigService {
       console.error(`Error fetching ${level} approvers:`, error);
       return {
         success: false,
-        error: error.message,
+        error: toSafeServiceError(error, `Failed to fetch ${level} approvers. Please try again.`),
         data: [],
       };
     }
@@ -2776,9 +2848,17 @@ export class BudgetConfigService {
           )
         `)
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
+
+      if (!data) {
+        return {
+          success: false,
+          error: `User not found for id: ${userId}`,
+          data: null,
+        };
+      }
 
       return {
         success: true,

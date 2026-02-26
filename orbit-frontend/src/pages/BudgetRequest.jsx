@@ -274,7 +274,6 @@ function ConfigurationList({ userRole }) {
   const { user } = useAuth();
   const toast = useToast();
   const PAGE_SIZE_OPTIONS = [10, 15, 20];
-  const STATUS_FILTER_OPTIONS = ["active", "expired", "deactivated", "all"];
   const [searchQuery, setSearchQuery] = useState("");
   const [filterGeo, setFilterGeo] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
@@ -509,9 +508,11 @@ function ConfigurationList({ userRole }) {
           location: filterLocation !== 'all' ? filterLocation : undefined,
           client: filterClient !== 'all' ? filterClient : undefined,
         }, token),
-        5 * 60 * 1000 // 5 minutes TTL
+        5 * 60 * 1000, // 5 minutes TTL
+        forceRefresh
       );
       const items = Array.isArray(data) ? data : (data?.items || []);
+      const serverStatusCounts = data?.status_counts || data?.statusCounts || null;
       const pagination = data?.pagination || {
         page: currentPage,
         limit: rowsPerPage,
@@ -524,6 +525,14 @@ function ConfigurationList({ userRole }) {
       const transformedItems = (items || []).map(transformConfig);
       setConfigurations(transformedItems.filter(canUserViewByDepartmentScope));
       setServerPagination(pagination);
+      if (serverStatusCounts && typeof serverStatusCounts === 'object') {
+        setStatusCounts({
+          active: Number(serverStatusCounts.active || 0),
+          expired: Number(serverStatusCounts.expired || 0),
+          deactivated: Number(serverStatusCounts.deactivated || 0),
+          all: Number(serverStatusCounts.all || 0),
+        });
+      }
       lastConfigFetchRef.current = Date.now();
     } catch (err) {
       console.error("Error fetching configurations:", err);
@@ -554,7 +563,7 @@ function ConfigurationList({ userRole }) {
 
   useEffect(() => {
     // Initial fetch
-    fetchConfigurations(false, true);
+    fetchConfigurations(true, true);
     
     // Auto-refresh when tab/window regains focus to update ongoing amounts
     const handleVisibility = () => {
@@ -574,61 +583,8 @@ function ConfigurationList({ userRole }) {
   useEffect(() => {
     if (!user) {
       setStatusCounts({ active: 0, expired: 0, deactivated: 0, all: 0 });
-      return;
     }
-
-    let isActive = true;
-
-    const fetchStatusCounts = async () => {
-      try {
-        const token = user?.token || localStorage.getItem("authToken") || "";
-
-        const countResults = await Promise.all(
-          STATUS_FILTER_OPTIONS.map(async (status) => {
-            const response = await budgetConfigService.getBudgetConfigurations(
-              {
-                org_id: user?.org_id,
-                page: 1,
-                limit: 1,
-                status,
-                search: searchQuery,
-                geo: filterGeo !== 'all' ? filterGeo : undefined,
-                location: filterLocation !== 'all' ? filterLocation : undefined,
-                client: filterClient !== 'all' ? filterClient : undefined,
-              },
-              token
-            );
-
-            const total = Number(response?.pagination?.totalItems);
-            const items = Array.isArray(response) ? response : (response?.items || []);
-            return [status, Number.isFinite(total) ? total : items.length];
-          })
-        );
-
-        if (!isActive) return;
-        setStatusCounts(Object.fromEntries(countResults));
-      } catch (error) {
-        if (!isActive) return;
-        console.error('Error fetching status counts:', error);
-      }
-    };
-
-    fetchStatusCounts();
-
-    return () => {
-      isActive = false;
-    };
-  }, [user, searchQuery, filterGeo, filterLocation, filterClient]);
-
-  useEffect(() => {
-    const totalItems = Number(serverPagination?.totalItems);
-    if (!Number.isFinite(totalItems)) return;
-
-    setStatusCounts((prev) => ({
-      ...prev,
-      [statusFilter]: totalItems,
-    }));
-  }, [serverPagination?.totalItems, statusFilter]);
+  }, [user]);
 
   useEffect(() => {
     const fetchApprovers = async () => {
@@ -1060,6 +1016,9 @@ function ConfigurationList({ userRole }) {
           token
         );
       }
+
+      invalidateNamespace('budgetConfigs');
+      invalidateNamespace('budgetConfigById');
 
       const refreshed = await budgetConfigService.getBudgetConfigurationById(editConfig.id, token);
       const normalizedUpdatedConfig = refreshed ? transformConfig(refreshed) : null;
@@ -1646,7 +1605,7 @@ function ConfigurationList({ userRole }) {
                     <th className="px-2 py-2 border-r border-slate-600 min-w-[120px]" style={{resize: 'horizontal', overflow: 'auto'}}>
                       L3 Approver
                     </th>
-                    <th className="px-2 py-2 min-w-[90px] sticky right-0 top-0 z-40 bg-slate-700 border-l border-slate-600 whitespace-nowrap">Actions</th>
+                    <th className="px-2 py-2 w-[110px] min-w-[110px] max-w-[110px] sticky right-0 top-0 z-40 bg-slate-700 border-l border-slate-600 text-center whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1747,7 +1706,7 @@ function ConfigurationList({ userRole }) {
                           )}
                         </div>
                       </td>
-                      <td className="px-2 py-2 sticky right-0 z-30 bg-slate-800 border-l border-slate-700 whitespace-nowrap hover:bg-slate-700/80 transition-colors">
+                      <td className="px-2 py-2 w-[110px] min-w-[110px] max-w-[110px] sticky right-0 z-30 bg-slate-800 border-l border-slate-700 whitespace-nowrap text-center hover:bg-slate-700/80 transition-colors">
                         <Button
                           onClick={() => {
                             setSelectedConfig(config);

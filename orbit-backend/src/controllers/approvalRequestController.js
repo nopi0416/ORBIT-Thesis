@@ -410,7 +410,7 @@ export class ApprovalRequestController {
       }
 
       broadcast('approval_request_updated', {
-        action: 'created',
+        action: 'submitted',
         request_id: result.data?.request_id || result.data?.id,
         budget_id,
         submitted_by: userId,

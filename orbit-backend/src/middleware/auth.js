@@ -1,8 +1,3 @@
-import jwt from 'jsonwebtoken';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-
-import supabase from '../config/database.js';
 import { AuthService } from '../services/authService.js';
 
 /**
@@ -21,11 +16,20 @@ export const authenticateToken = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const tokenResult = await AuthService.verifyToken(token);
+    if (!tokenResult.success) {
+      return res.status(401).json({
+        success: false,
+        error: tokenResult.error || 'Invalid or expired token',
+      });
+    }
+
+    const decoded = tokenResult.data;
     const role = decoded.role || null;
     const normalizedRole = (role || '').toString().toLowerCase();
     const inferredUserType = decoded.userType || (normalizedRole.includes('admin') ? 'admin' : 'user');
     const orgId = decoded.org_id || decoded.orgId || null;
+    const sessionId = decoded.sessionId || decoded.jti || null;
 
     req.user = {
       id: decoded.userId || decoded.id || null,
@@ -34,6 +38,7 @@ export const authenticateToken = async (req, res, next) => {
       org_id: orgId,
       orgId,
       userType: inferredUserType,
+      sessionId,
     };
     return next();
   } catch (error) {
