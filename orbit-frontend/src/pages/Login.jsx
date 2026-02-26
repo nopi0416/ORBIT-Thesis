@@ -8,7 +8,7 @@ import { Eye, EyeOff, Lock, User, AlertCircle, Loader2, ArrowLeft } from '../com
 import { useAuth } from '../context/AuthContext';
 import { authAPI } from '../utils/api';
 import { getDashboardRoute } from '../utils/roleRouting';
-import { sanitizeUsername, sanitizePassword, sanitizeOTP, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
+import { sanitizeUsername, sanitizePasswordStrict, sanitizeOTP, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 const carouselSlides = [
   {
@@ -107,7 +107,7 @@ export default function Login() {
     handleRestrictedKeyDown(event);
     if (event.defaultPrevented) return;
 
-    if (event.key.length === 1 && !/^[\x20-\x7E]$/.test(event.key)) {
+    if (event.key.length === 1 && !/^[a-zA-Z0-9!@#$%^&*]$/.test(event.key)) {
       event.preventDefault();
     }
   };
@@ -454,8 +454,8 @@ export default function Login() {
                           placeholder="Enter your password"
                           value={password}
                           maxLength={50}
-                          onInput={(e) => setPassword(sanitizePassword(e.target.value.slice(0, 50)))}
-                          onPaste={(e) => handlePaste(e, sanitizePassword)}
+                          onInput={(e) => setPassword(sanitizePasswordStrict(e.target.value.slice(0, 50)))}
+                          onPaste={(e) => handlePaste(e, sanitizePasswordStrict)}
                           onKeyDown={handlePasswordKeyDown}
                           style={{
                             paddingLeft: '2.5rem',
