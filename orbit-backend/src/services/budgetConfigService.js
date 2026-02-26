@@ -154,8 +154,8 @@ export class BudgetConfigService {
     if (!orgId) return [];
 
     const { data, error } = await supabase
-      .from('tblorganizations')
-      .select('org_id, parent_org_id, parent_id');
+      .from('tblorganization')
+      .select('org_id, parent_org_id');
 
     if (error) throw error;
 
@@ -168,7 +168,7 @@ export class BudgetConfigService {
       ancestry.push(current);
       visited.add(current);
       const row = orgMap.get(current);
-      current = row?.parent_org_id || row?.parent_id || null;
+      current = row?.parent_org_id || null;
     }
 
     return ancestry;
@@ -644,10 +644,22 @@ export class BudgetConfigService {
             departmentName = userResult.data.department || null;
           }
 
-          [orgAncestryIds, approverBudgetIds] = await Promise.all([
+          const [ancestryResult, approverBudgetResult] = await Promise.allSettled([
             this.getOrganizationAncestryIds(filters.org_id),
             this.getApproverBudgetIdsByUser(filters.user_id, (filteredByOrg || []).map((row) => row.budget_id)),
           ]);
+
+          if (ancestryResult.status === 'fulfilled') {
+            orgAncestryIds = ancestryResult.value || [];
+          } else {
+            console.warn('[getAllBudgetConfigs] Organization ancestry lookup failed:', ancestryResult.reason?.message || ancestryResult.reason);
+          }
+
+          if (approverBudgetResult.status === 'fulfilled') {
+            approverBudgetIds = approverBudgetResult.value || new Set();
+          } else {
+            console.warn('[getAllBudgetConfigs] Approver budget lookup failed:', approverBudgetResult.reason?.message || approverBudgetResult.reason);
+          }
         } catch (visibilityError) {
           console.warn('[getAllBudgetConfigs] Visibility context lookup failed:', visibilityError?.message || visibilityError);
         }

@@ -352,6 +352,14 @@ function ConfigurationList({ userRole }) {
     if (!config) return false;
     if (String(config.createdById || '') === String(user?.id || '')) return true;
 
+    const currentUserId = String(user?.id || '');
+    const isAssignedApprover = Array.isArray(config.approvers) && config.approvers.some((approver) => {
+      const primaryApproverId = String(approver?.primary_approver || '');
+      const backupApproverId = String(approver?.backup_approver || '');
+      return primaryApproverId === currentUserId || backupApproverId === currentUserId;
+    });
+    if (isAssignedApprover) return true;
+
     const userDepartmentId = String(user?.department_id || user?.departmentId || '').trim();
     const userDepartmentName = normalizeScopeText(user?.department || user?.department_name || user?.departmentName || '');
     if (!userDepartmentId && !userDepartmentName) return true;
