@@ -2270,6 +2270,58 @@ export class ApprovalRequestService {
   }
 
   /**
+   * Check if there are already approved/completed requests for the same
+   * budget configuration + payroll cycle/date combination.
+   */
+  static async checkPayrollDuplicateForRequest(requestId, payrollCycle, payrollCycleDate) {
+    try {
+      if (!requestId) {
+        return { success: false, error: 'requestId is required' };
+      }
+
+      const requestResult = await this.getApprovalRequestById(requestId);
+      if (!requestResult.success || !requestResult.data) {
+        return { success: false, error: requestResult.error || 'Approval request not found' };
+      }
+
+      const budgetId = requestResult.data.budget_id;
+      if (!budgetId) {
+        return { success: false, error: 'Budget configuration is missing for this request' };
+      }
+
+      const { data, error } = await supabase
+        .from('tblbudgetapprovalrequests')
+        .select('request_id, request_number, overall_status, submitted_by, created_at, total_request_amount')
+        .eq('budget_id', budgetId)
+        .eq('payroll_cycle', payrollCycle)
+        .eq('payroll_cycle_Date', payrollCycleDate)
+        .in('overall_status', ['approved', 'completed'])
+        .neq('request_id', requestId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data: {
+          hasDuplicate: Array.isArray(data) && data.length > 0,
+          count: Array.isArray(data) ? data.length : 0,
+          matches: data || [],
+          budgetId,
+          payrollCycle,
+          payrollCycleDate,
+        },
+      };
+    } catch (error) {
+      console.error('Error checking payroll duplicate:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
    * Get approvals for request
    */
   static async getApprovalsByRequestId(requestId) {
