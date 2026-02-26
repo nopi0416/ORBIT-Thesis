@@ -78,6 +78,7 @@ export const createAdminUser = async (adminData, token) => {
         email: adminData.email,
         adminRole: adminData.adminRole,
         orgId: adminData.orgId || null,
+        geoId: adminData.geoId || null,
       }),
     });
 
@@ -185,7 +186,7 @@ export const getAllUsers = async (token, filters = {}) => {
         name: `${user.first_name} ${user.last_name}`.trim() || 'Admin User',
         email: user.email,
         ou: organizationName,
-        geo: user.tblgeo?.geo_name || user.tblgeo?.geo_code || (user.user_type === 'admin' ? '—' : 'Unassigned'),
+        geo: user.tblgeo?.geo_name || user.tblgeo?.geo_code || (user.user_type === 'admin' ? 'Unassigned' : 'Unassigned'),
         role: user.tbluserroles?.[0]?.tblroles?.role_name || 'N/A',
         status: user.status || (user.user_type === 'admin' ? 'Active' : 'Unknown'),
         department: user.department_org?.org_name || user.department_name || '--',
@@ -246,11 +247,13 @@ export const updateUser = async (userId, userData, token) => {
       body: JSON.stringify({
         firstName: userData.firstName,
         lastName: userData.lastName,
+        fullName: userData.fullName,
         email: userData.email,
         roleId: userData.roleId,
         organizationId: userData.organizationId,
         departmentId: userData.departmentId,
         geoId: userData.geoId,
+        userType: userData.userType,
       }),
     });
 
