@@ -100,6 +100,17 @@ export default function UserManagement() {
   const isSuperAdmin = normalizedAdminRole.includes("super admin")
   const isCompanyAdmin = normalizedAdminRole.includes("company admin")
   const adminOrgId = user?.org_id || user?.orgId || ""
+
+  const isCompanyAdminAccount = (item) => {
+    if (!item || item.userType !== "admin") return false
+    const roleKey = getRoleFilterKey(item.role)
+    return roleKey.includes("company admin")
+  }
+
+  const isEditableAccount = (item) => item?.userType !== "admin" || (isSuperAdmin && isCompanyAdminAccount(item))
+  const isStatusManageableAccount = (item) => item?.userType !== "admin" || (isSuperAdmin && isCompanyAdminAccount(item))
+  const isResettableAccount = (item) => item?.userType !== "admin" || (isSuperAdmin && isCompanyAdminAccount(item))
+
   const adminRoleOptions = [
     { value: "Super Admin", label: "Super Admin" },
     { value: "Company Admin", label: "Company Admin" },
@@ -610,7 +621,7 @@ export default function UserManagement() {
 
   const handleBulkAction = (action) => {
     if (action === "edit") {
-      const selectedData = getCurrentData().filter((item) => selectedUsers.includes(item.id) && item.userType !== 'admin')
+      const selectedData = getCurrentData().filter((item) => selectedUsers.includes(item.id) && isEditableAccount(item))
 
       if (selectedData.length === 0) {
         setNotificationMessage("✗ Error: No eligible users selected")
@@ -634,8 +645,8 @@ export default function UserManagement() {
   }
 
   const handleRowStatusAction = (item, action) => {
-    if (item.userType === 'admin') {
-      setNotificationMessage("✗ Error: Admin accounts cannot be updated here")
+    if (!isStatusManageableAccount(item)) {
+      setNotificationMessage("✗ Error: Only Super Admin can lock/deactivate Company Admin accounts")
       setShowNotification(true)
       setTimeout(() => setShowNotification(false), 6000)
       return
@@ -647,8 +658,8 @@ export default function UserManagement() {
   }
 
   const openEditModal = (item) => {
-    if (item.userType === 'admin') {
-      setNotificationMessage("✗ Error: Admin accounts cannot be edited here")
+    if (!isEditableAccount(item)) {
+      setNotificationMessage("✗ Error: Only Super Admin can edit Company Admin accounts")
       setShowNotification(true)
       setTimeout(() => setShowNotification(false), 6000)
       return
@@ -680,18 +691,23 @@ export default function UserManagement() {
   const handleEditUser = async () => {
     if (!selectedUser) return
 
+    const isAdminEdit = selectedUser.userType === 'admin'
+
     const errors = {}
     if (!editForm.name) errors.name = "Name is required"
     if (!editForm.email) errors.email = "Email is required"
     if (editForm.email && !isValidEmail(editForm.email)) errors.email = "Invalid email"
-    if (!editForm.roleId) errors.roleId = "Role is required"
     if (!editForm.geoId) errors.geoId = "Geo is required"
     if (!editForm.ou) errors.ou = "OU is required"
-    if (isRequestorRoleId(editForm.roleId) && !editForm.departmentId) errors.departmentId = "Department is required for Requestor"
 
-    const selectedRole = availableRoles.find((role) => role.role_id === editForm.roleId)
-    if (isCompanyAdmin && selectedRole && (selectedRole.role_name || "").toLowerCase().includes("super admin")) {
-      errors.roleId = "Company Admin cannot assign Super Admin role"
+    if (!isAdminEdit) {
+      if (!editForm.roleId) errors.roleId = "Role is required"
+      if (isRequestorRoleId(editForm.roleId) && !editForm.departmentId) errors.departmentId = "Department is required for Requestor"
+
+      const selectedRole = availableRoles.find((role) => role.role_id === editForm.roleId)
+      if (isCompanyAdmin && selectedRole && (selectedRole.role_name || "").toLowerCase().includes("super admin")) {
+        errors.roleId = "Company Admin cannot assign Super Admin role"
+      }
     }
 
     if (Object.keys(errors).length > 0) {
@@ -706,23 +722,37 @@ export default function UserManagement() {
       const nameParts = normalizedName ? normalizedName.split(" ") : []
       const lastName = nameParts.length > 0 ? nameParts[nameParts.length - 1] : normalizedName
       const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : normalizedName
-      const departmentId = isRequestorRoleId(editForm.roleId) ? editForm.departmentId : null
+      if (isAdminEdit) {
+        await updateUser(
+          selectedUser.id,
+          {
+            fullName: normalizedName,
+            email: editForm.email.trim(),
+            organizationId: editForm.ou,
+            geoId: editForm.geoId,
+            userType: 'admin',
+          },
+          token,
+        )
+      } else {
+        const departmentId = isRequestorRoleId(editForm.roleId) ? editForm.departmentId : null
+        await updateUser(
+          selectedUser.id,
+          {
+            firstName,
+            lastName,
+            email: editForm.email.trim(),
+            roleId: editForm.roleId,
+            organizationId: editForm.ou,
+            departmentId,
+            geoId: editForm.geoId,
+            userType: 'user',
+          },
+          token,
+        )
+      }
 
-      await updateUser(
-        selectedUser.id,
-        {
-          firstName,
-          lastName,
-          email: editForm.email.trim(),
-          roleId: editForm.roleId,
-          organizationId: editForm.ou,
-          departmentId,
-          geoId: editForm.geoId,
-        },
-        token,
-      )
-
-      setNotificationMessage("✓ User updated successfully")
+      setNotificationMessage(isAdminEdit ? "✓ Company Admin updated successfully" : "✓ User updated successfully")
       setShowNotification(true)
       setTimeout(() => setShowNotification(false), 5000)
       setShowEditModal(false)
@@ -863,6 +893,9 @@ export default function UserManagement() {
         if (normalizedRowAdminRole === "Company Admin" && !ou) {
           errors.push("Missing Organizational Unit")
         }
+        if (normalizedRowAdminRole === "Company Admin" && !geo) {
+          errors.push("Missing Geo")
+        }
       } else if (normalizedAccountType === "user") {
         if (!employeeId) errors.push("Missing Employee ID")
         if (!role) errors.push("Missing Role")
@@ -902,6 +935,9 @@ export default function UserManagement() {
 
       const geoId = resolveByIdOrName(geo, availableGeos, "geo_id", "geo_name", "geo_code")
       if (geo && !geoId) errors.push("Geo not found")
+      if (normalizedAccountType === "admin" && normalizedRowAdminRole === "Company Admin" && !geoId) {
+        errors.push("Geo not found")
+      }
 
       const orgId = resolveByIdOrName(ou, availableOrganizations, "organization_id", "org_name")
       if (ou && !orgId) errors.push("Organization not found")
@@ -1149,6 +1185,9 @@ export default function UserManagement() {
       if (adminRole === "Company Admin" && !effectiveOuId) {
         newErrors.ou = "Organization Unit is required"
       }
+      if (adminRole === "Company Admin" && !individualForm.geoId) {
+        newErrors.geoId = "Geo is required"
+      }
     } else {
       if (!individualForm.employeeId) newErrors.employeeId = "Employee ID is required"
       if (!individualForm.role) newErrors.role = "Role is required"
@@ -1182,6 +1221,7 @@ export default function UserManagement() {
             email: individualForm.email,
             adminRole,
             orgId: effectiveOuId || null,
+            geoId: adminRole === "Company Admin" ? (individualForm.geoId || null) : null,
           },
           token
         )
@@ -1420,7 +1460,7 @@ export default function UserManagement() {
     try {
       const token = localStorage.getItem('authToken')
       const selectedData = getCurrentData().filter((item) => selectedUsers.includes(item.id))
-      const userIds = selectedData.filter((item) => item.userType !== 'admin').map((item) => item.id)
+      const userIds = selectedData.filter((item) => isStatusManageableAccount(item)).map((item) => item.id)
 
       if (userIds.length === 0) {
         setNotificationMessage("✗ Error: No eligible users selected")
@@ -1463,7 +1503,7 @@ export default function UserManagement() {
     setIsSubmittingEditReset(true)
     try {
       const token = localStorage.getItem('authToken')
-      const selectedData = getCurrentData().filter((item) => selectedUsers.includes(item.id) && item.userType !== 'admin')
+      const selectedData = getCurrentData().filter((item) => selectedUsers.includes(item.id) && isResettableAccount(item))
       const userIds = selectedData.map((item) => item.id)
 
       if (userIds.length === 0) {
@@ -1569,18 +1609,20 @@ export default function UserManagement() {
               className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
             />
           </div>
-          <select
-            value={filterOU}
-            onChange={(e) => setFilterOU(e.target.value)}
-            className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
-          >
-            <option value="all">Filter by OU</option>
-            {ouOptions.map((org) => (
-              <option key={org.organization_id} value={org.organization_id}>
-                {org.org_name}
-              </option>
-            ))}
-          </select>
+          {!isCompanyAdmin && (
+            <select
+              value={filterOU}
+              onChange={(e) => setFilterOU(e.target.value)}
+              className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
+            >
+              <option value="all">Filter by OU</option>
+              {ouOptions.map((org) => (
+                <option key={org.organization_id} value={org.organization_id}>
+                  {org.org_name}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             value={filterDepartment}
             onChange={(e) => setFilterDepartment(e.target.value)}
@@ -1845,75 +1887,81 @@ export default function UserManagement() {
                         <div className="flex items-center justify-end gap-2">
                           {activeTab === "users" && (
                             <>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  openEditModal(item)
-                                }}
-                                className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                title="Edit"
-                              >
-                                <svg
-                                  className="w-4 h-4 text-blue-400"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
+                              {isEditableAccount(item) && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    openEditModal(item)
+                                  }}
+                                  className="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                  title="Edit"
                                 >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-                                  />
-                                </svg>
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleRowStatusAction(item, "lock")
-                                }}
-                                className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                title="Lock"
-                              >
-                                <svg
-                                  className="w-4 h-4 text-amber-400"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-                                  />
-                                </svg>
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleRowStatusAction(item, "deactivate")
-                                }}
-                                className="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                title="Deactivate"
-                              >
-                                <svg
-                                  className="w-4 h-4 text-red-400"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-                                  />
-                                </svg>
-                              </button>
+                                  <svg
+                                    className="w-4 h-4 text-blue-400"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                                    />
+                                  </svg>
+                                </button>
+                              )}
+                              {isStatusManageableAccount(item) && (
+                                <>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      handleRowStatusAction(item, "lock")
+                                    }}
+                                    className="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                    title="Lock"
+                                  >
+                                    <svg
+                                      className="w-4 h-4 text-amber-400"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                                      />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      handleRowStatusAction(item, "deactivate")
+                                    }}
+                                    className="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                    title="Deactivate"
+                                  >
+                                    <svg
+                                      className="w-4 h-4 text-red-400"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                                      />
+                                    </svg>
+                                  </button>
+                                </>
+                              )}
                             </>
                           )}
-                          {activeTab === "locked" && (
+                          {activeTab === "locked" && isStatusManageableAccount(item) && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
@@ -1937,7 +1985,7 @@ export default function UserManagement() {
                               </svg>
                             </button>
                           )}
-                          {activeTab === "deactivated" && (
+                          {activeTab === "deactivated" && isStatusManageableAccount(item) && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
@@ -2105,7 +2153,9 @@ export default function UserManagement() {
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-800 rounded-lg border border-slate-700 w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="flex items-center justify-between p-6 border-b border-slate-700">
-              <h3 className="text-lg font-semibold text-white">Edit User</h3>
+              <h3 className="text-lg font-semibold text-white">
+                {selectedUser?.userType === 'admin' ? 'Edit Company Admin' : 'Edit User'}
+              </h3>
               <button
                 onClick={closeEditModal}
                 className="text-slate-400 hover:text-white transition-colors"
@@ -2122,7 +2172,7 @@ export default function UserManagement() {
                   <label className="block text-sm font-medium text-slate-300 mb-2">Employee ID</label>
                   <input
                     type="text"
-                    value={editForm.employeeId}
+                    value={selectedUser?.userType === 'admin' ? 'ADMIN' : editForm.employeeId}
                     disabled
                     className="w-full px-3 py-2 bg-slate-700/60 border border-slate-600 rounded-lg text-white text-sm opacity-70 cursor-not-allowed"
                   />
@@ -2154,37 +2204,39 @@ export default function UserManagement() {
                   {editErrors.email && <p className="text-xs text-red-400 mt-1">{editErrors.email}</p>}
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Role</label>
-                  <select
-                    value={editForm.roleId}
-                    onChange={(e) => {
-                      const nextRoleId = e.target.value
-                      const shouldKeepDepartment = isRequestorRoleId(nextRoleId)
-                      setEditForm({
-                        ...editForm,
-                        roleId: nextRoleId,
-                        departmentId: shouldKeepDepartment ? editForm.departmentId : "",
-                      })
-                    }}
-                    disabled={isLoadingDropdowns || availableRoles.length === 0}
-                    className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
-                      editErrors.roleId ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
-                    }`}
-                  >
-                    <option value="">Select role</option>
-                    {availableRoles.map((role) => {
-                      const isSuperAdminRole = (role.role_name || "").toLowerCase().includes("super admin")
-                      const isDisabled = isCompanyAdmin && isSuperAdminRole
-                      return (
-                        <option key={role.role_id} value={role.role_id} disabled={isDisabled}>
-                          {getRoleLabel(role.role_name)}
-                        </option>
-                      )
-                    })}
-                  </select>
-                  {editErrors.roleId && <p className="text-xs text-red-400 mt-1">{editErrors.roleId}</p>}
-                </div>
+                {selectedUser?.userType !== 'admin' && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">Role</label>
+                    <select
+                      value={editForm.roleId}
+                      onChange={(e) => {
+                        const nextRoleId = e.target.value
+                        const shouldKeepDepartment = isRequestorRoleId(nextRoleId)
+                        setEditForm({
+                          ...editForm,
+                          roleId: nextRoleId,
+                          departmentId: shouldKeepDepartment ? editForm.departmentId : "",
+                        })
+                      }}
+                      disabled={isLoadingDropdowns || availableRoles.length === 0}
+                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                        editErrors.roleId ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
+                      }`}
+                    >
+                      <option value="">Select role</option>
+                      {availableRoles.map((role) => {
+                        const isSuperAdminRole = (role.role_name || "").toLowerCase().includes("super admin")
+                        const isDisabled = isCompanyAdmin && isSuperAdminRole
+                        return (
+                          <option key={role.role_id} value={role.role_id} disabled={isDisabled}>
+                            {getRoleLabel(role.role_name)}
+                          </option>
+                        )
+                      })}
+                    </select>
+                    {editErrors.roleId && <p className="text-xs text-red-400 mt-1">{editErrors.roleId}</p>}
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-slate-300 mb-2">Geo</label>
@@ -2226,14 +2278,14 @@ export default function UserManagement() {
                   {editErrors.ou && <p className="text-xs text-red-400 mt-1">{editErrors.ou}</p>}
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Department</label>
-                  <div className="flex items-end gap-2">
+                {selectedUser?.userType !== 'admin' && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">Department</label>
                     <select
                       value={editForm.departmentId}
                       onChange={(e) => setEditForm({ ...editForm, departmentId: e.target.value })}
                       disabled={!requiresEditDepartment || !editForm.ou || editDepartmentOptions.length === 0}
-                      className={`flex-1 px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                      className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
                         editErrors.departmentId ? "border-red-500 focus:ring-red-500" : "border-slate-600 focus:ring-fuchsia-500"
                       }`}
                     >
@@ -2250,16 +2302,19 @@ export default function UserManagement() {
                         </option>
                       ))}
                     </select>
-                    <button
-                      type="button"
-                      onClick={openEditResetModal}
-                      disabled={isSubmittingEdit || isSubmittingEditReset}
-                      className="px-3 py-2 bg-blue-600/80 text-blue-100 rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-                    >
-                      Reset Password and Questions
-                    </button>
+                    {editErrors.departmentId && <p className="text-xs text-red-400 mt-1">{editErrors.departmentId}</p>}
                   </div>
-                  {editErrors.departmentId && <p className="text-xs text-red-400 mt-1">{editErrors.departmentId}</p>}
+                )}
+
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={openEditResetModal}
+                    disabled={isSubmittingEdit || isSubmittingEditReset}
+                    className="w-full px-3 py-2 bg-fuchsia-600 text-white rounded-lg hover:bg-fuchsia-700 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Reset Password and Questions
+                  </button>
                 </div>
               </div>
             </div>
@@ -2484,7 +2539,29 @@ export default function UserManagement() {
                             </select>
                             {formErrors.ou && <p className="text-xs text-red-400 mt-1">{formErrors.ou}</p>}
                           </div>
-                          <div />
+                          <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">Geo</label>
+                            <select
+                              value={individualForm.geoId}
+                              onChange={(e) => {
+                                setIndividualForm({ ...individualForm, geoId: e.target.value })
+                              }}
+                              disabled={isLoadingDropdowns || availableGeos.length === 0}
+                              className={`w-full px-3 py-2 bg-slate-700 border rounded-lg text-white text-sm focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                                formErrors.geoId
+                                  ? "border-red-500 focus:ring-red-500"
+                                  : "border-slate-600 focus:ring-fuchsia-500"
+                              }`}
+                            >
+                              <option value="">{isLoadingDropdowns ? "Loading..." : "Select geo"}</option>
+                              {availableGeos.map((geo) => (
+                                <option key={geo.geo_id} value={geo.geo_id}>
+                                  {geo.geo_name || geo.geo_code}
+                                </option>
+                              ))}
+                            </select>
+                            {formErrors.geoId && <p className="text-xs text-red-400 mt-1">{formErrors.geoId}</p>}
+                          </div>
                         </div>
                       )}
                     </div>

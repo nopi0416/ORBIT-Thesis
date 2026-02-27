@@ -110,6 +110,22 @@ export class AdminUserManagementService {
     return !!data;
   }
 
+  static async adminEmailExistsForOtherAdmin(email, adminId) {
+    const { data, error } = await supabase
+      .from('tbladminusers')
+      .select('admin_id')
+      .eq('email', email)
+      .neq('admin_id', adminId)
+      .limit(1)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    return !!data;
+  }
+
   static async logAdminActions(adminId, entries) {
     if (!adminId || !entries?.length) return;
 
@@ -880,11 +896,16 @@ export class AdminUserManagementService {
             rowErrors.push('Organization is required for Company Admin accounts');
           }
 
+          if (adminRoleNormalized && this.isCompanyAdmin(adminRoleNormalized) && !entry.geoId) {
+            rowErrors.push('Geo is required for Company Admin accounts');
+          }
+
           if (creatorIsCompanyAdmin && entry.orgId && creatorOrgId && entry.orgId !== creatorOrgId) {
             rowErrors.push('Company Admin can only create admins in their own OU');
           }
 
           if (entry.orgId) orgIds.add(entry.orgId);
+          if (entry.geoId) geoIds.add(entry.geoId);
         } else {
           if (!entry.name) rowErrors.push('Missing Name');
           if (!entry.employeeId) rowErrors.push('Missing Employee ID');
@@ -1049,6 +1070,16 @@ export class AdminUserManagementService {
               error: 'Organization not found',
             });
           }
+
+          if (this.isCompanyAdmin(entry.adminRole) && (!entry.geoId || !geoSet.has(entry.geoId))) {
+            failures.push({
+              rowNumber: entry.rowNumber,
+              accountType: entry.accountType,
+              email: entry.email,
+              error: 'Geo not found',
+            });
+          }
+
           continue;
         }
 
@@ -1185,6 +1216,7 @@ export class AdminUserManagementService {
           password_hash: passwordHash,
           is_active: true,
           org_id: entry.orgId || null,
+          geo_id: this.isCompanyAdmin(entry.adminRole) ? (entry.geoId || null) : null,
           created_by: creatorId,
           updated_by: creatorId,
           created_at: now,
@@ -1323,7 +1355,7 @@ export class AdminUserManagementService {
    */
   static async createAdminAccount(adminData, adminContext) {
     try {
-      const { fullName, email, adminRole, orgId } = adminData;
+      const { fullName, email, adminRole, orgId, geoId } = adminData;
       const scope = await this.resolveAdminScope(adminContext);
       const creatorRole = scope.role || '';
       const creatorId = scope.id || null;
@@ -1354,6 +1386,13 @@ export class AdminUserManagementService {
         return {
           success: false,
           error: 'Organization is required for Company Admin accounts',
+        };
+      }
+
+      if (this.isCompanyAdmin(adminRole) && !geoId) {
+        return {
+          success: false,
+          error: 'Geo is required for Company Admin accounts',
         };
       }
 
@@ -1406,6 +1445,16 @@ export class AdminUserManagementService {
         }
       }
 
+      if (geoId) {
+        const geoValid = await this.geoExists(geoId);
+        if (!geoValid) {
+          return {
+            success: false,
+            error: `Geo with ID "${geoId}" does not exist`,
+          };
+        }
+      }
+
       const { password, suffix } = this.generateDefaultPassword();
       const passwordHash = await this.hashPassword(password);
 
@@ -1419,6 +1468,7 @@ export class AdminUserManagementService {
             password_hash: passwordHash,
             is_active: true,
             org_id: orgId || null,
+            geo_id: this.isCompanyAdmin(adminRole) ? geoId : null,
             created_by: creatorId,
             updated_by: creatorId,
             created_at: new Date().toISOString(),
@@ -1455,6 +1505,7 @@ export class AdminUserManagementService {
           full_name: fullName,
           admin_role: adminRole,
           org_id: orgId || null,
+          geo_id: this.isCompanyAdmin(adminRole) ? geoId : null,
           generated_password: password,
           password_suffix: suffix,
         },
@@ -1579,7 +1630,7 @@ export class AdminUserManagementService {
       if (isSuperAdmin || isCompanyAdmin) {
         let adminQuery = supabase
           .from('tbladminusers')
-          .select('admin_id, full_name, email, admin_role, org_id, is_active, created_at, updated_at, tblorganization(org_id, org_name)');
+          .select('admin_id, full_name, email, admin_role, org_id, geo_id, status, is_first_login, is_active, account_locked_until, created_at, updated_at, tblorganization(org_id, org_name)');
 
         if (isCompanyAdmin) {
           adminQuery = adminQuery
@@ -1599,14 +1650,53 @@ export class AdminUserManagementService {
           console.error('[getAllAdminUsers] Admin query error:', adminError);
         } else {
           const statusFilter = (filters.status || '').toLowerCase();
+          const now = Date.now();
+
+          const adminGeoIds = Array.from(new Set((admins || []).map((admin) => admin.geo_id).filter(Boolean)));
+          const geoNameById = new Map();
+
+          if (adminGeoIds.length > 0) {
+            const { data: geoRows } = await supabase
+              .from('tblgeo')
+              .select('geo_id, geo_name, geo_code')
+              .in('geo_id', adminGeoIds);
+
+            (geoRows || []).forEach((row) => {
+              geoNameById.set(row.geo_id, row.geo_name || row.geo_code || null);
+            });
+          }
+
           adminAccounts = (admins || [])
             .filter((admin) => {
+              const isFirstTime = admin.is_first_login === true
+                || (admin.status || '').toString().toLowerCase() === 'first_time';
+              const isLocked = admin.account_locked_until
+                ? new Date(admin.account_locked_until).getTime() > now
+                : false;
+              const computedStatus = isFirstTime
+                ? 'first_time'
+                : (admin.is_active === false
+                ? 'deactivated'
+                : (isLocked ? 'locked' : 'active'));
+
               if (!statusFilter) return true;
-              if (statusFilter === 'active') return admin.is_active === true;
-              if (statusFilter === 'inactive') return admin.is_active === false;
-              return false;
+              if (statusFilter === 'inactive') return computedStatus === 'deactivated';
+              if (statusFilter === 'first-time' || statusFilter === 'first time') return computedStatus === 'first_time';
+              return computedStatus === statusFilter;
             })
-            .map((admin) => ({
+            .map((admin) => {
+              const isFirstTime = admin.is_first_login === true
+                || (admin.status || '').toString().toLowerCase() === 'first_time';
+              const isLocked = admin.account_locked_until
+                ? new Date(admin.account_locked_until).getTime() > now
+                : false;
+              const statusLabel = isFirstTime
+                ? 'First_Time'
+                : (admin.is_active === false
+                ? 'Deactivated'
+                : (isLocked ? 'Locked' : 'Active'));
+
+              return {
               user_id: admin.admin_id,
               employee_id: null,
               first_name: admin.full_name || '',
@@ -1614,11 +1704,17 @@ export class AdminUserManagementService {
               email: admin.email,
               org_id: admin.org_id || null,
               department_id: null,
-              geo_id: null,
-              status: admin.is_active ? 'Active' : 'Inactive',
-              is_first_login: false,
+              geo_id: admin.geo_id || null,
+              status: statusLabel,
+              is_first_login: !!admin.is_first_login,
               tblorganization: admin.tblorganization || null,
-              tblgeo: null,
+              tblgeo: admin.geo_id
+                ? {
+                  geo_id: admin.geo_id,
+                  geo_name: geoNameById.get(admin.geo_id) || null,
+                  geo_code: null,
+                }
+                : null,
               tbluserroles: [
                 {
                   role_id: null,
@@ -1630,7 +1726,8 @@ export class AdminUserManagementService {
               ],
               user_type: 'admin',
               department_name: null,
-            }));
+              };
+            });
         }
       }
 
@@ -1731,23 +1828,106 @@ export class AdminUserManagementService {
 
   static async updateUser(userId, payload, adminContext = {}) {
     try {
-      const adminRole = adminContext?.role || '';
-      const adminOrgId = adminContext?.orgId || null;
-      const isSuperAdmin = this.isSuperAdmin(adminRole);
-      const isCompanyAdmin = this.isCompanyAdmin(adminRole);
+      const scope = await this.resolveAdminScope(adminContext);
+      const adminOrgId = scope.orgId || null;
+      const isSuperAdmin = scope.isSuperAdmin;
+      const isCompanyAdmin = scope.isCompanyAdmin;
 
-      const { data: existingUser, error: existingError } = await supabase
+      const { data: existingUser, error: existingUserError } = await supabase
         .from('tblusers')
         .select('user_id, org_id, employee_id, email')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
 
-      if (existingError) {
-        return { success: false, error: existingError.message };
+      if (existingUserError) {
+        return { success: false, error: existingUserError.message };
       }
 
       if (!isSuperAdmin && !isCompanyAdmin) {
         return { success: false, error: 'Admin role not authorized to update users' };
+      }
+
+      if (!existingUser) {
+        const { data: existingAdmin, error: existingAdminError } = await supabase
+          .from('tbladminusers')
+          .select('admin_id, admin_role, org_id, email')
+          .eq('admin_id', userId)
+          .maybeSingle();
+
+        if (existingAdminError) {
+          return { success: false, error: existingAdminError.message };
+        }
+
+        if (!existingAdmin) {
+          return { success: false, error: 'User not found' };
+        }
+
+        if (!isSuperAdmin) {
+          return { success: false, error: 'Only Super Admin can edit Company Admin accounts' };
+        }
+
+        if (!this.isCompanyAdmin(existingAdmin.admin_role)) {
+          return { success: false, error: 'Only Company Admin accounts can be edited here' };
+        }
+
+        const fullNameRaw = payload?.fullName
+          || [payload?.firstName, payload?.lastName].filter(Boolean).join(' ')
+          || '';
+        const fullName = fullNameRaw.toString().trim().replace(/\s+/g, ' ');
+        const email = (payload?.email || '').toString().trim();
+        const geoId = payload?.geoId || null;
+        const organizationId = payload?.organizationId || null;
+
+        if (!fullName || !email || !geoId || !organizationId) {
+          return { success: false, error: 'Missing required fields: fullName, email, geoId, organizationId' };
+        }
+
+        const duplicateAdminEmail = await this.adminEmailExistsForOtherAdmin(email, userId);
+        if (duplicateAdminEmail) {
+          return { success: false, error: `Email "${email}" already exists in admin accounts` };
+        }
+
+        const duplicateUserEmail = await this.emailExists(email);
+        if (duplicateUserEmail && email !== existingAdmin.email) {
+          return { success: false, error: `Email "${email}" already exists in user accounts` };
+        }
+
+        const geoValid = await this.geoExists(geoId);
+        if (!geoValid) {
+          return { success: false, error: `Geo with ID "${geoId}" does not exist` };
+        }
+
+        const orgValid = await this.organizationExists(organizationId);
+        if (!orgValid) {
+          return { success: false, error: `Organization with ID "${organizationId}" does not exist` };
+        }
+
+        const { error: adminUpdateError } = await supabase
+          .from('tbladminusers')
+          .update({
+            full_name: fullName,
+            email,
+            org_id: organizationId,
+            geo_id: geoId,
+            updated_by: scope.id || adminContext?.id || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('admin_id', userId);
+
+        if (adminUpdateError) {
+          return { success: false, error: adminUpdateError.message };
+        }
+
+        await this.logAdminActions(scope.id || adminContext?.id || null, [
+          {
+            action: 'USER_UPDATED',
+            targetTable: 'tbladminusers',
+            targetId: userId,
+            description: `Updated company admin ${email}`,
+          },
+        ]);
+
+        return { success: true, data: { admin_id: userId } };
       }
 
       if (isCompanyAdmin && adminOrgId && existingUser?.org_id !== adminOrgId) {
@@ -1854,7 +2034,7 @@ export class AdminUserManagementService {
           org_id: organizationId || null,
           department_id: normalizedDepartmentId,
           geo_id: geoId,
-          updated_by: adminContext?.id || null,
+          updated_by: scope.id || adminContext?.id || null,
           updated_at: new Date().toISOString(),
         })
         .eq('user_id', userId);
@@ -1890,7 +2070,7 @@ export class AdminUserManagementService {
             password_hash: passwordHash,
             status: 'First_Time',
             is_first_login: true,
-            updated_by: adminContext?.id || null,
+            updated_by: scope.id || adminContext?.id || null,
             updated_at: new Date().toISOString(),
           })
           .eq('user_id', userId);
@@ -1905,18 +2085,9 @@ export class AdminUserManagementService {
           employeeId: existingUser?.employee_id || 'N/A',
           temporaryPassword: password,
         });
-
-        await sendAdminCredentialsCopyEmail({
-          adminEmail: adminContext?.email,
-          targetEmail: email,
-          targetName: `${firstName} ${lastName}`.trim(),
-          employeeId: existingUser?.employee_id || 'N/A',
-          temporaryPassword: password,
-          action: 'reset',
-        });
       }
 
-      await this.logAdminActions(adminContext?.id, [
+      await this.logAdminActions(scope.id || adminContext?.id || null, [
         {
           action: 'USER_UPDATED',
           targetTable: 'tblusers',
@@ -1933,7 +2104,8 @@ export class AdminUserManagementService {
 
   static async updateUserStatus(userIds = [], action, adminContext = {}) {
     try {
-      const adminId = adminContext?.id || null;
+      const scope = await this.resolveAdminScope(adminContext);
+      const adminId = scope.id || adminContext?.id || null;
       const normalizedAction = (action || '').toString().trim().toLowerCase();
       const actionMap = {
         lock: 'Locked',
@@ -1957,43 +2129,137 @@ export class AdminUserManagementService {
         };
       }
 
+      if (!scope.isSuperAdmin && !scope.isCompanyAdmin) {
+        return {
+          success: false,
+          error: 'Admin role not authorized to update user status',
+        };
+      }
+
       const { data: existingUsers, error: existingError } = await supabase
         .from('tblusers')
-        .select('user_id, email')
+        .select('user_id, email, org_id')
         .in('user_id', userIds);
 
       if (existingError) throw existingError;
 
-      if (!existingUsers || existingUsers.length === 0) {
+      const { data: existingAdmins, error: existingAdminsError } = await supabase
+        .from('tbladminusers')
+        .select('admin_id, email, admin_role, org_id')
+        .in('admin_id', userIds);
+
+      if (existingAdminsError) throw existingAdminsError;
+
+      const scopedUsers = scope.isCompanyAdmin && scope.orgId
+        ? (existingUsers || []).filter((user) => user.org_id === scope.orgId)
+        : (existingUsers || []);
+
+      if (scope.isCompanyAdmin && !scope.isSuperAdmin && (existingAdmins || []).length > 0) {
+        return {
+          success: false,
+          error: 'Only Super Admin can update Company Admin status',
+        };
+      }
+
+      const companyAdmins = (existingAdmins || []).filter((admin) => this.isCompanyAdmin(admin.admin_role));
+      const nonCompanyAdmins = (existingAdmins || []).filter((admin) => !this.isCompanyAdmin(admin.admin_role));
+
+      if (nonCompanyAdmins.length > 0) {
+        return {
+          success: false,
+          error: 'Only Company Admin accounts can be locked or deactivated from this screen',
+        };
+      }
+
+      if (scopedUsers.length === 0 && companyAdmins.length === 0) {
         return {
           success: false,
           error: 'No matching users found',
         };
       }
 
-      const { error: updateError } = await supabase
-        .from('tblusers')
-        .update({
-          status: nextStatus,
-          updated_by: adminId,
-          updated_at: new Date().toISOString(),
-        })
-        .in('user_id', existingUsers.map((user) => user.user_id));
+      if (scopedUsers.length > 0) {
+        const { error: updateError } = await supabase
+          .from('tblusers')
+          .update({
+            status: nextStatus,
+            updated_by: adminId,
+            updated_at: new Date().toISOString(),
+          })
+          .in('user_id', scopedUsers.map((user) => user.user_id));
 
-      if (updateError) throw updateError;
+        if (updateError) throw updateError;
+      }
+
+      if (companyAdmins.length > 0) {
+        const nowIso = new Date().toISOString();
+        let adminUpdatePayload = {
+          updated_by: adminId,
+          updated_at: nowIso,
+        };
+
+        if (normalizedAction === 'lock') {
+          adminUpdatePayload = {
+            ...adminUpdatePayload,
+            account_locked_until: '2099-12-31T23:59:59.000Z',
+          };
+        }
+
+        if (normalizedAction === 'unlock') {
+          adminUpdatePayload = {
+            ...adminUpdatePayload,
+            account_locked_until: null,
+            failed_login_attempts: 0,
+          };
+        }
+
+        if (normalizedAction === 'deactivate') {
+          adminUpdatePayload = {
+            ...adminUpdatePayload,
+            is_active: false,
+            account_locked_until: null,
+          };
+        }
+
+        if (normalizedAction === 'reactivate') {
+          adminUpdatePayload = {
+            ...adminUpdatePayload,
+            is_active: true,
+            account_locked_until: null,
+            failed_login_attempts: 0,
+          };
+        }
+
+        const { error: adminStatusError } = await supabase
+          .from('tbladminusers')
+          .update(adminUpdatePayload)
+          .in('admin_id', companyAdmins.map((admin) => admin.admin_id));
+
+        if (adminStatusError) throw adminStatusError;
+      }
 
       const descriptionSuffix = `${normalizedAction} user`;
-      await this.logAdminActions(adminId, existingUsers.map((user) => ({
-        action: normalizedAction,
-        targetTable: 'tblusers',
-        targetId: user.user_id,
-        description: `${descriptionSuffix} ${user.email}`,
-      })));
+      await this.logAdminActions(adminId, [
+        ...scopedUsers.map((user) => ({
+          action: normalizedAction,
+          targetTable: 'tblusers',
+          targetId: user.user_id,
+          description: `${descriptionSuffix} ${user.email}`,
+        })),
+        ...companyAdmins.map((admin) => ({
+          action: normalizedAction,
+          targetTable: 'tbladminusers',
+          targetId: admin.admin_id,
+          description: `${descriptionSuffix} ${admin.email}`,
+        })),
+      ]);
 
       return {
         success: true,
         data: {
-          updatedCount: existingUsers.length,
+          updatedCount: scopedUsers.length + companyAdmins.length,
+          updatedUsersCount: scopedUsers.length,
+          updatedAdminsCount: companyAdmins.length,
           status: nextStatus,
         },
       };
@@ -2008,10 +2274,10 @@ export class AdminUserManagementService {
 
   static async resetUserCredentials(userId, basePassword, adminContext = {}) {
     try {
-      const adminRole = adminContext?.role || '';
-      const adminOrgId = adminContext?.orgId || adminContext?.org_id || null;
-      const isSuperAdmin = this.isSuperAdmin(adminRole);
-      const isCompanyAdmin = this.isCompanyAdmin(adminRole);
+      const scope = await this.resolveAdminScope(adminContext);
+      const adminOrgId = scope.orgId || adminContext?.orgId || adminContext?.org_id || null;
+      const isSuperAdmin = scope.isSuperAdmin;
+      const isCompanyAdmin = scope.isCompanyAdmin;
 
       if (!isSuperAdmin && !isCompanyAdmin) {
         return { success: false, error: 'Admin role not authorized to reset credentials' };
@@ -2032,10 +2298,88 @@ export class AdminUserManagementService {
         .from('tblusers')
         .select('user_id, email, first_name, employee_id, org_id')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
 
       if (existingError) {
         return { success: false, error: existingError.message };
+      }
+
+      if (!existingUser) {
+        const { data: existingAdmin, error: existingAdminError } = await supabase
+          .from('tbladminusers')
+          .select('admin_id, email, full_name, admin_role, org_id')
+          .eq('admin_id', userId)
+          .maybeSingle();
+
+        if (existingAdminError) {
+          return { success: false, error: existingAdminError.message };
+        }
+
+        if (!existingAdmin) {
+          return { success: false, error: 'User not found' };
+        }
+
+        if (!isSuperAdmin) {
+          return { success: false, error: 'Only Super Admin can reset Company Admin credentials' };
+        }
+
+        if (!this.isCompanyAdmin(existingAdmin.admin_role)) {
+          return { success: false, error: 'Only Company Admin accounts can be reset here' };
+        }
+
+        const { password } = this.generatePasswordFromBaseline(basePassword);
+        const passwordHash = await this.hashPassword(password);
+        const now = new Date().toISOString();
+        const adminId = scope.id || adminContext?.id || null;
+
+        const { error: updateAdminError } = await supabase
+          .from('tbladminusers')
+          .update({
+            password_hash: passwordHash,
+            status: 'First_Time',
+            is_first_login: true,
+            is_active: true,
+            failed_login_attempts: 0,
+            account_locked_until: null,
+            updated_by: adminId,
+            updated_at: now,
+          })
+          .eq('admin_id', userId);
+
+        if (updateAdminError) {
+          return { success: false, error: updateAdminError.message };
+        }
+
+        await supabase
+          .from('tblsecurity_questions')
+          .delete()
+          .eq('user_id', userId);
+
+        const credentialsEmailResult = await sendAdminAccountCredentialsEmail({
+          email: existingAdmin.email,
+          fullName: existingAdmin.full_name || 'Admin',
+          temporaryPassword: password,
+        });
+
+        await this.logAdminActions(adminId, [
+          {
+            action: 'reset_user_credentials',
+            targetTable: 'tbladminusers',
+            targetId: userId,
+            description: `Reset credentials for company admin ${existingAdmin.email}`,
+          },
+        ]);
+
+        return {
+          success: true,
+          data: {
+            user_id: userId,
+            email: existingAdmin.email,
+            status: 'First_Time',
+            is_first_login: true,
+            credentials_email_sent: !!credentialsEmailResult?.success,
+          },
+        };
       }
 
       if (isCompanyAdmin && adminOrgId && existingUser?.org_id !== adminOrgId) {
@@ -2046,7 +2390,7 @@ export class AdminUserManagementService {
       const passwordHash = await this.hashPassword(password);
 
       const now = new Date().toISOString();
-      const adminId = adminContext?.id || null;
+      const adminId = scope.id || adminContext?.id || null;
 
       const { error: updateUserError } = await supabase
         .from('tblusers')
@@ -2080,15 +2424,6 @@ export class AdminUserManagementService {
         temporaryPassword: password,
       });
 
-      const adminCopyEmailResult = await sendAdminCredentialsCopyEmail({
-        adminEmail: adminContext?.email,
-        targetEmail: existingUser.email,
-        targetName: firstNameSafe,
-        employeeId: existingUser.employee_id,
-        temporaryPassword: password,
-        action: 'reset',
-      });
-
       await this.logAdminActions(adminId, [
         {
           action: 'reset_user_credentials',
@@ -2106,7 +2441,6 @@ export class AdminUserManagementService {
           status: 'First_Time',
           is_first_login: true,
           credentials_email_sent: !!credentialsEmailResult?.success,
-          admin_copy_email_sent: !!adminCopyEmailResult?.success,
         },
       };
     } catch (error) {
@@ -2121,10 +2455,38 @@ export class AdminUserManagementService {
         return { success: false, error: 'No user IDs provided' };
       }
 
+      const scope = await this.resolveAdminScope(adminContext);
+
       if (!this.isValidBaselinePassword(basePassword)) {
         return {
           success: false,
           error: 'Baseline password must be 1-10 chars, include at least one symbol (@, -, _, .), and only use letters, numbers, @, -, _, .',
+        };
+      }
+
+      const { data: targetAdmins, error: targetAdminsError } = await supabase
+        .from('tbladminusers')
+        .select('admin_id, admin_role')
+        .in('admin_id', userIds);
+
+      if (targetAdminsError) {
+        return { success: false, error: targetAdminsError.message };
+      }
+
+      const companyAdminTargets = (targetAdmins || []).filter((admin) => this.isCompanyAdmin(admin.admin_role));
+      const nonCompanyAdminTargets = (targetAdmins || []).filter((admin) => !this.isCompanyAdmin(admin.admin_role));
+
+      if (nonCompanyAdminTargets.length > 0) {
+        return {
+          success: false,
+          error: 'Only Company Admin accounts can be reset from this screen',
+        };
+      }
+
+      if (companyAdminTargets.length > 0 && !scope.isSuperAdmin) {
+        return {
+          success: false,
+          error: 'Only Super Admin can reset Company Admin credentials',
         };
       }
 

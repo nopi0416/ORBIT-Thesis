@@ -815,28 +815,11 @@ export class AuthService {
         };
       }
       
-      // Hash the new password after validation passes
-      const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+      console.log(`[RESET PASSWORD] Validation passed, checking password history and updating database`);
 
-      console.log(`[RESET PASSWORD] Validation passed, updating database`);
-
-      // Update password_hash with bcrypt-hashed password
-      // Note: Only updating password_hash since other security columns may not exist yet
-      const { data, error } = await supabase
-        .from('tblusers')
-        .update({
-          password_hash: hashedPassword,
-        })
-        .eq('email', email)
-        .select();
-
-      if (error) {
-        console.error(`[RESET PASSWORD] Error updating password for ${email}:`, error);
-        // Don't expose database details to frontend
-        return {
-          success: false,
-          error: 'Failed to update password. Please try again.',
-        };
+      const updateResult = await this.updatePasswordWithHistoryByEmail(email, newPassword);
+      if (!updateResult.success) {
+        return updateResult;
       }
 
       console.log(`[RESET PASSWORD] Password reset successfully for ${email}`);
@@ -869,9 +852,6 @@ export class AuthService {
         };
       }
       
-      // Hash the new password
-      const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
-
       // If current password is provided, verify it
       if (currentPassword) {
         const { data: user } = await supabase
@@ -908,26 +888,12 @@ export class AuthService {
         }
       }
 
-      // Update password_hash and mark as no longer first-time login
-      // Note: Only updating password_hash since other security columns may not exist yet
-      const { data, error } = await supabase
-        .from('tblusers')
-        .update({
-          password_hash: hashedPassword,
-          is_first_login: false, // Mark as no longer first-time user
-          status: 'Active', // Update status from First_Time to Active
-          updated_at: new Date().toISOString(),
-        })
-        .eq('email', email)
-        .select();
-
-      if (error) {
-        console.error('Error updating password:', error);
-        // Don't expose database details to frontend
-        return {
-          success: false,
-          error: 'Failed to update password. Please try again.',
-        };
+      const updateResult = await this.updatePasswordWithHistoryByEmail(email, newPassword, {
+        is_first_login: false,
+        status: 'Active',
+      });
+      if (!updateResult.success) {
+        return updateResult;
       }
 
       console.log(`[PASSWORD CHANGE] User ${email} has changed password, is_first_login set to false, and status updated to Active`);
@@ -944,6 +910,124 @@ export class AuthService {
         error: 'An error occurred while changing your password. Please try again.',
       };
     }
+  }
+
+  static normalizePasswordHistory(rawHistory) {
+    if (!rawHistory) return [];
+
+    if (Array.isArray(rawHistory)) {
+      return rawHistory.filter((item) => typeof item === 'string' && item.trim().length > 0);
+    }
+
+    if (typeof rawHistory === 'string') {
+      const trimmed = rawHistory.trim();
+      if (!trimmed) return [];
+
+      if (trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            return parsed.filter((item) => typeof item === 'string' && item.trim().length > 0);
+          }
+        } catch (error) {
+          console.warn('[PASSWORD HISTORY] Failed to parse JSON history string, using fallback parser.');
+        }
+      }
+
+      return trimmed
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+    }
+
+    return [];
+  }
+
+  static async isPasswordAlreadyUsed(newPassword, hashes = []) {
+    for (const hashValue of hashes) {
+      if (!hashValue) continue;
+
+      if (hashValue.startsWith('$2')) {
+        const matched = await bcrypt.compare(newPassword, hashValue);
+        if (matched) return true;
+      } else if (newPassword === hashValue) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  static async updatePasswordWithHistoryByEmail(email, newPassword, additionalUpdates = {}) {
+    const { data: user, error: userError } = await supabase
+      .from('tblusers')
+      .select('user_id, password_hash, password_history')
+      .eq('email', email)
+      .single();
+
+    if (userError || !user) {
+      return {
+        success: false,
+        error: 'User not found',
+      };
+    }
+
+    const existingHistory = this.normalizePasswordHistory(user.password_history);
+    const historyToCheck = user.password_hash
+      ? [user.password_hash, ...existingHistory]
+      : [...existingHistory];
+
+    const alreadyUsed = await this.isPasswordAlreadyUsed(newPassword, historyToCheck);
+    if (alreadyUsed) {
+      return {
+        success: false,
+        error: 'You cannot reuse a previously used password. Please choose a different password.',
+      };
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+    const nextHistory = user.password_hash
+      ? [...existingHistory, user.password_hash]
+      : [...existingHistory];
+    const uniqueHistory = [...new Set(nextHistory)].slice(-5);
+
+    const updatePayload = {
+      password_hash: hashedPassword,
+      password_history: uniqueHistory,
+      updated_at: new Date().toISOString(),
+      ...additionalUpdates,
+    };
+
+    let { error: updateError } = await supabase
+      .from('tblusers')
+      .update(updatePayload)
+      .eq('email', email);
+
+    if (updateError && String(updateError.message || '').toLowerCase().includes('password_history')) {
+      const fallbackPayload = {
+        ...updatePayload,
+        password_history: JSON.stringify(uniqueHistory),
+      };
+
+      const fallbackResult = await supabase
+        .from('tblusers')
+        .update(fallbackPayload)
+        .eq('email', email);
+
+      updateError = fallbackResult.error;
+    }
+
+    if (updateError) {
+      console.error('[PASSWORD HISTORY] Error updating password:', updateError);
+      return {
+        success: false,
+        error: 'Failed to update password. Please try again.',
+      };
+    }
+
+    return {
+      success: true,
+    };
   }
 
   /**
@@ -1285,9 +1369,9 @@ export class AuthService {
       jti: sessionId,
     };
 
-    // Sign JWT token with 24 hour expiry
+    // Sign JWT token with 12 hour expiry
     return jwt.sign(payload, JWT_SECRET, { 
-      expiresIn: '24h',
+      expiresIn: '12h',
       issuer: 'orbit-auth',
       subject: userId.toString(),
     });

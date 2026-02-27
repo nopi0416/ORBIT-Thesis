@@ -8,7 +8,7 @@ import { Label } from '../components/ui/label';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Lock, AlertCircle, Loader2, ArrowLeft, Eye, EyeOff, Check, X } from '../components/icons';
 import { getDashboardRoute } from '../utils/roleRouting';
-import { sanitizePassword, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
+import { sanitizePasswordStrict, handlePaste, handleRestrictedKeyDown } from '../utils/inputSanitizer';
 
 export default function FirstTimePassword() {
   const navigate = useNavigate();
@@ -36,10 +36,19 @@ export default function FirstTimePassword() {
   const hasUpperCase = /[A-Z]/.test(newPassword);
   const hasLowerCase = /[a-z]/.test(newPassword);
   const hasNumber = /[0-9]/.test(newPassword);
-  const hasSymbol = /[!@#$%^&*(),.?":{}|<>]/.test(newPassword);
+  const hasSymbol = /[!@#$%^&*]/.test(newPassword);
   const passwordsMatch = newPassword === confirmPassword && confirmPassword.length > 0;
 
   const isPasswordValid = hasMinLength && hasUpperCase && hasLowerCase && hasNumber && hasSymbol && passwordsMatch;
+
+  const handlePasswordKeyDown = (event) => {
+    handleRestrictedKeyDown(event);
+    if (event.defaultPrevented) return;
+
+    if (event.key.length === 1 && !/^[a-zA-Z0-9!@#$%^&*]$/.test(event.key)) {
+      event.preventDefault();
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -131,9 +140,9 @@ export default function FirstTimePassword() {
                     placeholder="Enter current password (demo123)"
                     value={currentPassword}
                     maxLength={50}
-                    onInput={(e) => setCurrentPassword(sanitizePassword(e.target.value.slice(0, 50)))}
-                    onPaste={(e) => handlePaste(e, sanitizePassword)}
-                    onKeyDown={handleRestrictedKeyDown}
+                    onInput={(e) => setCurrentPassword(sanitizePasswordStrict(e.target.value.slice(0, 50)))}
+                    onPaste={(e) => handlePaste(e, sanitizePasswordStrict)}
+                    onKeyDown={handlePasswordKeyDown}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
@@ -165,9 +174,9 @@ export default function FirstTimePassword() {
                     placeholder="Enter new password"
                     value={newPassword}
                     maxLength={50}
-                    onInput={(e) => setNewPassword(sanitizePassword(e.target.value.slice(0, 50)))}
-                    onPaste={(e) => handlePaste(e, sanitizePassword)}
-                    onKeyDown={handleRestrictedKeyDown}
+                    onInput={(e) => setNewPassword(sanitizePasswordStrict(e.target.value.slice(0, 50)))}
+                    onPaste={(e) => handlePaste(e, sanitizePasswordStrict)}
+                    onKeyDown={handlePasswordKeyDown}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
@@ -198,9 +207,9 @@ export default function FirstTimePassword() {
                     placeholder="Confirm new password"
                     value={confirmPassword}
                     maxLength={50}
-                    onInput={(e) => setConfirmPassword(sanitizePassword(e.target.value.slice(0, 50)))}
-                    onPaste={(e) => handlePaste(e, sanitizePassword)}
-                    onKeyDown={handleRestrictedKeyDown}
+                    onInput={(e) => setConfirmPassword(sanitizePasswordStrict(e.target.value.slice(0, 50)))}
+                    onPaste={(e) => handlePaste(e, sanitizePasswordStrict)}
+                    onKeyDown={handlePasswordKeyDown}
                     className="pl-10 pr-10 h-11"
                     style={{ backgroundColor: 'oklch(0.18 0.05 280)', borderColor: 'oklch(0.3 0.05 280)', color: 'oklch(0.95 0.02 280)' }}
                     disabled={isLoading}
@@ -267,7 +276,7 @@ export default function FirstTimePassword() {
                       <X className="w-4 h-4" style={{ color: 'oklch(0.65 0.03 280)' }} />
                     )}
                     <span style={{ color: hasSymbol ? 'oklch(0.95 0.02 280)' : 'oklch(0.65 0.03 280)' }}>
-                      One special character (!@#$%...)
+                      One special character (!@#$%^&*)
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-sm">

@@ -32,6 +32,7 @@ const EMOJI_PATTERNS = [
  * Control and invalid character patterns
  */
 const CONTROL_CHAR_PATTERN = /[\u{0000}-\u{001F}\u{007F}-\u{009F}]/gu;
+const STRICT_PASSWORD_PATTERN = /[^a-zA-Z0-9!@#$%^&*]/g;
 
 /**
  * Aggressive emoji removal - removes ALL emoji and special Unicode
@@ -109,6 +110,21 @@ export const sanitizePassword = (input) => {
   
   // Remove emojis and control characters but keep special symbols for passwords
   return removeAllEmoji(input);
+};
+
+/**
+ * Sanitizes password input with strict allowed symbols only
+ * Allows: letters, numbers, and ! @ # $ % ^ & *
+ * @param {string} input - The password input to sanitize
+ * @returns {string} - Sanitized password
+ */
+export const sanitizePasswordStrict = (input) => {
+  if (!input) return '';
+
+  let sanitized = removeAllEmoji(input);
+  sanitized = sanitized.replace(STRICT_PASSWORD_PATTERN, '');
+
+  return sanitized;
 };
 
 /**
@@ -262,6 +278,7 @@ export default {
   sanitizeEmail,
   sanitizeUsername,
   sanitizePassword,
+  sanitizePasswordStrict,
   sanitizeText,
   sanitizeSecurityAnswer,
   sanitizeOuText,

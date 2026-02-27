@@ -1,46 +1,38 @@
 # ORBIT Thesis - Copilot Instructions
 
 ## Big Picture
-- This repo is a two-app setup: `orbit-frontend` (React + Vite) and `orbit-backend` (Express + Supabase).
-- Frontend talks to backend REST on `http://localhost:3001/api`; backend also upgrades WebSocket connections on `/ws` from the same HTTP server.
-- Core domains are auth (OTP + JWT), budget configuration, approval workflow, admin management, and AI insights.
-- API composition is centralized in `orbit-backend/src/routes/index.js` (`/auth`, `/budget-configurations`, `/approval-requests`, `/admin`, `/ai`).
+- Main runtime apps are `orbit-frontend` (React + Vite) and `orbit-backend` (Express + Supabase).
+- `v0/` and `v0-OU/` are separate Next.js prototypes; do not change them unless the task explicitly targets them.
+- Backend API composition is centralized in `orbit-backend/src/routes/index.js` with domain routes: `/auth`, `/budget-configurations`, `/approval-requests`, `/admin`, `/ai`.
+- Frontend calls REST via `VITE_API_URL || '/api'` and receives realtime updates over `/ws` (`orbit-frontend/src/services/realtimeService.js`).
+- Core business flows: OTP auth + JWT session, budget configuration, approval workflow, admin user management, and AI insights.
 
-## Dev Workflow (what actually works here)
-- Frontend: `cd orbit-frontend && npm run dev` (Vite default `5173`).
-- Backend: `cd orbit-backend && npm run dev` (nodemon on `3001` by default).
-- Health check: `GET /api/health` from `orbit-backend/src/index.js`.
-- Backend `npm test` is a placeholder; rely on targeted endpoint/UI validation instead of expecting a test suite.
+## Dev Workflow (verified)
+- Backend dev server: `cd orbit-backend && npm run dev` (nodemon, default port `3001`).
+- Frontend dev server: `cd orbit-frontend && npm run dev` (Vite port `5173`).
+- Frontend proxy is already wired in `orbit-frontend/vite.config.js`: `/api -> http://localhost:3001`, `/ws -> ws://localhost:3001`.
+- Health endpoint: `GET /api/health` (`orbit-backend/src/index.js`).
+- Backend `npm test` is a placeholder; validate with focused API/UI flows instead of expecting automated test coverage.
 
-## Environment & External Dependencies
-- Required backend envs: `SUPABASE_URL`, `SUPABASE_KEY`, `JWT_SECRET`.
-- Frequently used optional envs: `PORT`, `FRONTEND_URL`, `EMAIL_USER`, `EMAIL_PASSWORD`, `OPENROUTER_API_KEY`, `SUPABASE_URL2`, `SUPABASE_KEY2`.
-- Env usage references: `orbit-backend/src/config/database.js`, `orbit-backend/src/config/cors.js`, `orbit-backend/src/config/email.js`, `orbit-backend/src/services/aiInsightsService.js`.
+## Environment & Integrations
+- Required backend env: `SUPABASE_URL`, `SUPABASE_KEY`, `JWT_SECRET` (`orbit-backend/src/config/database.js`, `orbit-backend/src/middleware/auth.js`).
+- Optional/feature envs: `PORT`, `FRONTEND_URL` (CORS allowlist), `EMAIL_USER`, `EMAIL_PASSWORD`, `OPENROUTER_API_KEY`, `SUPABASE_URL2`, `SUPABASE_KEY2`.
+- External integrations: Supabase (`@supabase/supabase-js`), Gmail SMTP via Nodemailer (`orbit-backend/src/config/email.js`), OpenRouter for AI (`orbit-backend/src/services/aiInsightsService.js`).
 
-## Backend Patterns (follow these)
-- Keep the `route -> controller -> service` split:
-  - Routes: request mapping/auth middleware
-  - Controllers: request validation + HTTP shaping
-  - Services: Supabase queries and business logic
-- Use shared response helpers from `orbit-backend/src/utils/response.js` (`sendSuccess` / `sendError`) for consistency.
-- Most approval endpoints are nested resources under `/api/approval-requests/:id/*` (line-items, approvals, attachments, activity).
-- Real-time updates are emitted via `broadcast(...)` from `orbit-backend/src/realtime/websocketServer.js` (e.g., approval state changes).
+## Backend Conventions
+- Preserve `route -> controller -> service` layering; examples: `src/routes/budgetConfigRoutes.js`, `src/controllers/budgetConfigController.js`, `src/services/budgetConfigService.js`.
+- Keep response shape consistent using `sendSuccess` / `sendError` from `orbit-backend/src/utils/response.js`.
+- Most approval workflow endpoints are nested under `/api/approval-requests/:id/*` (line-items, approvals, attachments, activity).
+- Realtime changes are broadcast from controllers via `broadcast(...)` (`approvalRequestController`, `budgetConfigController`) through `src/realtime/websocketServer.js`.
+- Middleware order in `orbit-backend/src/index.js` is deliberate (HTTPS/security headers/helmet/CORS/parser/routes/error handler); avoid reordering unless required.
 
-## Frontend Patterns (follow these)
-- App composition is `BrowserRouter` + `AuthProvider` + `ToastProvider` in `orbit-frontend/src/App.jsx`.
-- Auth/session source of truth is `orbit-frontend/src/context/AuthContext.jsx`:
-  - login is OTP-based (`/auth/login` then `/auth/complete-login`)
-  - session uses `localStorage` keys like `authToken` and `authUser`
-- Route structure is in `orbit-frontend/src/routes/AppRouter.jsx`; admin gating uses role string checks (`includes('admin')`).
-- Sidebar navigation is role-aware in `orbit-frontend/src/components/Sidebar.jsx`; update routes and sidebar together.
+## Frontend Conventions
+- App root composition is `BrowserRouter` + `AuthProvider` + `ToastProvider` in `orbit-frontend/src/App.jsx`.
+- Auth/session source of truth is `orbit-frontend/src/context/AuthContext.jsx` (OTP login flow, token verification, localStorage keys `authToken` and `authUser`).
+- Role gating is string-based (`includes('admin')`) in `src/routes/AppRouter.jsx` and `src/components/Sidebar.jsx`.
+- API service modules mainly use `fetch` in `src/services/*`; `AuthContext` uses `axios`. Follow the style already used in the file you edit.
 
-## Project-Specific Conventions
-- Frontend services currently mix `fetch` and `axios`; keep the existing style of the file you edit (don’t refactor globally unless asked).
-- API base URL is hardcoded in service files as `http://localhost:3001/api`; keep this consistent with existing services.
-- Backend auth/rate limiting/security middleware order in `orbit-backend/src/index.js` is intentional; avoid reordering casually.
-- AI insights endpoints require auth (`/api/ai/insights`, `/api/ai/insights/latest`, `/api/ai/metrics`) and depend on OpenRouter when configured.
-
-## When Adding Features
-- Backend feature: update route + controller + service together, and preserve helper-based response shape.
-- Frontend feature: wire page route in `AppRouter.jsx`, role visibility in `Sidebar.jsx`, and API calls in `src/services/*`.
-- If touching approval workflow, check both REST handlers and WebSocket event emissions to avoid stale dashboard states.
+## High-Impact Edit Rules
+- Backend feature work usually requires coordinated updates in route + controller + service (not only one layer).
+- Frontend feature work usually requires coordinated updates in route map (`AppRouter.jsx`), navigation (`Sidebar.jsx`), and relevant `src/services/*` calls.
+- For approval/budget state transitions, check both REST behavior and websocket event emission/consumption to prevent stale dashboards.
