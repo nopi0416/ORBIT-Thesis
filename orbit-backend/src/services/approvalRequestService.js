@@ -82,6 +82,7 @@ export class ApprovalRequestService {
   static formatRoleLabel(roleName) {
     const value = String(roleName || '').trim();
     if (!value) return 'User';
+    if (value.toLowerCase().includes('payroll')) return 'Payroll Office';
     return value
       .toLowerCase()
       .replace(/_/g, ' ')
@@ -437,12 +438,12 @@ export class ApprovalRequestService {
 
           if (payrollIds.length) {
             const payrollProfileMap = new Map(payrollUsers.map((user) => [user.user_id, user]));
-            const payrollMessage = `All approvers have approved this approval request for budget configuration ${budgetName}. Payroll action is now required.`;
+            const payrollMessage = `All approvers have approved this approval request for budget configuration ${budgetName}. Payroll Office action is now required.`;
 
             await this.insertNotificationRows({
               requestId,
               notificationType: 'payroll_action_required',
-              title: 'Payroll Action Required',
+              title: 'Payroll Office Action Required',
               message: payrollMessage,
               recipientIds: payrollIds,
               profileMap: payrollProfileMap,
@@ -453,10 +454,10 @@ export class ApprovalRequestService {
             if (payrollRecipients.length) {
               await this.sendApprovalNotification({
                 recipients: payrollRecipients,
-                subject: `ORBIT Payroll Action Required: ${context.request?.request_number || requestId}`,
+                subject: `ORBIT Payroll Office Action Required: ${context.request?.request_number || requestId}`,
                 html: `
                   <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #111827;">Payroll Action Required</h2>
+                    <h2 style="color: #111827;">Payroll Office Action Required</h2>
                     <p>${payrollMessage}</p>
                     <p><strong>Request #:</strong> ${context.request?.request_number || '—'}</p>
                     <p><strong>Amount:</strong> ${this.formatCurrency(context.request?.total_request_amount)}</p>
@@ -482,7 +483,7 @@ export class ApprovalRequestService {
       } = await this.includeActorRecipient(context, completedBy);
 
       const actor = actorProfile || (completedBy ? profileMap.get(completedBy) : null);
-      const actorName = actor?.name || 'Payroll';
+      const actorName = actor?.name || 'Payroll Office';
       const actorRole = this.formatRoleLabel(actor?.role_name || 'payroll');
       const budgetName = context.budget?.budget_name || 'Unknown Budget';
 
@@ -1684,7 +1685,7 @@ export class ApprovalRequestService {
         approvalRecords.push({
           request_id: requestId,
           approval_level: 4,
-          approval_level_name: 'Payroll',
+          approval_level_name: 'Payroll Office',
           status: 'pending',
           order_index: 4,
           created_at: new Date().toISOString(),

@@ -204,7 +204,7 @@ function MembersList({ members, loading }) {
       case "l3":
         return { label: "L3 Approver", color: "bg-pink-500/20 text-pink-400 border-pink-400" };
       case "payroll":
-        return { label: "Payroll", color: "bg-green-500/20 text-green-400 border-green-400" };
+        return { label: "Payroll Office", color: "bg-green-500/20 text-green-400 border-green-400" };
       case "admin":
         return { label: "Admin", color: "bg-amber-500/20 text-amber-400 border-amber-400" };
       default:
@@ -288,7 +288,7 @@ function MembersList({ members, loading }) {
               <SelectItem value="l1">L1 Approver</SelectItem>
               <SelectItem value="l2">L2 Approver</SelectItem>
               <SelectItem value="l3">L3 Approver</SelectItem>
-              <SelectItem value="payroll">Payroll</SelectItem>
+              <SelectItem value="payroll">Payroll Office</SelectItem>
               <SelectItem value="admin">Admin</SelectItem>
               <SelectItem value="requestor">Requestor</SelectItem>
             </SelectContent>

@@ -474,7 +474,7 @@ const computeStageStatus = (approvals = [], overallStatus = '') => {
 
 const formatStageStatusLabel = (status) => {
   const normalized = String(status || '').toLowerCase();
-  if (normalized === 'pending_payroll_approval') return 'Pending Payroll Approval';
+  if (normalized === 'pending_payroll_approval') return 'Pending Payroll Office Approval';
   if (normalized === 'pending_payment_completion') return 'Pending Payment Completion';
   if (normalized === 'ongoing_approval') return 'Ongoing Approval';
   if (normalized === 'rejected') return 'Rejected';
@@ -1932,7 +1932,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
     
     // Check L3 status
     if (l3Approval?.status === 'approved' && !payrollApproval) {
-      return 'Pending Payroll';
+      return 'Pending Payroll Office';
     }
     if (l3Approval?.status === 'pending') {
       return 'Pending L3 Approval';
@@ -2023,12 +2023,12 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
   const getWorkflowStatusLabel = (status, isSelfRequest = false) => {
     const normalized = String(status || '').toLowerCase();
     if (normalized === 'ongoing_approval') return 'Ongoing Approval';
-    if (normalized === 'pending_payroll_approval') return 'Pending Payroll Approval';
+    if (normalized === 'pending_payroll_approval') return 'Pending Payroll Office Approval';
     if (normalized === 'pending_payment_completion') return 'Pending Payment Completion';
     if (normalized === 'submitted') return 'Pending L1 Approval';
     if (normalized.includes('l1')) return isSelfRequest ? 'L1 Self-Approved • Pending L2' : 'L1 Approved • Pending L2';
     if (normalized.includes('l2')) return 'L2 Approved • Pending L3';
-    if (normalized.includes('l3')) return 'L3 Approved • Pending Payroll';
+    if (normalized.includes('l3')) return 'L3 Approved • Pending Payroll Office';
     if (normalized === 'approved') return 'Completed';
     if (normalized === 'rejected') return 'Rejected';
     return status;
@@ -3704,7 +3704,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
                 <div className="text-sm font-semibold text-white mb-4">Approval Workflow Status</div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {[{ level: 1, label: 'Level 1', title: 'L1 Approval' }, { level: 2, label: 'Level 2', title: 'L2 Approval' }, { level: 3, label: 'Level 3', title: 'L3 Approval' }, { level: 'P', label: 'Payroll', title: 'Payroll' }].map((entry) => {
+                  {[{ level: 1, label: 'Level 1', title: 'L1 Approval' }, { level: 2, label: 'Level 2', title: 'L2 Approval' }, { level: 3, label: 'Level 3', title: 'L3 Approval' }, { level: 'P', label: 'Payroll Office', title: 'Payroll Office' }].map((entry) => {
                     const approver = getApproverForLevel(entry.level);
                     const approval = getApprovalForLevel(entry.level);
                     const status = approval?.status || 'pending';
@@ -3752,7 +3752,7 @@ function SubmitApproval({ userId, onRefresh, refreshKey }) {
                                   )}
                                 </>
                               ) : (
-                                <div className="text-slate-300">Awaiting payroll processing</div>
+                                <div className="text-slate-300">Awaiting payroll office processing</div>
                               )}
                             </>
                           ) : (
@@ -4072,7 +4072,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
 
   const handlePayrollCycleContinue = () => {
     if (userRole === 'payroll' && currentApprovalLevel === 4 && !String(decisionNotes || '').trim()) {
-      const notesError = 'Decision notes are required for payroll approval.';
+      const notesError = 'Decision notes are required for Payroll Office approval.';
       setPayrollCycleError(notesError);
       setActionError(notesError);
       toast.error(notesError);
@@ -4620,7 +4620,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     const stage = getWorkflowStage(status);
     if (stage === 'APPROVED') return 'Approved';
     if (stage === 'REJECTED') return 'Rejected';
-    if (stage === 'P') return 'Payroll Review';
+    if (stage === 'P') return 'Payroll Office Review';
     return `Level ${stage.replace('L', '')} Review`;
   };
 
@@ -4836,7 +4836,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
     try {
       if (isPayrollUser && currentApprovalLevel === 4) {
         if (!String(decisionNotes || '').trim()) {
-          const notesError = 'Decision notes are required for payroll approval.';
+          const notesError = 'Decision notes are required for Payroll Office approval.';
           toast.error(notesError);
           setActionError(notesError);
           setActionSubmitting(false);
@@ -5371,7 +5371,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
               <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
                 <div className="text-sm font-semibold text-white mb-4">Approval Workflow Status</div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {[{ level: 1, label: 'Level 1', title: 'L1 Approval' }, { level: 2, label: 'Level 2', title: 'L2 Approval' }, { level: 3, label: 'Level 3', title: 'L3 Approval' }, { level: 'P', label: 'Payroll', title: 'Payroll' }].map((entry) => {
+                  {[{ level: 1, label: 'Level 1', title: 'L1 Approval' }, { level: 2, label: 'Level 2', title: 'L2 Approval' }, { level: 3, label: 'Level 3', title: 'L3 Approval' }, { level: 'P', label: 'Payroll Office', title: 'Payroll Office' }].map((entry) => {
                     const approver = requestConfigDetails?.approvers?.find((item) => String(item.approval_level) === String(entry.level) || (entry.level === 'P' && String(item.approval_level || '').toLowerCase().includes('payroll')));
                     const approval = requestDetailsData?.approvals?.find((item) => String(item.approval_level) === String(entry.level) || (entry.level === 'P' && String(item.approval_level || '').toLowerCase().includes('payroll')));
                     const status = approval?.status || 'pending';
@@ -5419,7 +5419,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                                   )}
                                 </>
                               ) : (
-                                <div className="text-slate-300">Awaiting payroll processing</div>
+                                <div className="text-slate-300">Awaiting payroll office processing</div>
                               )}
                             </>
                           ) : (
@@ -5490,7 +5490,7 @@ function ApprovalRequests({ refreshKey, focusRequestId = null, onFocusRequestHan
                       maxLength={500}
                       rows={3}
                       className="bg-slate-700 border-gray-300 text-white"
-                      placeholder="Add notes (required for payroll approval and rejection)."
+                      placeholder="Add notes (required for Payroll Office approval and rejection)."
                     />
                   </div>
 
@@ -6074,7 +6074,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
   const formatStatusLabel = (value) => formatStatusText(value, 'Pending');
   const getLevelLabel = (level) => {
-    if (Number(level) === 4) return 'Payroll';
+    if (Number(level) === 4) return 'Payroll Office';
     return `L${level || '—'}`;
   };
 

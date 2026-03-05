@@ -1203,7 +1203,7 @@ function PayrollInsightsLayout({ loading, exportLoading, data, metrics, onGenera
     <Card className="bg-slate-800">
       <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="space-y-1">
-          <CardTitle className="text-white">Payroll AI Dashboard</CardTitle>
+          <CardTitle className="text-white">Payroll Office AI Dashboard</CardTitle>
           <p className="text-xs text-gray-400">
             Financial insights based on your role scope · Generated: {generatedLabel}
           </p>
@@ -1486,7 +1486,7 @@ function LatestUpdatesTable({ updates = [] }) {
   return (
     <Card className="bg-slate-800">
       <CardHeader>
-        <CardTitle className="text-white">Latest Payroll Updates</CardTitle>
+        <CardTitle className="text-white">Latest Payroll Office Updates</CardTitle>
       </CardHeader>
       <CardContent>
         {rows.length ? (
@@ -1523,7 +1523,7 @@ function LatestUpdatesTable({ updates = [] }) {
             </table>
           </div>
         ) : (
-          <div className="text-sm text-slate-400">No recent payroll updates available.</div>
+          <div className="text-sm text-slate-400">No recent payroll office updates available.</div>
         )}
       </CardContent>
     </Card>

@@ -50,7 +50,7 @@ export const getRoleDisplayName = (role) => {
     case 'l1': return 'L1 Approver';
     case 'l2': return 'L2 Approver';
     case 'l3': return 'L3 Approver';
-    case 'payroll': return 'Payroll Staff';
+    case 'payroll': return 'Payroll Office';
     case 'admin': return 'Administrator';
     default: return 'Requestor';
   }

@@ -5,7 +5,7 @@
 
 /**
  * Get the dashboard route based on user role
- * @param {string} role - User role (L1, L2, L3, Requestor, Admin, Payroll)
+ * @param {string} role - User role (L1, L2, L3, Requestor, Admin, Payroll Office)
  * @returns {string} - Route path for the user's dashboard
  */
 export const getDashboardRoute = (role) => {
@@ -26,7 +26,7 @@ export const getDashboardRoute = (role) => {
     // Requestor role
     'requestor': '/dashboard',
 
-    // Payroll role
+    // Payroll Office role
     'payroll': '/dashboard',
   };
 

@@ -2419,6 +2419,11 @@ function CreateConfiguration() {
   const [templateLoading, setTemplateLoading] = useState(false);
   const [templateSaving, setTemplateSaving] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [templateNameModalOpen, setTemplateNameModalOpen] = useState(false);
+  const [templateNameInput, setTemplateNameInput] = useState("");
+  const [renameTemplateModalOpen, setRenameTemplateModalOpen] = useState(false);
+  const [renameTemplateInput, setRenameTemplateInput] = useState("");
+  const [deleteTemplateModalOpen, setDeleteTemplateModalOpen] = useState(false);
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
@@ -2840,10 +2845,16 @@ function CreateConfiguration() {
     toast.success(`Template "${selected.template_name}" applied.`);
   };
 
-  const handleSaveCurrentAsTemplate = async () => {
+  const handleSaveCurrentAsTemplate = () => {
     const suggested = String(formData.budgetName || '').trim() || 'New Budget Template';
-    const templateName = window.prompt('Template name', suggested);
+    setTemplateNameInput(suggested);
+    setTemplateNameModalOpen(true);
+  };
+
+  const handleConfirmSaveTemplate = async () => {
+    const templateName = sanitizeSingleLine(templateNameInput).trim();
     if (!templateName || !String(templateName).trim()) {
+      toast.error('Template name is required.');
       return;
     }
 
@@ -2866,6 +2877,7 @@ function CreateConfiguration() {
         setSelectedTemplateId(nextSelectedId);
       }
 
+      setTemplateNameModalOpen(false);
       toast.success('Template saved successfully.');
     } catch (err) {
       console.error('Error saving budget template:', err);
@@ -2875,7 +2887,7 @@ function CreateConfiguration() {
     }
   };
 
-  const handleRenameSelectedTemplate = async () => {
+  const handleRenameSelectedTemplate = () => {
     if (!selectedTemplateId) {
       toast.error('Please select a template to rename.');
       return;
@@ -2887,10 +2899,21 @@ function CreateConfiguration() {
       return;
     }
 
-    const nextNameInput = window.prompt('Rename template', selected.template_name || '');
-    const nextName = sanitizeSingleLine(nextNameInput || '').trim();
+    setRenameTemplateInput(selected.template_name || '');
+    setRenameTemplateModalOpen(true);
+  };
+
+  const handleConfirmRenameTemplate = async () => {
+    const selected = templateOptions.find((template) => template.template_id === selectedTemplateId);
+    if (!selected) {
+      toast.error('Selected template was not found.');
+      return;
+    }
+
+    const nextName = sanitizeSingleLine(renameTemplateInput).trim();
 
     if (!nextName) {
+      toast.error('Template name is required.');
       return;
     }
 
@@ -2910,6 +2933,7 @@ function CreateConfiguration() {
         setSelectedTemplateId(renamed.template_id);
       }
 
+      setRenameTemplateModalOpen(false);
       toast.success('Template renamed successfully.');
     } catch (err) {
       console.error('Error renaming budget template:', err);
@@ -2919,17 +2943,25 @@ function CreateConfiguration() {
     }
   };
 
-  const handleDeleteSelectedTemplate = async () => {
+  const handleDeleteSelectedTemplate = () => {
     if (!selectedTemplateId) {
       toast.error('Please select a template to delete.');
       return;
     }
 
     const selected = templateOptions.find((template) => template.template_id === selectedTemplateId);
-    const selectedName = selected?.template_name || 'this template';
-    const confirmed = window.confirm(`Delete template "${selectedName}"?`);
+    if (!selected) {
+      toast.error('Selected template was not found.');
+      return;
+    }
 
-    if (!confirmed) {
+    setDeleteTemplateModalOpen(true);
+  };
+
+  const handleConfirmDeleteTemplate = async () => {
+    const selected = templateOptions.find((template) => template.template_id === selectedTemplateId);
+    if (!selected) {
+      toast.error('Selected template was not found.');
       return;
     }
 
@@ -2940,6 +2972,7 @@ function CreateConfiguration() {
       const templates = await budgetConfigService.getBudgetConfigTemplates(token);
       setTemplateOptions(Array.isArray(templates) ? templates : []);
       setSelectedTemplateId('');
+      setDeleteTemplateModalOpen(false);
 
       toast.success('Template deleted successfully.');
     } catch (err) {
@@ -4112,6 +4145,143 @@ function CreateConfiguration() {
             <div className="flex items-center justify-between text-xs text-gray-400">
               <span>Auto-closing in {successCountdown}s</span>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={templateNameModalOpen} onOpenChange={(open) => !templateSaving && setTemplateNameModalOpen(open)}>
+        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[90vw] max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Save Template</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              Enter a template name for this configuration.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <Label htmlFor="templateNameInput" className="text-white">Template Name</Label>
+            <Input
+              id="templateNameInput"
+              value={templateNameInput}
+              onChange={(e) => setTemplateNameInput(sanitizeSingleLine(e.target.value))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (!templateSaving) {
+                    handleConfirmSaveTemplate();
+                  }
+                }
+              }}
+              maxLength={100}
+              className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
+              placeholder="Template name"
+              disabled={templateSaving}
+              autoFocus
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="border-slate-500 text-white hover:bg-slate-700"
+              onClick={() => setTemplateNameModalOpen(false)}
+              disabled={templateSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-pink-500 hover:bg-pink-600 text-white"
+              onClick={handleConfirmSaveTemplate}
+              disabled={templateSaving}
+            >
+              {templateSaving ? 'Saving...' : 'Save Template'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={renameTemplateModalOpen} onOpenChange={(open) => !templateSaving && setRenameTemplateModalOpen(open)}>
+        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[90vw] max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Rename Template</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              Enter a new name for the selected template.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <Label htmlFor="renameTemplateInput" className="text-white">Template Name</Label>
+            <Input
+              id="renameTemplateInput"
+              value={renameTemplateInput}
+              onChange={(e) => setRenameTemplateInput(sanitizeSingleLine(e.target.value))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (!templateSaving) {
+                    handleConfirmRenameTemplate();
+                  }
+                }
+              }}
+              maxLength={100}
+              className="bg-slate-700 border-gray-300 text-white placeholder:text-gray-400"
+              placeholder="Template name"
+              disabled={templateSaving}
+              autoFocus
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="border-slate-500 text-white hover:bg-slate-700"
+              onClick={() => setRenameTemplateModalOpen(false)}
+              disabled={templateSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-pink-500 hover:bg-pink-600 text-white"
+              onClick={handleConfirmRenameTemplate}
+              disabled={templateSaving}
+            >
+              {templateSaving ? 'Renaming...' : 'Rename Template'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteTemplateModalOpen} onOpenChange={(open) => !templateSaving && setDeleteTemplateModalOpen(open)}>
+        <DialogContent className="bg-slate-800 border-slate-600 text-white w-[90vw] max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Delete Template</DialogTitle>
+            <DialogDescription className="text-gray-400">
+              Are you sure you want to delete template &quot;{templateOptions.find((template) => template.template_id === selectedTemplateId)?.template_name || 'this template'}&quot;?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="border-slate-500 text-white hover:bg-slate-700"
+              onClick={() => setDeleteTemplateModalOpen(false)}
+              disabled={templateSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={handleConfirmDeleteTemplate}
+              disabled={templateSaving}
+            >
+              {templateSaving ? 'Deleting...' : 'Delete Template'}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

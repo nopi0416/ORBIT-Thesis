@@ -12,7 +12,7 @@ const getRoleLabel = (roles = [], fallback = "") => {
   if (roleValue.includes("l1")) return "L1 Approver";
   if (roleValue.includes("l2")) return "L2 Approver";
   if (roleValue.includes("l3")) return "L3 Approver";
-  if (roleValue.includes("payroll")) return "Payroll";
+  if (roleValue.includes("payroll")) return "Payroll Office";
   if (roleValue.includes("admin")) return "Admin";
   return "Requestor";
 };

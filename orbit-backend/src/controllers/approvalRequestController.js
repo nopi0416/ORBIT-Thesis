@@ -825,7 +825,7 @@ export class ApprovalRequestController {
 
       const result = await ApprovalRequestService.completePayrollPayment(id, {
         completed_by: userId,
-        approver_name: req.user?.name || req.user?.full_name || req.user?.email || 'Payroll',
+        approver_name: req.user?.name || req.user?.full_name || req.user?.email || 'Payroll Office',
         approval_notes,
       });
 
