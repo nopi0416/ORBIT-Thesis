@@ -1287,6 +1287,127 @@ export class BudgetConfigController {
   }
 
   /**
+   * GET /api/budget-configurations/templates
+   * List budget configuration templates for current user scope
+   */
+  static async getBudgetConfigTemplates(req, res) {
+    try {
+      const result = await BudgetConfigService.getBudgetConfigTemplates({
+        userId: req.user?.id || null,
+        orgId: req.user?.org_id || null,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      return sendSuccess(res, result.data, 'Budget configuration templates retrieved successfully');
+    } catch (error) {
+      console.error('Error in getBudgetConfigTemplates:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * POST /api/budget-configurations/templates
+   * Save or update a budget configuration template for current user
+   */
+  static async saveBudgetConfigTemplate(req, res) {
+    try {
+      const { template_name, template_payload } = req.body || {};
+
+      if (!String(template_name || '').trim()) {
+        return sendError(res, 'template_name is required', 400);
+      }
+
+      if (!template_payload || typeof template_payload !== 'object') {
+        return sendError(res, 'template_payload is required', 400);
+      }
+
+      const result = await BudgetConfigService.saveBudgetConfigTemplate({
+        templateName: template_name,
+        templatePayload: template_payload,
+        createdBy: req.user?.id || null,
+        orgId: req.user?.org_id || null,
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      return sendSuccess(res, result.data, result.message || 'Template saved successfully');
+    } catch (error) {
+      console.error('Error in saveBudgetConfigTemplate:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * PATCH /api/budget-configurations/templates/:templateId
+   * Rename a template owned by current user
+   */
+  static async renameBudgetConfigTemplate(req, res) {
+    try {
+      const { templateId } = req.params;
+      const { template_name } = req.body || {};
+
+      if (!templateId) {
+        return sendError(res, 'templateId is required', 400);
+      }
+
+      if (!String(template_name || '').trim()) {
+        return sendError(res, 'template_name is required', 400);
+      }
+
+      const result = await BudgetConfigService.renameBudgetConfigTemplate({
+        templateId,
+        templateName: template_name,
+        userId: req.user?.id || null,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      return sendSuccess(res, result.data, result.message || 'Template renamed successfully');
+    } catch (error) {
+      console.error('Error in renameBudgetConfigTemplate:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
+
+  /**
+   * DELETE /api/budget-configurations/templates/:templateId
+   * Archive/delete a template owned by current user
+   */
+  static async deleteBudgetConfigTemplate(req, res) {
+    try {
+      const { templateId } = req.params;
+
+      if (!templateId) {
+        return sendError(res, 'templateId is required', 400);
+      }
+
+      const result = await BudgetConfigService.deleteBudgetConfigTemplate({
+        templateId,
+        userId: req.user?.id || null,
+        isAdmin: isAdminUser(req),
+      });
+
+      if (!result.success) {
+        return sendError(res, result.error, 400);
+      }
+
+      return sendSuccess(res, {}, result.message || 'Template deleted successfully');
+    } catch (error) {
+      console.error('Error in deleteBudgetConfigTemplate:', error);
+      return sendError(res, error.message, 500);
+    }
+  }
+
+  /**
    * GET /api/users/:userId
    * Get user details with their roles
    */

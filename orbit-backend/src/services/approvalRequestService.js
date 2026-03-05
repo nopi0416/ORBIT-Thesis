@@ -2094,6 +2094,51 @@ export class ApprovalRequestService {
         payroll_cycle_date,
       } = approvalData;
 
+      const { data: currentApproval, error: currentApprovalError } = await supabase
+        .from('tblbudgetapprovalrequests_approvals')
+        .select('approval_id, status, assigned_to_primary, assigned_to_backup')
+        .eq('request_id', requestId)
+        .eq('approval_level', approvalLevel)
+        .maybeSingle();
+
+      if (currentApprovalError) throw currentApprovalError;
+
+      if (!currentApproval) {
+        return {
+          success: false,
+          error: `Approval level ${approvalLevel} was not found for this request.`,
+        };
+      }
+
+      const currentStatus = String(currentApproval.status || '').toLowerCase();
+      if (currentStatus === 'approved' || currentStatus === 'completed') {
+        return {
+          success: true,
+          data: currentApproval,
+          message: `Request is already approved at level ${approvalLevel}`,
+        };
+      }
+
+      if (currentStatus !== 'pending') {
+        return {
+          success: false,
+          error: `Request cannot be approved at level ${approvalLevel} because current status is ${currentStatus || 'unknown'}.`,
+        };
+      }
+
+      const assignedPrimary = currentApproval.assigned_to_primary;
+      const assignedBackup = currentApproval.assigned_to_backup;
+      const isAssignedApprover =
+        String(approved_by || '') === String(assignedPrimary || '') ||
+        String(approved_by || '') === String(assignedBackup || '');
+
+      if (!isAssignedApprover) {
+        return {
+          success: false,
+          error: `Only assigned approvers can approve this request at level ${approvalLevel}.`,
+        };
+      }
+
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_approvals')
         .update({
@@ -2126,7 +2171,9 @@ export class ApprovalRequestService {
         overall_status: overallStatus,
         ...(allApprovalsComplete && { approved_date: new Date().toISOString() }),
         ...(normalizedLevel === 4 && payroll_cycle ? { payroll_cycle } : {}),
-        ...(normalizedLevel === 4 && payroll_cycle_date ? { payroll_cycle_date: payroll_cycle_date } : {}),
+        ...(normalizedLevel === 4 && payroll_cycle_date
+          ? { payroll_cycle_date: payroll_cycle_date, payroll_cycle_Date: payroll_cycle_date }
+          : {}),
         updated_by: approved_by,
       });
 
@@ -2166,6 +2213,51 @@ export class ApprovalRequestService {
   static async rejectRequestAtLevel(requestId, approvalLevel, rejectionData) {
     try {
       const { rejected_by, approver_name, rejection_reason } = rejectionData;
+
+      const { data: currentApproval, error: currentApprovalError } = await supabase
+        .from('tblbudgetapprovalrequests_approvals')
+        .select('approval_id, status, assigned_to_primary, assigned_to_backup')
+        .eq('request_id', requestId)
+        .eq('approval_level', approvalLevel)
+        .maybeSingle();
+
+      if (currentApprovalError) throw currentApprovalError;
+
+      if (!currentApproval) {
+        return {
+          success: false,
+          error: `Approval level ${approvalLevel} was not found for this request.`,
+        };
+      }
+
+      const currentStatus = String(currentApproval.status || '').toLowerCase();
+      if (currentStatus === 'rejected') {
+        return {
+          success: true,
+          data: currentApproval,
+          message: `Request is already rejected at level ${approvalLevel}`,
+        };
+      }
+
+      if (currentStatus !== 'pending') {
+        return {
+          success: false,
+          error: `Request cannot be rejected at level ${approvalLevel} because current status is ${currentStatus || 'unknown'}.`,
+        };
+      }
+
+      const assignedPrimary = currentApproval.assigned_to_primary;
+      const assignedBackup = currentApproval.assigned_to_backup;
+      const isAssignedApprover =
+        String(rejected_by || '') === String(assignedPrimary || '') ||
+        String(rejected_by || '') === String(assignedBackup || '');
+
+      if (!isAssignedApprover) {
+        return {
+          success: false,
+          error: `Only assigned approvers can reject this request at level ${approvalLevel}.`,
+        };
+      }
 
       const { data, error } = await supabase
         .from('tblbudgetapprovalrequests_approvals')

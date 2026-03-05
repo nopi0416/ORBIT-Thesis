@@ -2829,6 +2829,255 @@ export class BudgetConfigService {
     }
   }
 
+  static normalizeBudgetTemplatePayload(payload = {}) {
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const toNumberOrEmpty = (value) => {
+      if (value === '' || value === null || value === undefined) return '';
+      const num = Number(value);
+      return Number.isFinite(num) ? num : '';
+    };
+
+    const toArray = (value) => (Array.isArray(value) ? value : []);
+
+    return {
+      budgetName: String(data.budgetName || '').slice(0, 150),
+      startDate: data.startDate || '',
+      endDate: data.endDate || '',
+      description: String(data.description || '').slice(0, 800),
+      dataControlEnabled: Boolean(data.dataControlEnabled ?? true),
+      limitMin: toNumberOrEmpty(data.limitMin),
+      limitMax: toNumberOrEmpty(data.limitMax),
+      currency: String(data.currency || 'PHP'),
+      budgetControlEnabled: Boolean(data.budgetControlEnabled),
+      budgetControlLimit: toNumberOrEmpty(data.budgetControlLimit),
+      payCycle: String(data.payCycle || 'SEMI_MONTHLY'),
+      affectedOUPaths: toArray(data.affectedOUPaths),
+      accessibleOUPaths: toArray(data.accessibleOUPaths),
+      countries: toArray(data.countries),
+      siteLocation: toArray(data.siteLocation),
+      clients: toArray(data.clients),
+      selectedTenureGroups: toArray(data.selectedTenureGroups),
+      approverL1: data.approverL1 || '',
+      backupApproverL1: data.backupApproverL1 || '',
+      approverL2: data.approverL2 || '',
+      backupApproverL2: data.backupApproverL2 || '',
+      approverL3: data.approverL3 || '',
+      backupApproverL3: data.backupApproverL3 || '',
+    };
+  }
+
+  static async getBudgetConfigTemplates({ userId, orgId = null, isAdmin = false }) {
+    try {
+      let query = supabase
+        .from('tblbudgetconfigurationtemplates')
+        .select('template_id, template_name, template_payload, created_by, org_id, is_shared, created_at, updated_at')
+        .eq('is_active', true)
+        .order('updated_at', { ascending: false })
+        .limit(200);
+
+      if (!isAdmin && userId) {
+        query = query.eq('created_by', userId);
+      }
+
+      if (!isAdmin && !userId && orgId) {
+        query = query.eq('org_id', orgId);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const templates = (data || []).map((row) => ({
+        template_id: row.template_id,
+        template_name: row.template_name,
+        template_payload: this.normalizeBudgetTemplatePayload(row.template_payload || {}),
+        created_by: row.created_by,
+        org_id: row.org_id,
+        is_shared: Boolean(row.is_shared),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      }));
+
+      return {
+        success: true,
+        data: templates,
+      };
+    } catch (error) {
+      console.error('Error fetching budget configuration templates:', error);
+      return {
+        success: false,
+        error: error.message,
+        data: [],
+      };
+    }
+  }
+
+  static async saveBudgetConfigTemplate({ templateName, templatePayload, createdBy, orgId = null }) {
+    try {
+      const normalizedName = String(templateName || '').trim().slice(0, 120);
+      if (!normalizedName) {
+        return { success: false, error: 'Template name is required' };
+      }
+
+      if (!createdBy) {
+        return { success: false, error: 'User context is required to save templates' };
+      }
+
+      const normalizedPayload = this.normalizeBudgetTemplatePayload(templatePayload);
+
+      const { data: existing, error: existingError } = await supabase
+        .from('tblbudgetconfigurationtemplates')
+        .select('template_id')
+        .eq('created_by', createdBy)
+        .ilike('template_name', normalizedName)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (existingError) throw existingError;
+
+      if (existing?.template_id) {
+        const { data, error } = await supabase
+          .from('tblbudgetconfigurationtemplates')
+          .update({
+            template_payload: normalizedPayload,
+            org_id: orgId || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('template_id', existing.template_id)
+          .select()
+          .single();
+
+        if (error) throw error;
+
+        return {
+          success: true,
+          data,
+          message: 'Template updated successfully',
+        };
+      }
+
+      const { data, error } = await supabase
+        .from('tblbudgetconfigurationtemplates')
+        .insert([
+          {
+            template_name: normalizedName,
+            template_payload: normalizedPayload,
+            created_by: createdBy,
+            org_id: orgId || null,
+            is_shared: false,
+            is_active: true,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+        message: 'Template saved successfully',
+      };
+    } catch (error) {
+      console.error('Error saving budget configuration template:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  static async renameBudgetConfigTemplate({ templateId, templateName, userId, isAdmin = false }) {
+    try {
+      const normalizedName = String(templateName || '').trim().slice(0, 120);
+      if (!normalizedName) {
+        return { success: false, error: 'Template name is required' };
+      }
+
+      const { data: existing, error: lookupError } = await supabase
+        .from('tblbudgetconfigurationtemplates')
+        .select('template_id, created_by')
+        .eq('template_id', templateId)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (lookupError) throw lookupError;
+
+      if (!existing) {
+        return { success: false, error: 'Template not found' };
+      }
+
+      if (!isAdmin && String(existing.created_by || '') !== String(userId || '')) {
+        return { success: false, error: 'Only the template owner can rename this template' };
+      }
+
+      const { data, error } = await supabase
+        .from('tblbudgetconfigurationtemplates')
+        .update({
+          template_name: normalizedName,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('template_id', templateId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        data,
+        message: 'Template renamed successfully',
+      };
+    } catch (error) {
+      console.error('Error renaming budget configuration template:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  static async deleteBudgetConfigTemplate({ templateId, userId, isAdmin = false }) {
+    try {
+      const { data: existing, error: lookupError } = await supabase
+        .from('tblbudgetconfigurationtemplates')
+        .select('template_id, created_by')
+        .eq('template_id', templateId)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (lookupError) throw lookupError;
+
+      if (!existing) {
+        return { success: false, error: 'Template not found' };
+      }
+
+      if (!isAdmin && String(existing.created_by || '') !== String(userId || '')) {
+        return { success: false, error: 'Only the template owner can delete this template' };
+      }
+
+      const { error } = await supabase
+        .from('tblbudgetconfigurationtemplates')
+        .update({
+          is_active: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('template_id', templateId);
+
+      if (error) throw error;
+
+      return {
+        success: true,
+        message: 'Template deleted successfully',
+      };
+    } catch (error) {
+      console.error('Error deleting budget configuration template:', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
   /**
    * Get a user by ID with their roles
    */

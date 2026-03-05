@@ -2376,20 +2376,7 @@ function ConfigurationList({ userRole }) {
 function CreateConfiguration() {
   const { user } = useAuth();
   const toast = useToast();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [successModalOpen, setSuccessModalOpen] = useState(false);
-  const [successCountdown, setSuccessCountdown] = useState(5);
-  const [viewStep, setViewStep] = useState("form");
-  const [approvalsL1, setApprovalsL1] = useState([]);
-  const [approvalsL2, setApprovalsL2] = useState([]);
-  const [approvalsL3, setApprovalsL3] = useState([]);
-  const [approvalsLoading, setApprovalsLoading] = useState(true);
-  const [organizations, setOrganizations] = useState([]);
-  const [organizationsLoading, setOrganizationsLoading] = useState(true);
-  const [orgGeoLocations, setOrgGeoLocations] = useState([]);
-  const [orgClients, setOrgClients] = useState([]);
-  const [orgScopeLoading, setOrgScopeLoading] = useState(false);
-  const [formData, setFormData] = useState({
+  const createInitialFormData = () => ({
     budgetName: "",
     startDate: "",
     endDate: "",
@@ -2414,6 +2401,24 @@ function CreateConfiguration() {
     approverL3: "",
     backupApproverL3: "",
   });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [successModalOpen, setSuccessModalOpen] = useState(false);
+  const [successCountdown, setSuccessCountdown] = useState(5);
+  const [viewStep, setViewStep] = useState("form");
+  const [approvalsL1, setApprovalsL1] = useState([]);
+  const [approvalsL2, setApprovalsL2] = useState([]);
+  const [approvalsL3, setApprovalsL3] = useState([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(true);
+  const [organizations, setOrganizations] = useState([]);
+  const [organizationsLoading, setOrganizationsLoading] = useState(true);
+  const [orgGeoLocations, setOrgGeoLocations] = useState([]);
+  const [orgClients, setOrgClients] = useState([]);
+  const [orgScopeLoading, setOrgScopeLoading] = useState(false);
+  const [formData, setFormData] = useState(() => createInitialFormData());
+  const [templateOptions, setTemplateOptions] = useState([]);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
 
   const token = user?.token || localStorage.getItem("authToken") || "";
 
@@ -2477,6 +2482,23 @@ function CreateConfiguration() {
     };
 
     fetchOrganizations();
+  }, [token]);
+
+  useEffect(() => {
+    const fetchTemplates = async () => {
+      try {
+        setTemplateLoading(true);
+        const templates = await budgetConfigService.getBudgetConfigTemplates(token);
+        setTemplateOptions(Array.isArray(templates) ? templates : []);
+      } catch (err) {
+        console.error('Error fetching budget templates:', err);
+        setTemplateOptions([]);
+      } finally {
+        setTemplateLoading(false);
+      }
+    };
+
+    fetchTemplates();
   }, [token]);
 
   const selectedParentOrgIds = useMemo(() => {
@@ -2788,6 +2810,146 @@ function CreateConfiguration() {
     setFormData((prev) => ({ ...prev, [field]: nextValue }));
   };
 
+  const normalizeTemplateFormData = (payload = {}) => {
+    const base = createInitialFormData();
+    return {
+      ...base,
+      ...payload,
+      budgetName: sanitizeSingleLine(payload?.budgetName || base.budgetName),
+      description: sanitizeSingleLine(payload?.description || base.description),
+      affectedOUPaths: Array.isArray(payload?.affectedOUPaths) ? payload.affectedOUPaths : base.affectedOUPaths,
+      accessibleOUPaths: Array.isArray(payload?.accessibleOUPaths) ? payload.accessibleOUPaths : base.accessibleOUPaths,
+      countries: Array.isArray(payload?.countries) ? payload.countries : base.countries,
+      siteLocation: Array.isArray(payload?.siteLocation) ? payload.siteLocation : base.siteLocation,
+      clients: Array.isArray(payload?.clients) ? payload.clients : base.clients,
+      selectedTenureGroups: Array.isArray(payload?.selectedTenureGroups) ? payload.selectedTenureGroups : base.selectedTenureGroups,
+    };
+  };
+
+  const handleTemplateSelection = (templateId) => {
+    setSelectedTemplateId(templateId);
+    if (!templateId) {
+      setFormData(createInitialFormData());
+      return;
+    }
+
+    const selected = templateOptions.find((template) => template.template_id === templateId);
+    if (!selected) return;
+
+    setFormData(normalizeTemplateFormData(selected.template_payload || {}));
+    toast.success(`Template "${selected.template_name}" applied.`);
+  };
+
+  const handleSaveCurrentAsTemplate = async () => {
+    const suggested = String(formData.budgetName || '').trim() || 'New Budget Template';
+    const templateName = window.prompt('Template name', suggested);
+    if (!templateName || !String(templateName).trim()) {
+      return;
+    }
+
+    try {
+      setTemplateSaving(true);
+      const saved = await budgetConfigService.saveBudgetConfigTemplate(
+        {
+          template_name: String(templateName).trim(),
+          template_payload: normalizeTemplateFormData(formData),
+        },
+        token
+      );
+
+      const templates = await budgetConfigService.getBudgetConfigTemplates(token);
+      const nextOptions = Array.isArray(templates) ? templates : [];
+      setTemplateOptions(nextOptions);
+
+      const nextSelectedId = saved?.template_id || '';
+      if (nextSelectedId) {
+        setSelectedTemplateId(nextSelectedId);
+      }
+
+      toast.success('Template saved successfully.');
+    } catch (err) {
+      console.error('Error saving budget template:', err);
+      toast.error(err?.message || 'Failed to save template.');
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const handleRenameSelectedTemplate = async () => {
+    if (!selectedTemplateId) {
+      toast.error('Please select a template to rename.');
+      return;
+    }
+
+    const selected = templateOptions.find((template) => template.template_id === selectedTemplateId);
+    if (!selected) {
+      toast.error('Selected template was not found.');
+      return;
+    }
+
+    const nextNameInput = window.prompt('Rename template', selected.template_name || '');
+    const nextName = sanitizeSingleLine(nextNameInput || '').trim();
+
+    if (!nextName) {
+      return;
+    }
+
+    try {
+      setTemplateSaving(true);
+      const renamed = await budgetConfigService.renameBudgetConfigTemplate(
+        selectedTemplateId,
+        nextName,
+        token
+      );
+
+      const templates = await budgetConfigService.getBudgetConfigTemplates(token);
+      const nextOptions = Array.isArray(templates) ? templates : [];
+      setTemplateOptions(nextOptions);
+
+      if (renamed?.template_id) {
+        setSelectedTemplateId(renamed.template_id);
+      }
+
+      toast.success('Template renamed successfully.');
+    } catch (err) {
+      console.error('Error renaming budget template:', err);
+      toast.error(err?.message || 'Failed to rename template.');
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const handleDeleteSelectedTemplate = async () => {
+    if (!selectedTemplateId) {
+      toast.error('Please select a template to delete.');
+      return;
+    }
+
+    const selected = templateOptions.find((template) => template.template_id === selectedTemplateId);
+    const selectedName = selected?.template_name || 'this template';
+    const confirmed = window.confirm(`Delete template "${selectedName}"?`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setTemplateSaving(true);
+      await budgetConfigService.deleteBudgetConfigTemplate(selectedTemplateId, token);
+
+      const templates = await budgetConfigService.getBudgetConfigTemplates(token);
+      setTemplateOptions(Array.isArray(templates) ? templates : []);
+      setSelectedTemplateId('');
+
+      toast.success('Template deleted successfully.');
+    } catch (err) {
+      console.error('Error deleting budget template:', err);
+      toast.error(err?.message || 'Failed to delete template.');
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
   const getCurrencyLabel = (code) => {
     if (!code) return "Not specified";
     const match = currencyOptions.find((option) => option.value === code);
@@ -2953,32 +3115,8 @@ function CreateConfiguration() {
       setSuccessCountdown(5);
       setSuccessModalOpen(true);
       setViewStep("form");
-
-      setFormData({
-        budgetName: "",
-        startDate: "",
-        endDate: "",
-        description: "",
-        dataControlEnabled: true,
-        limitMin: "",
-        limitMax: "",
-        currency: "PHP",
-        budgetControlEnabled: false,
-        budgetControlLimit: "",
-        payCycle: "SEMI_MONTHLY",
-        affectedOUPaths: [],
-        accessibleOUPaths: [],
-        countries: [],
-        siteLocation: [],
-        clients: [],
-        selectedTenureGroups: [],
-        approverL1: "",
-        backupApproverL1: "",
-        approverL2: "",
-        backupApproverL2: "",
-        approverL3: "",
-        backupApproverL3: "",
-      });
+      setSelectedTemplateId("");
+      setFormData(createInitialFormData());
     } catch (err) {
       console.error("Error creating configuration:", err);
       toast.error(err.message || "Failed to create budget configuration");
@@ -3065,15 +3203,27 @@ function CreateConfiguration() {
 
   useEffect(() => {
     const allowed = new Set(availableGeoOptions.map((option) => option.value));
+    if (!formData.countries.length) return;
+
+    if (selectedParentOrgIds.length > 0 && allowed.size === 0) {
+      return;
+    }
+
     if (formData.countries.length && !allowed.has(formData.countries[0])) {
       updateField("countries", []);
       updateField("siteLocation", []);
       updateField("clients", []);
     }
-  }, [availableGeoOptions, formData.countries]);
+  }, [availableGeoOptions, formData.countries, selectedParentOrgIds]);
 
   useEffect(() => {
     const allowed = new Set(availableLocationOptions.map((option) => option.value));
+    if (!formData.siteLocation.length) return;
+
+    if (selectedParentOrgIds.length > 0 && availableLocationOptions.length === 0) {
+      return;
+    }
+
     if (formData.siteLocation.length) {
       const filteredLocations = formData.siteLocation.filter((location) => allowed.has(location));
       if (filteredLocations.length !== formData.siteLocation.length) {
@@ -3083,17 +3233,23 @@ function CreateConfiguration() {
         updateField("clients", []);
       }
     }
-  }, [availableLocationOptions, formData.siteLocation]);
+  }, [availableLocationOptions, formData.siteLocation, selectedParentOrgIds]);
 
   useEffect(() => {
     const allowed = new Set(availableClientOptions.map((option) => option.value));
+    if (!formData.clients.length) return;
+
+    if (selectedParentOrgIds.length > 0 && availableClientOptions.length === 0) {
+      return;
+    }
+
     if (formData.clients.length && formData.clients.some((client) => !allowed.has(client))) {
       updateField(
         "clients",
         formData.clients.filter((client) => allowed.has(client))
       );
     }
-  }, [availableClientOptions, formData.clients]);
+  }, [availableClientOptions, formData.clients, selectedParentOrgIds]);
 
   const affectedPreviewLines = buildAffectedPreviewLines();
   const accessiblePreviewLines = buildAccessiblePreviewLines();
@@ -3117,6 +3273,52 @@ function CreateConfiguration() {
         <CardContent className="grid gap-1 pt-1">
           {viewStep === "form" ? (
             <div className="space-y-1">
+              <div className="bg-slate-700/40 rounded-lg p-3 border border-slate-600/60">
+                <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto] md:items-end">
+                  <div className="space-y-1">
+                    <Label className="text-white">Configuration Template</Label>
+                    <SearchableSelect
+                      value={selectedTemplateId}
+                      onValueChange={handleTemplateSelection}
+                      options={templateOptions.map((template) => ({
+                        value: template.template_id,
+                        label: template.template_name,
+                      }))}
+                      placeholder={templateLoading ? "Loading templates..." : "Select a template to auto-fill"}
+                      searchPlaceholder="Search templates..."
+                      disabled={templateLoading || templateSaving}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="border-slate-500 text-white hover:bg-slate-700"
+                    disabled={templateSaving}
+                    onClick={handleSaveCurrentAsTemplate}
+                  >
+                    {templateSaving ? "Saving..." : "Save as Template"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="border-slate-500 text-white hover:bg-slate-700"
+                    disabled={templateSaving || !selectedTemplateId}
+                    onClick={handleRenameSelectedTemplate}
+                  >
+                    Rename Template
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="border-rose-500 text-rose-200 hover:bg-rose-900/30"
+                    disabled={templateSaving || !selectedTemplateId}
+                    onClick={handleDeleteSelectedTemplate}
+                  >
+                    Delete Template
+                  </Button>
+                </div>
+              </div>
+
               <div className="grid gap-1 lg:grid-cols-12">
               <div className="bg-slate-700/50 rounded-lg p-4 space-y-1 lg:col-span-6">
                 <h4 className="font-medium text-white">Setup Configuration</h4>

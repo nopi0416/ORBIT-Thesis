@@ -97,6 +97,20 @@ router.post('/', BudgetConfigController.createBudgetConfig);
 // GET - Get all budget configurations (with optional filters)
 router.get('/', BudgetConfigController.getAllBudgetConfigs);
 
+// ==================== Configuration Templates Endpoints ====================
+
+// GET - List configuration templates for current user/org
+router.get('/templates', BudgetConfigController.getBudgetConfigTemplates);
+
+// POST - Save/update a configuration template
+router.post('/templates', BudgetConfigController.saveBudgetConfigTemplate);
+
+// PATCH - Rename a configuration template
+router.patch('/templates/:templateId', BudgetConfigController.renameBudgetConfigTemplate);
+
+// DELETE - Archive/delete a configuration template
+router.delete('/templates/:templateId', BudgetConfigController.deleteBudgetConfigTemplate);
+
 // GET - Get a single budget configuration by ID
 router.get('/:id', BudgetConfigController.getBudgetConfigById);
 

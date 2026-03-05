@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { PageHeader } from '../components/PageHeader';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Input } from '../components/ui/input';
+import { SearchableSelect } from '../components/ui/searchable-select';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { resolveUserRole, getRoleDisplayName } from '../utils/roleUtils';
@@ -11,6 +13,98 @@ import { fetchWithCache } from '../utils/dataCache';
 import { getConfigurationsByUser } from '../services/budgetConfigService';
 
 const getToken = () => localStorage.getItem('authToken') || '';
+
+const DASHBOARD_RANGE_OPTIONS = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+  { value: 'custom', label: 'Custom Range' },
+];
+
+const DASHBOARD_MONTH_OPTIONS = [
+  { value: '01', label: 'January' },
+  { value: '02', label: 'February' },
+  { value: '03', label: 'March' },
+  { value: '04', label: 'April' },
+  { value: '05', label: 'May' },
+  { value: '06', label: 'June' },
+  { value: '07', label: 'July' },
+  { value: '08', label: 'August' },
+  { value: '09', label: 'September' },
+  { value: '10', label: 'October' },
+  { value: '11', label: 'November' },
+  { value: '12', label: 'December' },
+];
+
+const resolveDashboardDateRange = ({ preset, customFrom, customTo, selectedMonth, selectedYear }) => {
+  const now = new Date();
+  const end = new Date(now);
+  let start = null;
+
+  switch (preset) {
+    case 'daily': {
+      start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
+      break;
+    }
+    case 'weekly': {
+      start = new Date(now);
+      const currentDay = start.getDay();
+      const sundayOffset = -currentDay;
+      start.setDate(start.getDate() + sundayOffset);
+      start.setHours(0, 0, 0, 0);
+
+      end.setTime(start.getTime());
+      end.setDate(start.getDate() + 6);
+      end.setHours(23, 59, 59, 999);
+      break;
+    }
+    case 'monthly': {
+      const year = Number(selectedYear || now.getFullYear());
+      const monthIndex = Math.max(0, Math.min(11, Number(selectedMonth || String(now.getMonth() + 1).padStart(2, '0')) - 1));
+
+      start = new Date(year, monthIndex, 1, 0, 0, 0, 0);
+      const endOfMonth = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
+      end.setTime(Math.min(end.getTime(), endOfMonth.getTime()));
+      break;
+    }
+    case 'yearly': {
+      const year = Number(selectedYear || now.getFullYear());
+      start = new Date(year, 0, 1, 0, 0, 0, 0);
+      const endOfYear = new Date(year, 11, 31, 23, 59, 59, 999);
+      end.setTime(Math.min(end.getTime(), endOfYear.getTime()));
+      break;
+    }
+    case 'custom': {
+      const customStart = customFrom ? new Date(customFrom) : null;
+      const customEnd = customTo ? new Date(customTo) : null;
+      if (!customStart || Number.isNaN(customStart.getTime())) {
+        return { fromDate: '', toDate: '', error: 'Custom start date is required.' };
+      }
+      if (!customEnd || Number.isNaN(customEnd.getTime())) {
+        return { fromDate: '', toDate: '', error: 'Custom end date is required.' };
+      }
+      if (customEnd < customStart) {
+        return { fromDate: '', toDate: '', error: 'Custom end must be after start date.' };
+      }
+      return {
+        fromDate: customStart.toISOString(),
+        toDate: customEnd.toISOString(),
+        error: null,
+      };
+    }
+    default:
+      start = null;
+  }
+
+  return {
+    fromDate: start ? start.toISOString() : '',
+    toDate: end.toISOString(),
+    error: null,
+  };
+};
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -24,6 +118,11 @@ export default function DashboardPage() {
   const [requestorRequests, setRequestorRequests] = useState([]);
   const [requestorConfigs, setRequestorConfigs] = useState([]);
   const [requestorConfigRequests, setRequestorConfigRequests] = useState([]);
+  const [dateRangePreset, setDateRangePreset] = useState('monthly');
+  const [customFromDateTime, setCustomFromDateTime] = useState('');
+  const [customToDateTime, setCustomToDateTime] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState(String(new Date().getMonth() + 1).padStart(2, '0'));
+  const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
   const cacheKey = `aiInsightsCache:${user?.id || 'anon'}:${userRole || 'role'}`;
   const cacheTtlMs = 5 * 60 * 1000;
   const metricsCacheKey = `dashboardMetrics:${user?.id || 'anon'}:${userRole || 'role'}`;
@@ -35,6 +134,18 @@ export default function DashboardPage() {
   const isRequestor = userRole === 'requestor';
   const isL1 = userRole === 'l1';
   const isRequestorLike = isRequestor || isL1;
+  const resolvedDateRange = React.useMemo(
+    () => resolveDashboardDateRange({
+      preset: dateRangePreset,
+      customFrom: customFromDateTime,
+      customTo: customToDateTime,
+      selectedMonth,
+      selectedYear,
+    }),
+    [dateRangePreset, customFromDateTime, customToDateTime, selectedMonth, selectedYear]
+  );
+  const activeFromDate = resolvedDateRange.fromDate;
+  const activeToDate = resolvedDateRange.toDate;
 
   const requestorHistoryRows = React.useMemo(() => {
     if (!isRequestorLike) return [];
@@ -166,11 +277,18 @@ export default function DashboardPage() {
   }, [metricsData, requestorNotifications, userRole]);
 
   const handleGenerateInsights = async () => {
+    if (resolvedDateRange.error) {
+      toast.error(resolvedDateRange.error);
+      return;
+    }
+
     setAiLoading(true);
     try {
       const data = await aiInsightsService.getAiInsights({
         role: userRole,
         user_id: user?.id || null,
+        fromDate: activeFromDate || undefined,
+        toDate: activeToDate || undefined,
       }, token);
       setAiData(data);
       localStorage.setItem(cacheKey, JSON.stringify({ data, cachedAt: Date.now() }));
@@ -182,11 +300,22 @@ export default function DashboardPage() {
   };
 
   const handleLoadMetrics = async () => {
+    if (resolvedDateRange.error) {
+      setMetricsData(null);
+      return;
+    }
+
     try {
+      const metricsScopedCacheKey = `${metricsCacheKey}:${dateRangePreset}:${activeFromDate || 'none'}:${activeToDate || 'none'}`;
       const data = await fetchWithCache(
         'dashboardMetrics',
-        metricsCacheKey,
-        () => aiInsightsService.getRealtimeMetrics({ role: userRole, user_id: user?.id || '' }, token),
+        metricsScopedCacheKey,
+        () => aiInsightsService.getRealtimeMetrics({
+          role: userRole,
+          user_id: user?.id || '',
+          fromDate: activeFromDate || undefined,
+          toDate: activeToDate || undefined,
+        }, token),
         2 * 60 * 1000
       );
       setMetricsData(data);
@@ -197,7 +326,7 @@ export default function DashboardPage() {
 
   React.useEffect(() => {
     handleLoadMetrics();
-  }, [userRole, user?.id]);
+  }, [userRole, user?.id, dateRangePreset, activeFromDate, activeToDate, resolvedDateRange.error]);
 
   React.useEffect(() => {
     if (!showNotifications) return;
@@ -365,6 +494,10 @@ export default function DashboardPage() {
         { header: 'content', key: 'content', width: 120 },
       ];
 
+      insightsSheet.addRow({ section: 'Range Preset', content: dateRangePreset });
+      insightsSheet.addRow({ section: 'From', content: activeFromDate || '—' });
+      insightsSheet.addRow({ section: 'To', content: activeToDate || '—' });
+
       const pushSectionRows = (section, rows = [], fallback = 'No data available.') => {
         if (Array.isArray(rows) && rows.length) {
           rows.forEach((content) => insightsSheet.addRow({ section, content: String(content || '').trim() || fallback }));
@@ -452,6 +585,7 @@ export default function DashboardPage() {
       pushTable('Status Breakdown', coerceChartArray(metricsData?.charts?.status_breakdown), ['label', 'value']);
       pushTable('Status Amounts', coerceChartArray(metricsData?.charts?.status_amounts), ['label', 'value']);
       pushTable('Top Budgets', metricsData?.charts?.top_budgets || [], ['budget_name', 'budget_id', 'total_amount', 'completed_amount', 'ongoing_amount']);
+      pushTable('Top Departments by Submitted Requests', metricsData?.charts?.top_request_departments || [], ['department_name', 'request_count', 'total_amount']);
       pushTable('Monthly Series', metricsData?.charts?.monthly_series || [], ['month', 'amount', 'value', 'count']);
 
       pushTable('Requestor Approval Counts', requestorTables?.approval_counts || [], ['budget_name', 'budget_id', 'approved_count', 'rejected_count', 'total_requests']);
@@ -579,7 +713,25 @@ export default function DashboardPage() {
               metrics={metricsData}
               onGenerate={handleGenerateInsights}
               onExport={handleExportDashboard}
+              rangeControls={(
+                <DashboardRangeControls
+                  preset={dateRangePreset}
+                  onPresetChange={setDateRangePreset}
+                  customFrom={customFromDateTime}
+                  onCustomFromChange={setCustomFromDateTime}
+                  customTo={customToDateTime}
+                  onCustomToChange={setCustomToDateTime}
+                  resolvedRange={resolvedDateRange}
+                  selectedMonth={selectedMonth}
+                  onSelectedMonthChange={setSelectedMonth}
+                  selectedYear={selectedYear}
+                  onSelectedYearChange={setSelectedYear}
+                  activeFromDate={activeFromDate}
+                  activeToDate={activeToDate}
+                />
+              )}
             />
+            <TopRequestConfigsCard data={metricsData?.charts?.top_request_departments || metricsData?.charts?.top_request_configs} />
             <LatestUpdatesTable updates={metricsData?.latest_updates} />
           </>
         ) : (
@@ -592,6 +744,23 @@ export default function DashboardPage() {
               metrics={metricsData}
               onGenerate={handleGenerateInsights}
               onExport={handleExportDashboard}
+              rangeControls={(
+                <DashboardRangeControls
+                  preset={dateRangePreset}
+                  onPresetChange={setDateRangePreset}
+                  customFrom={customFromDateTime}
+                  onCustomFromChange={setCustomFromDateTime}
+                  customTo={customToDateTime}
+                  onCustomToChange={setCustomToDateTime}
+                  resolvedRange={resolvedDateRange}
+                  selectedMonth={selectedMonth}
+                  onSelectedMonthChange={setSelectedMonth}
+                  selectedYear={selectedYear}
+                  onSelectedYearChange={setSelectedYear}
+                  activeFromDate={activeFromDate}
+                  activeToDate={activeToDate}
+                />
+              )}
             />
             {userRole === 'requestor' && (
               <RequestorSubmissionTables
@@ -614,6 +783,9 @@ export default function DashboardPage() {
                 tables={metricsData?.approver_tables}
                 totals={metricsData?.totals}
               />
+            )}
+            {['l1', 'l2', 'l3'].includes(userRole) && (
+              <TopRequestConfigsCard data={metricsData?.charts?.top_request_departments || metricsData?.charts?.top_request_configs} />
             )}
             {showNotifications && (
               <ApprovalNotificationsTable
@@ -792,7 +964,156 @@ function ApprovalNotificationsTable({ items = [], role }) {
   );
 }
 
-function RoleInsightsLayout({ loading, exportLoading, data, role, metrics, onGenerate, onExport }) {
+function DashboardRangeControls({
+  preset,
+  onPresetChange,
+  customFrom,
+  onCustomFromChange,
+  customTo,
+  onCustomToChange,
+  resolvedRange,
+  selectedMonth,
+  onSelectedMonthChange,
+  selectedYear,
+  onSelectedYearChange,
+  activeFromDate,
+  activeToDate,
+}) {
+  const yearOptions = React.useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 11 }, (_, index) => {
+      const year = String(currentYear - index);
+      return { value: year, label: year };
+    });
+  }, []);
+
+  const constrainedMonthOptions = React.useMemo(() => {
+    const now = new Date();
+    const currentYear = String(now.getFullYear());
+    const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
+
+    if (String(selectedYear || '') !== currentYear) {
+      return DASHBOARD_MONTH_OPTIONS;
+    }
+
+    return DASHBOARD_MONTH_OPTIONS.filter((month) => month.value <= currentMonth);
+  }, [selectedYear]);
+
+  React.useEffect(() => {
+    if (preset !== 'monthly') return;
+    if (!constrainedMonthOptions.length) return;
+
+    const isValidMonth = constrainedMonthOptions.some((option) => option.value === selectedMonth);
+    if (isValidMonth) return;
+
+    onSelectedMonthChange(constrainedMonthOptions[constrainedMonthOptions.length - 1].value);
+  }, [preset, selectedMonth, constrainedMonthOptions, onSelectedMonthChange]);
+
+  const formatLabelDate = (value) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '—';
+    return date.toLocaleDateString('en-PH', {
+      timeZone: 'Asia/Manila',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  };
+
+  const rangeSummary = (() => {
+    if (resolvedRange?.error) return '—';
+    if (preset === 'daily') return formatLabelDate(activeFromDate);
+    if (preset === 'weekly') return `${formatLabelDate(activeFromDate)} - ${formatLabelDate(activeToDate)}`;
+    if (preset === 'monthly') return `${formatLabelDate(activeFromDate)} - ${formatLabelDate(activeToDate)}`;
+    if (preset === 'yearly') return `${formatLabelDate(activeFromDate)} - ${formatLabelDate(activeToDate)}`;
+    return `${formatLabelDate(activeFromDate)} - ${formatLabelDate(activeToDate)}`;
+  })();
+
+  const todayDate = React.useMemo(() => new Date().toISOString().split('T')[0], []);
+
+  return (
+    <div className="flex flex-wrap items-end gap-2">
+      <p className="pb-2 text-[11px] text-slate-400">Time Range</p>
+      <p className="pb-2 text-[11px] text-slate-300">{rangeSummary}</p>
+      <div className="min-w-[180px]">
+        <SearchableSelect
+          value={preset}
+          onValueChange={onPresetChange}
+          options={DASHBOARD_RANGE_OPTIONS}
+          placeholder="Select range"
+          searchPlaceholder="Search range..."
+        />
+      </div>
+      {preset === 'monthly' && (
+        <div className="min-w-[170px]">
+          <SearchableSelect
+            value={selectedMonth}
+            onValueChange={onSelectedMonthChange}
+            options={constrainedMonthOptions}
+            placeholder="Select month"
+            searchPlaceholder="Search month..."
+          />
+        </div>
+      )}
+      {preset === 'yearly' && (
+        <div className="min-w-[130px]">
+          <SearchableSelect
+            value={selectedYear}
+            onValueChange={onSelectedYearChange}
+            options={yearOptions}
+            placeholder="Select year"
+            searchPlaceholder="Search year..."
+          />
+        </div>
+      )}
+      {preset === 'monthly' && (
+        <div className="min-w-[130px]">
+          <SearchableSelect
+            value={selectedYear}
+            onValueChange={onSelectedYearChange}
+            options={yearOptions}
+            placeholder="Year"
+            searchPlaceholder="Search year..."
+          />
+        </div>
+      )}
+      {preset === 'custom' && (
+        <>
+          <div className="flex items-center gap-2">
+            <p className="text-[11px] text-slate-400">From</p>
+            <Input
+              type="date"
+              value={customFrom}
+              max={todayDate}
+              onChange={(event) => {
+                const nextStart = event.target.value;
+                onCustomFromChange(nextStart);
+                if (customTo && nextStart && customTo < nextStart) {
+                  onCustomToChange(nextStart);
+                }
+              }}
+              className="min-w-[180px] bg-slate-700 border-gray-300 text-white"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <p className="text-[11px] text-slate-400">To</p>
+            <Input
+              type="date"
+              value={customTo}
+              min={customFrom || undefined}
+              max={todayDate}
+              onChange={(event) => onCustomToChange(event.target.value)}
+              className="min-w-[180px] bg-slate-700 border-gray-300 text-white"
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RoleInsightsLayout({ loading, exportLoading, data, role, metrics, onGenerate, onExport, rangeControls }) {
   const charts = metrics?.charts || {};
   const statusBreakdown = Array.isArray(charts.status_breakdown)
     ? charts.status_breakdown
@@ -813,7 +1134,8 @@ function RoleInsightsLayout({ loading, exportLoading, data, role, metrics, onGen
             AI insights tailored to your role scope.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-end justify-end gap-2">
+          {rangeControls}
           <Button
             onClick={onGenerate}
             className="bg-blue-600 hover:bg-blue-700 text-white"
@@ -853,7 +1175,7 @@ function RoleInsightsLayout({ loading, exportLoading, data, role, metrics, onGen
   );
 }
 
-function PayrollInsightsLayout({ loading, exportLoading, data, metrics, onGenerate, onExport }) {
+function PayrollInsightsLayout({ loading, exportLoading, data, metrics, onGenerate, onExport, rangeControls }) {
   const coerceChartArray = (value) => {
     if (!value) return [];
     if (Array.isArray(value)) return value;
@@ -886,7 +1208,8 @@ function PayrollInsightsLayout({ loading, exportLoading, data, metrics, onGenera
             Financial insights based on your role scope · Generated: {generatedLabel}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-end justify-end gap-2">
+          {rangeControls}
           <Button
             onClick={onGenerate}
             className="bg-blue-600 hover:bg-blue-700 text-white"
@@ -1070,6 +1393,60 @@ function TopBudgetsBarChart({ data }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function TopRequestConfigsCard({ data }) {
+  const safeData = Array.isArray(data) ? data : [];
+
+  return (
+    <Card className="bg-slate-800">
+      <CardHeader>
+        <CardTitle className="text-white">Top 5 Departments by Submitted Approval Requests</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {safeData.length === 0 ? (
+          <div className="text-sm text-slate-400">No department request data available for the selected range.</div>
+        ) : (
+          <TopRequestCountBarChart data={safeData} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TopRequestCountBarChart({ data }) {
+  const safeData = Array.isArray(data) ? data : [];
+  const maxCount = Math.max(...safeData.map((row) => Number(row.request_count || 0)), 1);
+  const toDepartmentLabel = (value) => {
+    const raw = String(value || '').trim();
+    const normalized = raw.toLowerCase();
+    if (normalized === 'company a' || normalized === 'parent org') {
+      return 'For All Departments';
+    }
+    return raw || '—';
+  };
+
+  return (
+    <div className="space-y-3">
+      {safeData.map((row) => {
+        const requestCount = Number(row.request_count || 0);
+        const width = (requestCount / maxCount) * 100;
+        const rowLabel = toDepartmentLabel(row.department_name || row.department || row.budget_name);
+
+        return (
+          <div key={row.department_name || row.department || row.budget_id || row.budget_name} className="space-y-1">
+            <div className="flex items-center justify-between text-sm text-slate-300">
+              <span className="truncate max-w-[280px] text-white">{rowLabel}</span>
+              <span className="font-semibold text-cyan-300">{requestCount}</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-slate-700">
+              <div className="h-2 rounded-full bg-cyan-500" style={{ width: `${width}%` }} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

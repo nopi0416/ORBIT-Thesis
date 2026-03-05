@@ -995,6 +995,99 @@ export const getUserById = async (userId, token) => {
   }
 };
 
+/**
+ * GET - Get budget configuration templates for current user scope
+ */
+export const getBudgetConfigTemplates = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/templates`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to fetch budget configuration templates');
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching budget configuration templates:', error);
+    throw error;
+  }
+};
+
+/**
+ * POST - Save or update a budget configuration template
+ */
+export const saveBudgetConfigTemplate = async ({ template_name, template_payload }, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/templates`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ template_name, template_payload }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to save budget configuration template');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error saving budget configuration template:', error);
+    throw error;
+  }
+};
+
+/**
+ * PATCH - Rename a budget configuration template
+ */
+export const renameBudgetConfigTemplate = async (templateId, template_name, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/templates/${templateId}`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify({ template_name }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to rename budget configuration template');
+    }
+
+    const data = await response.json();
+    return data.data;
+  } catch (error) {
+    console.error('Error renaming budget configuration template:', error);
+    throw error;
+  }
+};
+
+/**
+ * DELETE - Delete a budget configuration template
+ */
+export const deleteBudgetConfigTemplate = async (templateId, token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/budget-configurations/templates/${templateId}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete budget configuration template');
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Error deleting budget configuration template:', error);
+    throw error;
+  }
+};
+
 export default {
   // CRUD operations
   createBudgetConfiguration,
@@ -1043,6 +1136,12 @@ export default {
   // Real Approvers Data
   getAllApprovers,
   getApproversByLevel,
+
+  // Templates
+  getBudgetConfigTemplates,
+  saveBudgetConfigTemplate,
+  renameBudgetConfigTemplate,
+  deleteBudgetConfigTemplate,
   
   // Users
   getUserById,

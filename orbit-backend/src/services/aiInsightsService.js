@@ -121,6 +121,60 @@ const getApprovalInvolvedRequestIds = async (userId, requestIds = []) => {
   return (data || []).map((row) => row.request_id).filter(Boolean);
 };
 
+const getUserDepartmentMap = async (userIds = []) => {
+  const uniqueIds = Array.from(new Set((userIds || []).filter(Boolean)));
+  if (!uniqueIds.length) return new Map();
+
+  const { data: users, error } = await supabase
+    .from('tblusers')
+    .select('user_id, department_id, org_id')
+    .in('user_id', uniqueIds);
+
+  if (error) {
+    console.warn('[aiInsights] User department lookup failed:', error?.message || error);
+    return new Map();
+  }
+
+  const departmentIds = Array.from(new Set(
+    (users || [])
+      .map((user) => user.department_id || user.org_id)
+      .filter(Boolean)
+  ));
+
+  let organizationNameMap = new Map();
+  if (departmentIds.length > 0) {
+    const { data: organizations, error: orgError } = await supabase
+      .from('tblorganization')
+      .select('org_id, org_name')
+      .in('org_id', departmentIds);
+
+    if (orgError) {
+      console.warn('[aiInsights] Organization lookup failed:', orgError?.message || orgError);
+    } else {
+      organizationNameMap = new Map(
+        (organizations || []).map((org) => [
+          org.org_id,
+          String(org.org_name || '').trim() || 'Unassigned',
+        ])
+      );
+    }
+  }
+
+  return new Map(
+    (users || []).map((user) => {
+      const departmentKey = user.department_id || user.org_id;
+      const departmentName = departmentKey
+        ? (organizationNameMap.get(departmentKey) || 'Unassigned')
+        : 'Unassigned';
+
+      return [
+      user.user_id,
+      departmentName,
+    ];
+    })
+  );
+};
+
 const filterRowsByUserScope = ({ rows = [], userId, createdBudgetIds = [], involvedRequestIds = [] }) => {
   if (!userId) return rows;
 
@@ -274,6 +328,7 @@ export class AiInsightsService {
       } catch (lookupError) {
         console.warn('[aiInsights] User lookup failed:', lookupError?.message || lookupError);
       }
+      const userDepartmentMap = await getUserDepartmentMap(requestUserIds);
       const requestIds = requestRows.map((row) => row.request_id).filter(Boolean);
       const budgetIdSet = new Set(requestRows.map((row) => row.budget_id).filter(Boolean));
 
@@ -456,6 +511,7 @@ export class AiInsightsService {
       const stageAmounts = {};
       const budgetTotals = new Map();
       const budgetBreakdowns = new Map();
+      const departmentTotals = new Map();
       const monthlyTotals = new Map();
       let totalAmount = 0;
 
@@ -512,6 +568,16 @@ export class AiInsightsService {
         }
 
         const requestedBy = userNameMap.get(row.submitted_by) || row.submitted_by || 'Unknown';
+        const departmentName = userDepartmentMap.get(row.submitted_by) || 'Unassigned';
+        const departmentKey = String(departmentName).toLowerCase();
+        const departmentStats = departmentTotals.get(departmentKey) || {
+          department_name: departmentName,
+          request_count: 0,
+          total_amount: 0,
+        };
+        departmentStats.request_count += 1;
+        departmentStats.total_amount += amount;
+        departmentTotals.set(departmentKey, departmentStats);
 
         return {
           request_id: row.request_id,
@@ -551,6 +617,18 @@ export class AiInsightsService {
         .sort((a, b) => b.total_amount - a.total_amount)
         .slice(0, 5);
 
+      const topRequestConfigs = [...topBudgets]
+        .sort((a, b) => Number(b.request_count || 0) - Number(a.request_count || 0))
+        .slice(0, 5);
+
+      const topRequestDepartments = Array.from(departmentTotals.values())
+        .sort((a, b) => {
+          const countDelta = Number(b.request_count || 0) - Number(a.request_count || 0);
+          if (countDelta !== 0) return countDelta;
+          return Number(b.total_amount || 0) - Number(a.total_amount || 0);
+        })
+        .slice(0, 5);
+
       const monthlySeries = Array.from(monthlyTotals.entries())
         .map(([month, amount]) => ({ month, amount }))
         .sort((a, b) => (a.month > b.month ? 1 : -1))
@@ -570,6 +648,8 @@ export class AiInsightsService {
           status_amounts: Object.entries(statusAmounts).map(([label, value]) => ({ label, value })),
           stage_amounts: Object.entries(stageAmounts).map(([label, value]) => ({ label, value })),
           top_budgets: topBudgets,
+          top_request_configs: topRequestConfigs,
+          top_request_departments: topRequestDepartments,
           monthly_series: monthlySeries,
         },
         scope,
@@ -806,6 +886,7 @@ export class AiInsightsService {
       } catch (lookupError) {
         console.warn('[realtimeMetrics] User lookup failed:', lookupError?.message || lookupError);
       }
+      const userDepartmentMap = await getUserDepartmentMap(requestUserIds);
       const requestIds = requestRows.map((row) => row.request_id).filter(Boolean);
       const budgetIdSet = new Set(requestRows.map((row) => row.budget_id).filter(Boolean));
 
@@ -977,6 +1058,7 @@ export class AiInsightsService {
       const stageAmounts = {};
       const budgetTotals = new Map();
       const budgetBreakdowns = new Map();
+      const departmentTotals = new Map();
       const monthlyTotals = new Map();
       let totalAmount = 0;
 
@@ -1031,6 +1113,16 @@ export class AiInsightsService {
         }
 
         const requestedBy = userNameMap.get(row.submitted_by) || row.submitted_by || 'Unknown';
+        const departmentName = userDepartmentMap.get(row.submitted_by) || 'Unassigned';
+        const departmentKey = String(departmentName).toLowerCase();
+        const departmentStats = departmentTotals.get(departmentKey) || {
+          department_name: departmentName,
+          request_count: 0,
+          total_amount: 0,
+        };
+        departmentStats.request_count += 1;
+        departmentStats.total_amount += amount;
+        departmentTotals.set(departmentKey, departmentStats);
 
         return {
           request_id: row.request_id,
@@ -1069,6 +1161,18 @@ export class AiInsightsService {
         .sort((a, b) => b.total_amount - a.total_amount)
         .slice(0, 5);
 
+      const topRequestConfigs = [...topBudgets]
+        .sort((a, b) => Number(b.request_count || 0) - Number(a.request_count || 0))
+        .slice(0, 5);
+
+      const topRequestDepartments = Array.from(departmentTotals.values())
+        .sort((a, b) => {
+          const countDelta = Number(b.request_count || 0) - Number(a.request_count || 0);
+          if (countDelta !== 0) return countDelta;
+          return Number(b.total_amount || 0) - Number(a.total_amount || 0);
+        })
+        .slice(0, 5);
+
       const monthlySeries = Array.from(monthlyTotals.entries())
         .map(([month, amount]) => ({ month, amount }))
         .sort((a, b) => (a.month > b.month ? 1 : -1));
@@ -1077,6 +1181,8 @@ export class AiInsightsService {
         status_breakdown: Object.entries(statusCounts).map(([label, value]) => ({ label, value })),
         status_amounts: Object.entries(statusAmounts).map(([label, value]) => ({ label, value })),
         top_budgets: topBudgets,
+        top_request_configs: topRequestConfigs,
+        top_request_departments: topRequestDepartments,
         monthly_series: monthlySeries,
       };
 
