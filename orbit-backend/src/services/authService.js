@@ -562,17 +562,31 @@ export class AuthService {
       });
 
       if (!userAgreements || userAgreements.length === 0) {
-        // User hasn't accepted user agreement yet - first time login
+        // First-time users still need an authenticated session for protected setup endpoints.
+        await this.invalidateActiveSessions(userId);
+        const sessionId = await this.createSession({
+          userId,
+        });
+
+        const token = this.generateToken(userId, user.email, userRole, user.org_id || null, {
+          userType: 'user',
+          sessionId,
+        });
+
         return {
           success: true,
           data: {
             requiresUserAgreement: true,
+            token,
+            sessionId,
             userId,
             employeeId: user.employee_id,
             email: user.email,
             role: userRole,
             firstName: user.first_name,
             lastName: user.last_name,
+            org_id: user.org_id || null,
+            userType: 'user',
           },
           message: 'User agreement acceptance required',
         };

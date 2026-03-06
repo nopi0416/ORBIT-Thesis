@@ -77,10 +77,50 @@ const ToastItem = ({ id, type, message, duration, onDismiss }) => {
 export const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = useState([]);
 
+  const normalizeToastMessage = useCallback((message) => {
+    if (typeof message === 'string') return message;
+    if (message instanceof Error) return message.message || '';
+    if (message && typeof message === 'object') {
+      if (typeof message.error === 'string') return message.error;
+      if (typeof message.message === 'string') return message.message;
+      try {
+        return JSON.stringify(message);
+      } catch {
+        return String(message);
+      }
+    }
+    return String(message || '');
+  }, []);
+
+  const shouldSuppressToast = useCallback((message) => {
+    const isFirstTimeSetupFlag = sessionStorage.getItem('firstTimeSetupActive') === 'true';
+    const rawAuthUser = localStorage.getItem('authUser');
+    let isFirstTimeUser = false;
+
+    if (rawAuthUser) {
+      try {
+        const parsedUser = JSON.parse(rawAuthUser);
+        isFirstTimeUser = parsedUser?.isFirstTimeSetup === true;
+      } catch {
+        isFirstTimeUser = false;
+      }
+    }
+
+    const isFirstTimeSetup = isFirstTimeSetupFlag || isFirstTimeUser;
+    if (!isFirstTimeSetup) return false;
+
+    const normalizedMessage = normalizeToastMessage(message);
+    return /(access\s*token\s*required|token\s*required|unauthorized)/i.test(normalizedMessage);
+  }, [normalizeToastMessage]);
+
   const addToast = useCallback((message, type = 'info', duration = 5000) => {
+    if (shouldSuppressToast(message)) {
+      return;
+    }
+
     const id = Date.now().toString() + Math.random().toString(36).substring(2, 9);
     setToasts((prev) => [...prev, { id, message, type, duration }]);
-  }, []);
+  }, [shouldSuppressToast]);
 
   const removeToast = useCallback((id) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));

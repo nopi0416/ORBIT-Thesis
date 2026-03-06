@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { authAPI } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -39,6 +39,10 @@ export default function SecurityQuestions() {
   const [answer3, setAnswer3] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    sessionStorage.setItem('firstTimeSetupActive', 'true');
+  }, []);
 
   const handleAnswerKeyDown = (event) => {
     handleRestrictedKeyDown(event);
