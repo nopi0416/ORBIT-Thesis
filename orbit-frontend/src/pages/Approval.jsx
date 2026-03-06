@@ -6161,6 +6161,98 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     return text;
   };
 
+  const toExportHeaderLabel = (key = '') => {
+    const labelMap = {
+      request_number: 'Request #',
+      budget_name: 'Budget Name',
+      total_employees: 'Total Employees',
+      deductions_count: 'Deductions Count',
+      to_be_paid_count: 'To Be Paid Count',
+      status: 'Status',
+      amount: 'Amount',
+      submitted_at: 'Submitted At',
+      requested_by: 'Requested By',
+      submitted_by: 'Submitted By',
+      overall_status: 'Overall Status',
+      client_sponsored: 'Client Sponsored',
+      payroll_cycle: 'Payroll Cycle',
+      total_amount: 'Total Amount',
+      deduction_total: 'Deduction Total',
+      net_to_pay: 'Net to Pay',
+      level: 'Level',
+      approver: 'Approver',
+      date: 'Date',
+      notes: 'Notes',
+      employee_id: 'Employee ID',
+      employee_name: 'Employee Name',
+      department: 'Department',
+      position: 'Position',
+      geo: 'Geo',
+      location: 'Location',
+      is_deduction: 'Is Deduction',
+      message: 'Message',
+    };
+
+    if (labelMap[key]) return labelMap[key];
+
+    return String(key || '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  };
+
+  const isAmountColumn = (key = '') => String(key || '').toLowerCase().includes('amount');
+
+  const buildFormattedWorksheet = (XLSX, rows = []) => {
+    const safeRows = Array.isArray(rows) && rows.length ? rows : [{ message: 'No data available.' }];
+    const keys = Object.keys(safeRows[0] || {});
+    const headers = keys.map((key) => toExportHeaderLabel(key));
+
+    const aoa = [
+      headers,
+      ...safeRows.map((row) => keys.map((key) => row[key] ?? '')),
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+
+    headers.forEach((_, columnIndex) => {
+      const headerCellRef = XLSX.utils.encode_cell({ r: 0, c: columnIndex });
+      const headerCell = worksheet[headerCellRef];
+      if (!headerCell) return;
+
+      headerCell.s = {
+        ...(headerCell.s || {}),
+        font: {
+          ...((headerCell.s && headerCell.s.font) || {}),
+          bold: true,
+        },
+      };
+    });
+
+    worksheet['!cols'] = keys.map((key, columnIndex) => {
+      const headerLength = String(headers[columnIndex] || '').length;
+      const maxDataLength = Math.max(
+        0,
+        ...safeRows.map((row) => String(row[key] ?? '').length)
+      );
+      return { wch: Math.min(48, Math.max(12, headerLength + 2, maxDataLength + 2)) };
+    });
+
+    safeRows.forEach((row, rowIndex) => {
+      keys.forEach((key, columnIndex) => {
+        const value = row[key];
+        if (!Number.isFinite(value)) return;
+
+        const cellRef = XLSX.utils.encode_cell({ r: rowIndex + 1, c: columnIndex });
+        if (!worksheet[cellRef]) return;
+
+        worksheet[cellRef].t = 'n';
+        worksheet[cellRef].z = isAmountColumn(key) ? '#,##0.00' : '#,##0';
+      });
+    });
+
+    return worksheet;
+  };
+
   const openExportModal = (scope) => {
     setExportScope(scope);
     if (scope === 'details') {
@@ -6251,9 +6343,9 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
       const safeApprovalRows = approvalRows.length ? approvalRows : [{ message: 'No approval history available.' }];
       const safeLineRows = lineRows.length ? lineRows : [{ message: 'No submitted line items available.' }];
 
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(safeBudgetRows), 'BudgetDetails');
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(safeApprovalRows), 'ApprovalHistory');
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(safeLineRows), 'SubmittedLineItems');
+      XLSX.utils.book_append_sheet(workbook, buildFormattedWorksheet(XLSX, safeBudgetRows), 'BudgetDetails');
+      XLSX.utils.book_append_sheet(workbook, buildFormattedWorksheet(XLSX, safeApprovalRows), 'ApprovalHistory');
+      XLSX.utils.book_append_sheet(workbook, buildFormattedWorksheet(XLSX, safeLineRows), 'SubmittedLineItems');
 
       const baseName = `request_history_${detailData?.request_number || detailData?.requestNumber || 'details'}_all_sections`;
       XLSX.writeFile(workbook, `${baseName}.xlsx`);
@@ -6279,8 +6371,9 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
 
     if (format === 'csv') {
       const headers = Object.keys(rows[0]);
+      const headerLabels = headers.map((key) => toExportHeaderLabel(key));
       const csvBody = rows.map((row) => headers.map((key) => escapeCsvValue(row[key])).join(','));
-      const csv = [headers.join(','), ...csvBody].join('\n');
+      const csv = [headerLabels.join(','), ...csvBody].join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -6296,7 +6389,7 @@ function ApprovalHistory({ refreshKey, focusRequestId = null, onFocusRequestHand
     const XLSXModule = await import('xlsx');
     const XLSX = XLSXModule.default || XLSXModule;
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const worksheet = buildFormattedWorksheet(XLSX, rows);
     XLSX.utils.book_append_sheet(workbook, worksheet, isHistoryScope ? 'HistoryLogs' : 'RequestDetails');
     XLSX.writeFile(workbook, `${baseName}.xlsx`);
   };
